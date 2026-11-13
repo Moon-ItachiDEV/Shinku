@@ -1,0 +1,5 @@
+# Version figée : tout le monde compile avec le même compilateur, l'intégration continue aussi.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

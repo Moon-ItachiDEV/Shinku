@@ -1,0 +1,18 @@
+# Rust
+/target/
+**/target/
+
+# Interface
+node_modules/
+apps/shinku/dist/
+
+# Tauri : fichiers générés à la compilation
+apps/shinku/src-tauri/gen/
+
+# Outils
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json

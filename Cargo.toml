@@ -1,0 +1,58 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/shinku-core",
+    "crates/shinku-helper",
+    "crates/shinku-agent",
+    # "apps/shinku/src-tauri",
+]
+# `cargo build` et `cargo test` sans option visent le cœur, le helper et l'agent.
+# L'application Tauri a besoin de l'interface compilée (voir README) :
+# on la construit avec `cargo build -p shinku` ou `npm run tauri build`.
+default-members = [
+    "crates/shinku-core",
+    "crates/shinku-helper",
+    "crates/shinku-agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+authors = ["Breezydev"]
+publish = false
+
+[workspace.dependencies]
+shinku-core = { path = "crates/shinku-core" }
+
+blake3 = { version = "1.8", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+windows = "0.62"
+
+[workspace.lints.rust]
+# Le code `unsafe` est interdit partout, sauf dans les rares modules qui
+# appellent l'API Windows. Ceux-là lèvent l'interdiction explicitement et
+# justifient chaque bloc.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+# Binaires petits et prévisibles : un nettoyeur doit peser moins que ce qu'il nettoie.
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.dev.package.blake3]
+# Le hachage en mode debug est trop lent pour tester sur de vrais dossiers.
+opt-level = 3
