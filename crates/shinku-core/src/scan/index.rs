@@ -301,7 +301,20 @@ impl<'a> Index<'a> {
     /// depuis la racine du disque. `None` si l'analyse n'a rien à y faire :
     /// il se trouve, par exemple, dans un dossier exclu.
     pub(crate) fn root_ctx(&self, components: &[String]) -> Option<Ctx> {
-        let mut ctx = Ctx { nodes: vec![ScopeTree::<Mark>::ROOT], junk: None, flags: 0 };
+        // Sous Windows, un chemin commence par son disque et la racine de
+        // l'arbre ne désigne rien. Ailleurs, elle désigne `/` : ce qui la
+        // marque s'applique dès le départ.
+        let mut flags = 0;
+        for mark in self.plan.tree.marks(ScopeTree::<Mark>::ROOT) {
+            match *mark {
+                Mark::Excluded | Mark::Forbidden => return None,
+                Mark::Keep | Mark::Junk(_) => {}
+                Mark::Dups => flags |= DUPS | DUP_ROOT,
+                Mark::Large => flags |= LARGE,
+                Mark::Sync => flags |= SYNC,
+            }
+        }
+        let mut ctx = Ctx { nodes: vec![ScopeTree::<Mark>::ROOT], junk: None, flags };
         let mut step = Vec::new();
         for (index, component) in components.iter().enumerate() {
             let last = index + 1 == components.len();

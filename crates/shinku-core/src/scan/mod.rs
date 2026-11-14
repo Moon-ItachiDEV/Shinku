@@ -24,6 +24,7 @@ use crate::hash::DigestCache;
 use crate::model::Trigger;
 use crate::platform::Environment;
 use crate::rules::JunkCategory;
+use crate::settings::Settings;
 use crate::walk::{Root, WalkOptions, walk};
 
 mod duplicates;
@@ -93,6 +94,12 @@ impl ScanOptions {
             modules: Modules::ALL,
             background: trigger == Trigger::Automatic,
         }
+    }
+
+    /// Applique les réglages de l'utilisateur : ses « dossiers jamais touchés ».
+    pub fn with_settings(mut self, settings: &Settings) -> Self {
+        self.excluded = settings.excluded_folders.clone();
+        self
     }
 }
 

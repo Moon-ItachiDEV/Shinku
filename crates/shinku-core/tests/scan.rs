@@ -21,6 +21,9 @@ use shinku_core::rules::JunkCategory;
 use shinku_core::scan::report::{CategoryState, DuplicateGroup, DuplicatesState, JunkLine, Report};
 use shinku_core::scan::{Control, Phase, ScanOptions, run, start};
 
+mod common;
+use common::{create_hidden_dir, link_dir, write_hidden};
+
 const DAY: Duration = Duration::from_secs(24 * 3600);
 
 /// Un PC de test. L'horloge de la machine est avancée de trente jours : tout
@@ -315,13 +318,15 @@ fn a_temp_folder_that_is_a_protected_place_is_refused() {
     assert_eq!(report.skipped.refused_roots.len(), 1);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_link_planted_in_temp_does_not_lead_to_personal_files() {
     let pc = Pc::new();
     write(&pc.documents().join("thèse.doc"), &noise(50_000, 1));
-    std::os::unix::fs::symlink(pc.documents(), pc.temp().join("piège")).unwrap();
     write(&pc.temp().join("vrai.tmp"), &noise(5000, 2));
+    if !link_dir(&pc.documents(), &pc.temp().join("piège")) {
+        eprintln!("liens indisponibles ici : test ignoré");
+        return;
+    }
 
     let report = pc.scan();
     // Le lien lui-même est un élément à supprimer ; ce vers quoi il pointe n'est pas compté.
@@ -329,19 +334,20 @@ fn a_link_planted_in_temp_does_not_lead_to_personal_files() {
     assert!(report.junk.bytes < 50_000, "{} octets comptés", report.junk.bytes);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_rule_location_reached_through_a_link_is_refused() {
     // Le dossier du cache de Discord remplacé par un lien vers Documents.
     let pc = Pc::new();
     write(&pc.documents().join("Cache").join("thèse.doc"), &noise(9000, 1));
     fs::create_dir_all(pc.roaming.join("discord")).unwrap();
-    std::os::unix::fs::symlink(pc.documents().join("Cache"), pc.roaming.join("discord/Cache"))
-        .unwrap();
     // Et tout le dossier d'une autre app remplacé par un lien.
-    fs::create_dir_all(pc.documents().join("Slack").join("Cache")).unwrap();
     write(&pc.documents().join("Slack").join("Cache").join("photo.raw"), &noise(9000, 2));
-    std::os::unix::fs::symlink(pc.documents().join("Slack"), pc.roaming.join("Slack")).unwrap();
+    let linked = link_dir(&pc.documents().join("Cache"), &pc.roaming.join("discord").join("Cache"))
+        && link_dir(&pc.documents().join("Slack"), &pc.roaming.join("Slack"));
+    if !linked {
+        eprintln!("liens indisponibles ici : test ignoré");
+        return;
+    }
 
     let report = pc.scan();
     assert_eq!(report.junk.files, 0, "aucun fichier personnel n'est pris pour un cache");
@@ -349,6 +355,25 @@ fn a_rule_location_reached_through_a_link_is_refused() {
         report.skipped.refused_roots.iter().map(|root| root.purpose.as_str()).collect();
     assert!(refused.contains(&"discord.cache"), "{refused:?}");
     assert!(refused.contains(&"slack.cache"), "{refused:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn locations_match_whatever_the_case() {
+    // Windows ne distingue pas les majuscules : une règle, un interdit ou une
+    // exclusion valent pour toutes les écritures d'un même nom.
+    let pc = Pc::new();
+    let chrome = pc.local.join("GOOGLE").join("chrome").join("USER DATA");
+    write(&chrome.join("default").join("CACHE").join("f_1"), &noise(9000, 1));
+    write(&pc.c.join("WINDOWS.OLD").join("gros.bin"), &noise(300_000, 2));
+    write(&pc.documents().join("Privé").join("film.mkv"), &noise(300_000, 3));
+    let shouted = to_display_path(&pc.documents().join("Privé")).to_string_lossy().to_uppercase();
+
+    let report = pc.scan_with(|options| options.excluded = vec![PathBuf::from(shouted)]);
+    let chrome_line = line(&report, JunkCategory::AppCaches, "Google Chrome").expect("le cache");
+    assert_eq!(chrome_line.files, 1);
+    assert_eq!(report.large_files.count, 0, "{:?}", report.large_files.files);
+    assert!(report.skipped.refused_roots.is_empty(), "{:?}", report.skipped.refused_roots);
 }
 
 // ── Gros fichiers ──────────────────────────────────────────────────────
@@ -377,17 +402,33 @@ fn large_files_are_listed_by_size_outside_protected_places() {
     assert_eq!(report.large_files.threshold, 100_000);
 }
 
-#[cfg(unix)]
 #[test]
 fn what_explorer_hides_is_not_proposed() {
-    // Sous Unix, « caché » se dit avec un point en tête du nom.
     let pc = Pc::new();
-    write(&pc.profile.join(".données-d-app").join("machine.vhdx"), &noise(300_000, 1));
-    write(&pc.documents().join(".brouillon.mkv"), &noise(300_000, 2));
+    let content = noise(10_000, 4);
     write(&pc.documents().join("visible.mkv"), &noise(300_000, 3));
+    write(&pc.pictures().join("copie.bin"), &content);
+    // Fichiers cachés : ni gros fichier, ni doublon.
+    let hidden = write_hidden(&pc.documents(), "brouillon.mkv", &noise(300_000, 2))
+        .and(write_hidden(&pc.documents(), "copie.bin", &content));
+    if hidden.is_none() {
+        eprintln!("fichiers cachés indisponibles ici : test ignoré");
+        return;
+    }
+    // Dossier caché : rien de ce qu'il contient n'est proposé.
+    match create_hidden_dir(&pc.documents(), "archives") {
+        Some(archives) => {
+            write(&archives.join("machine.vhdx"), &noise(300_000, 1));
+            write(&archives.join("copie (2).bin"), &content);
+        }
+        None => eprintln!("dossiers cachés indisponibles ici : cette partie est ignorée"),
+    }
+
     let report = pc.scan();
     let listed: Vec<_> = report.large_files.files.iter().map(|file| file.path.clone()).collect();
     assert_eq!(listed, [pc.documents().join("visible.mkv")]);
+    assert!(report.duplicates.groups.is_empty(), "{:?}", report.duplicates.groups);
+    assert_eq!(report.duplicates.candidates, 2, "les deux fichiers visibles, et eux seuls");
 }
 
 #[test]
@@ -618,7 +659,6 @@ fn excluded_folders_are_invisible_to_every_module() {
     assert!(report.skipped.refused_roots.is_empty());
 }
 
-#[cfg(unix)]
 #[test]
 fn an_exclusion_given_through_a_link_protects_the_real_folder() {
     let pc = Pc::new();
@@ -627,7 +667,10 @@ fn an_exclusion_given_through_a_link_protects_the_real_folder() {
     write(&pc.pictures().join("copie.bin"), &content);
     // L'ancien nom du dossier Documents, que Windows garde sous forme de lien.
     let legacy = pc.profile.join("Mes documents");
-    std::os::unix::fs::symlink(pc.documents(), &legacy).unwrap();
+    if !link_dir(&pc.documents(), &legacy) {
+        eprintln!("liens indisponibles ici : test ignoré");
+        return;
+    }
 
     let report = pc.scan_with(|options| options.excluded = vec![legacy.join("privé")]);
     assert!(report.duplicates.groups.is_empty(), "{:?}", report.duplicates.groups);

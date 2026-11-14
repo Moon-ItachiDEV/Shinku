@@ -10,20 +10,15 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use shinku_core::fs::{
     DirReader, EntryKind, EntryMeta, OpenError, PathState, ReadDirError, VerifiedFile, identity,
     inspect_dir_chain, to_display_path, to_internal_path,
 };
 
-/// Dossier temporaire, sous sa forme interne (chemin réel, littéral sous Windows).
-fn workspace() -> (tempfile::TempDir, PathBuf) {
-    let temp = tempfile::tempdir().expect("dossier temporaire");
-    let real = fs::canonicalize(temp.path()).expect("chemin réel");
-    let root = to_internal_path(&real).expect("chemin interne");
-    (temp, root)
-}
+mod common;
+use common::{link_dir, link_file, workspace};
 
 fn list(dir: &Path) -> BTreeMap<String, EntryMeta> {
     let mut entries = BTreeMap::new();
@@ -33,47 +28,6 @@ fn list(dir: &Path) -> BTreeMap<String, EntryMeta> {
         })
         .expect("lecture du dossier");
     entries
-}
-
-/// Vrai si `link` existe bel et bien comme lien. Certaines machines (Wine,
-/// par exemple) répondent « fait » sans rien créer.
-fn is_a_link(link: &Path) -> bool {
-    let Some(parent) = link.parent() else { return false };
-    let name = link.file_name().map(|name| name.to_string_lossy().into_owned());
-    let mut found = false;
-    let _ = DirReader::new().read(parent, None, &mut |entry, meta| {
-        if Some(entry.to_string_lossy().into_owned()) == name {
-            found = meta.kind == EntryKind::Link;
-        }
-    });
-    found
-}
-
-/// Crée un lien de dossier. Renvoie `false` si la machine ne le permet pas
-/// (sous Windows, un lien symbolique demande un droit particulier).
-fn link_dir(target: &Path, link: &Path) -> bool {
-    #[cfg(unix)]
-    let created = std::os::unix::fs::symlink(target, link).is_ok();
-    #[cfg(windows)]
-    let created = {
-        // Une jonction ne demande aucun droit : c'est le piège le plus courant.
-        let junction = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(to_display_path(link))
-            .arg(to_display_path(target))
-            .output()
-            .is_ok_and(|output| output.status.success());
-        (junction && is_a_link(link)) || std::os::windows::fs::symlink_dir(target, link).is_ok()
-    };
-    created && is_a_link(link)
-}
-
-fn link_file(target: &Path, link: &Path) -> bool {
-    #[cfg(unix)]
-    let created = std::os::unix::fs::symlink(target, link).is_ok();
-    #[cfg(windows)]
-    let created = std::os::windows::fs::symlink_file(target, link).is_ok();
-    created && is_a_link(link)
 }
 
 #[test]
