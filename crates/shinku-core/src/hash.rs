@@ -137,7 +137,7 @@ pub struct CachedDigests {
 
 /// Cache d'empreintes, partagé entre les fils d'exécution et gardé d'une
 /// analyse à l'autre.
-pub trait DigestCache: Send + Sync {
+pub trait DigestCache: Send + Sync + fmt::Debug {
     /// Empreintes déjà connues pour ce fichier.
     fn get(&self, key: &CacheKey) -> Option<CachedDigests>;
     /// Complète les empreintes connues pour ce fichier.

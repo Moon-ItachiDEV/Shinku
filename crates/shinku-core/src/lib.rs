@@ -8,6 +8,7 @@
 //! Les trois exécutables (`shinku`, `shinku-helper`, `shinku-agent`) s'appuient
 //! sur lui.
 
+pub mod backend;
 pub mod fs;
 pub mod guard;
 pub mod hash;
@@ -17,5 +18,6 @@ pub mod platform;
 pub mod rules;
 pub mod scan;
 pub mod scope;
+pub mod session;
 pub mod settings;
 pub mod walk;

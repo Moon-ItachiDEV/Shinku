@@ -576,7 +576,7 @@ fn copies_in_a_synced_folder_carry_a_warning() {
 #[test]
 fn digests_are_reused_from_the_cache() {
     /// Cache qui compte les empreintes qu'il a fallu calculer.
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct Counting {
         inner: MemoryCache,
         computed: AtomicUsize,
