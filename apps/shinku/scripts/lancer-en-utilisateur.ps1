@@ -1,10 +1,10 @@
-# Lance un programme avec les droits ordinaires d'un utilisateur, attend sa
+﻿# Lance un programme avec les droits ordinaires d'un utilisateur, attend sa
 # fin et rend son code de sortie.
 #
 # Sur les machines de l'intégration continue, tout tourne avec les droits
-# d'un administrateur. Shinku, lui, se lance sans ces droits sur le PC de
-# quelqu'un : c'est ainsi qu'il faut l'essayer. Et WebView2 n'ouvre son port
-# de débogage à la demande d'une variable d'environnement que dans un
+# d'un administrateur. Shinku, lui, tourne sans ces droits sur le PC de
+# quelqu'un : c'est ainsi qu'il faut l'essayer. Et WebView2 n'écoute la
+# variable d'environnement qui demande son port de débogage que dans un
 # programme sans droits d'administrateur.
 #
 # Le jeton donné au programme est celui de ce processus, filtré comme le fait
@@ -12,6 +12,9 @@
 # privilèges retirés, niveau d'intégrité moyen.
 #
 # La première ligne écrite est « PID <numéro> », celui du programme lancé.
+#
+# Ce fichier commence par une marque d'ordre des octets (BOM) : sans elle,
+# Windows PowerShell 5 lirait ses lettres accentuées de travers.
 
 param(
     [Parameter(Mandatory = $true)][string]$Programme
@@ -115,10 +118,11 @@ public static class StandardUser
 
     static IntPtr started;
 
-    // Donne au jeton le proprietaire et les droits par defaut d'un utilisateur
-    // ordinaire. Ceux du jeton d'origine designent le groupe Administrateurs,
-    // que le jeton filtre ne peut plus faire valoir : sans cela, le programme
-    // n'aurait pas acces aux objets qu'il cree lui-meme.
+    // Donne au jeton le propriétaire et les droits par défaut d'un utilisateur
+    // ordinaire. Ceux du jeton d'origine désignent le groupe Administrateurs,
+    // que le jeton filtré ne peut plus faire valoir : sans cela, le programme
+    // n'a pas accès aux objets qu'il crée lui-même, et WebView2 ne démarre pas
+    // (erreur 0x80010108).
     static void OwnWhatItCreates(IntPtr token)
     {
         uint needed;
@@ -149,7 +153,7 @@ public static class StandardUser
         }
     }
 
-    // Lance le programme et rend son numero de processus.
+    // Lance le programme et rend son numéro de processus.
     public static int Start(string program)
     {
         IntPtr own;
@@ -181,7 +185,7 @@ public static class StandardUser
         startup.cb = Marshal.SizeOf(startup);
         PROCESS_INFORMATION created;
         StringBuilder commandLine = new StringBuilder("\"" + program + "\"");
-        // Sans bloc d'environnement : le programme recoit celui de ce processus.
+        // Sans bloc d'environnement : le programme reçoit celui de ce processus.
         if (!CreateProcessAsUser(standard, program, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0,
                 IntPtr.Zero, null, ref startup, out created))
         {

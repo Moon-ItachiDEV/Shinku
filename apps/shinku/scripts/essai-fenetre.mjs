@@ -24,6 +24,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -807,6 +808,7 @@ async function main() {
 
   const port = await freePort();
   const asUser = elevated();
+  say(`sur ${os.version()} (${os.release()})`);
   say(`lancement de ${options.programme}${asUser ? ', avec les droits ordinaires d’un utilisateur' : ''}`);
   const run = launch(options.programme, port, asUser);
   let window = null;
