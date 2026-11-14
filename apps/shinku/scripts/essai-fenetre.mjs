@@ -18,7 +18,7 @@
 // Sans dépendance : Node 22 suffit.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -122,15 +122,21 @@ function freePort() {
 
 /** Lance le programme, WebView2 ouvrant son port de débogage. */
 function launch(program, port) {
-  const child = spawn(program, [], {
-    env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
-    stdio: 'ignore',
-  });
-  const run = { child, error: null, exit: null };
-  child.once('error', (error) => {
+  const run = { child: null, error: null, exit: null };
+  try {
+    run.child = spawn(program, [], {
+      env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
+      stdio: 'ignore',
+    });
+  } catch (error) {
+    // Windows a refusé de créer le processus (manifeste invalide, par exemple).
+    run.error = error;
+    return run;
+  }
+  run.child.once('error', (error) => {
     run.error = error;
   });
-  child.once('exit', (code, signal) => {
+  run.child.once('exit', (code, signal) => {
     run.exit = { code, signal };
   });
   return run;
@@ -138,7 +144,7 @@ function launch(program, port) {
 
 /** Arrête le programme et les processus de WebView2 qu'il a lancés. */
 function stop(run) {
-  if (run.exit !== null || run.child.pid === undefined) {
+  if (run.exit !== null || run.child?.pid === undefined) {
     return;
   }
   if (onWindows) {
@@ -190,6 +196,26 @@ function windowTexts(pid) {
   );
 }
 
+/**
+ * Les processus du moteur web et les ports qu'ils écoutent : de quoi comprendre
+ * pourquoi le port de débogage reste muet.
+ */
+function engineState() {
+  if (!onWindows) {
+    return '';
+  }
+  return powershell(
+    `$engines = Get-CimInstance Win32_Process -Filter "name = 'msedgewebview2.exe'"
+     foreach ($engine in $engines) {
+       if ($engine.CommandLine -notmatch '--type=') { "moteur $($engine.ProcessId), lance par $($engine.ParentProcessId) : $($engine.CommandLine)" }
+     }
+     $ids = @($engines | ForEach-Object { $_.ProcessId })
+     foreach ($port in Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue) {
+       if ($ids -contains $port.OwningProcess) { "port ecoute : $($port.LocalAddress):$($port.LocalPort) (processus $($port.OwningProcess))" }
+     }`,
+  );
+}
+
 /** Photographie le bureau : la fenêtre telle que Windows la montre, cadre compris. */
 function captureDesktop(file) {
   if (!onWindows) {
@@ -212,6 +238,7 @@ async function findPage(port, run, timeout) {
   const expected = (url) =>
     options.adresse !== undefined ? url.startsWith(options.adresse) : /^https?:\/\/tauri\.localhost\//.test(url);
   let seen = 'le port de débogage ne répond pas';
+  let silence = '';
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if (run.error !== null) {
@@ -224,18 +251,27 @@ async function findPage(port, run, timeout) {
     }
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2000) });
-      const targets = await response.json();
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} : ${body.slice(0, 200)}`);
+      }
+      const targets = JSON.parse(body);
       const page = targets.find((target) => target.type === 'page' && expected(target.url));
       if (page !== undefined) {
         return page;
       }
       seen = `pages ouvertes : ${targets.map((target) => `${target.type} ${target.url}`).join(', ') || 'aucune'}`;
-    } catch {
+    } catch (error) {
       // Le moteur web n'a pas encore ouvert son port.
+      silence = `${error.message}${error.cause ? ` (${error.cause.code ?? error.cause.message})` : ''}`;
     }
     await sleep(250);
   }
-  fail(`la fenêtre n’a pas ouvert sa page en ${Math.round(timeout / 1000)} s (${seen})`);
+  const engine = engineState();
+  fail(
+    `la fenêtre n’a pas ouvert sa page en ${Math.round(timeout / 1000)} s (${seen})` +
+      `\nport ${port}, dernière réponse : ${silence || 'aucune'}${engine === '' ? '' : `\n${engine}`}`,
+  );
 }
 
 /** Une conversation avec la page (protocole DevTools). */
@@ -701,6 +737,10 @@ async function main() {
     console.error('Usage : node scripts/essai-fenetre.mjs --programme <shinku.exe> [--captures <dossier>]');
     return 2;
   }
+  if (!existsSync(options.programme)) {
+    console.error(`Programme introuvable : ${options.programme}`);
+    return 2;
+  }
   if (options.captures !== undefined) {
     mkdirSync(options.captures, { recursive: true });
   }
@@ -749,7 +789,7 @@ async function main() {
         quote([...window.problems, ...window.notes].join('\n'));
       }
       await window.capture('echec');
-    } else if (run.exit === null && run.child.pid !== undefined) {
+    } else if (run.exit === null && run.child?.pid !== undefined) {
       const texts = windowTexts(run.child.pid);
       if (texts !== '') {
         say('le programme affichait :');
