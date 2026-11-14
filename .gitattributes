@@ -1,0 +1,7 @@
+# Fins de ligne identiques sur toutes les machines, Windows compris : les
+# fichiers de référence des tests sont comparés à l'octet près.
+* text=auto eol=lf
+
+*.ico binary
+*.png binary
+*.woff2 binary
