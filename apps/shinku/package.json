@@ -1,0 +1,29 @@
+{
+  "name": "shinku-interface",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Interface de Shinku (Tauri 2, TypeScript, lit-html).",
+  "scripts": {
+    "dev": "vite",
+    "demo": "vite --mode demo --open",
+    "build": "tsc --noEmit && vite build",
+    "build:demo": "vite build --mode demo --outDir dist-demo",
+    "check": "tsc --noEmit && tsc --noEmit -p tests",
+    "test": "node --test \"tests/**/*.test.ts\"",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "lit-html": "^3.3.3"
+  },
+  "devDependencies": {
+    "@fontsource-variable/m-plus-1": "^5.3.1",
+    "@fontsource/orbitron": "^5.3.0",
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}

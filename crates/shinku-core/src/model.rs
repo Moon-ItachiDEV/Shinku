@@ -175,7 +175,8 @@ impl fmt::Display for ByteSize {
             unit += 1;
         }
         if unit == 0 {
-            return write!(f, "{} {}", self.0, if self.0 == 1 { "octet" } else { UNITS[0] });
+            // En français, zéro et un prennent le singulier.
+            return write!(f, "{} {}", self.0, if self.0 < 2 { "octet" } else { UNITS[0] });
         }
         let text = if value >= 100.0 { format!("{value:.0}") } else { format!("{value:.1}") };
         write!(f, "{} {}", text.replace('.', ","), UNITS[unit])
@@ -231,7 +232,7 @@ mod tests {
 
     #[test]
     fn byte_sizes_read_like_explorer() {
-        assert_eq!(ByteSize(0).to_string(), "0 octets");
+        assert_eq!(ByteSize(0).to_string(), "0 octet");
         assert_eq!(ByteSize(1).to_string(), "1 octet");
         assert_eq!(ByteSize(1023).to_string(), "1023 octets");
         assert_eq!(ByteSize(1024).to_string(), "1,0 Ko");
