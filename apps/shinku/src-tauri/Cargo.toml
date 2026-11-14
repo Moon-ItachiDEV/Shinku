@@ -1,0 +1,30 @@
+[package]
+name = "shinku"
+description = "Shinku : la fenêtre de l'application (Tauri 2), qui affiche l'interface et appelle le cœur."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+shinku-core.workspace = true
+
+# Shinku ne vise que Windows. Ailleurs, ce paquet se réduit à un programme
+# qui le dit : l'espace de travail entier se compile et se teste donc aussi
+# sous Linux, sans installer de moteur web.
+[target.'cfg(windows)'.dependencies]
+# Fonctions par défaut écartées : les menus natifs et les permissions
+# modifiables en cours d'exécution ne servent pas ici.
+tauri = { version = "2", default-features = false, features = ["wry", "compression"] }
+tauri-plugin-single-instance = "2"
+# Le sélecteur de dossier de Windows, et les messages affichés quand Shinku
+# ne peut pas démarrer.
+rfd = { version = "0.17", default-features = false }

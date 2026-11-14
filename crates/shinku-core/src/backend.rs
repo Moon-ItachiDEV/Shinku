@@ -296,6 +296,12 @@ impl Backend {
         })
     }
 
+    /// Le mode d'affichage en vigueur. Réponse immédiate : la fenêtre s'en
+    /// sert pour prendre la bonne couleur avant même d'afficher sa page.
+    pub fn theme(&self) -> Theme {
+        self.desk().settings.theme
+    }
+
     /// Change le mode d'affichage.
     pub fn set_theme(&self, theme: Theme) -> Result<Settings, BackendError> {
         self.change_settings(|settings| settings.theme = theme)
@@ -589,8 +595,10 @@ mod tests {
         let backend = backend(&pc);
         backend.start_scan().unwrap();
         wait_for_results(&backend);
+        assert_eq!(backend.theme(), Theme::System);
         let settings = backend.set_theme(Theme::Light).unwrap();
         assert_eq!(settings.theme, Theme::Light);
+        assert_eq!(backend.theme(), Theme::Light);
         assert_eq!(pc.store.load().settings.theme, Theme::Light);
         // Changer d'apparence ne touche pas aux résultats.
         assert_eq!(backend.view().state, SessionState::Results);
@@ -611,6 +619,7 @@ mod tests {
         let error = backend.set_theme(Theme::Dark).unwrap_err();
         assert!(matches!(error, BackendError::SettingsNotSaved { .. }), "{error:?}");
         assert_eq!(backend.overview().settings.theme, Theme::System);
+        assert_eq!(backend.theme(), Theme::System);
 
         // Sans fichier de réglages du tout, même réponse.
         let backend =

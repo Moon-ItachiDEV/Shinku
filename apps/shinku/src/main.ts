@@ -4,6 +4,7 @@
 import { App, renderOutside } from './app.ts';
 import { insideTauri, tauriBackend } from './backend/tauri.ts';
 import type { Backend } from './backend/types.ts';
+import { silenceBrowser } from './shortcuts.ts';
 import { applyRememberedTheme } from './theme.ts';
 
 /**
@@ -33,9 +34,10 @@ async function main(): Promise<void> {
   }
 
   if (import.meta.env.PROD && import.meta.env.MODE !== 'demo') {
-    // Le menu du moteur web (Actualiser, Enregistrer sous…) n'a pas sa place
-    // dans une application. Copier un chemin sélectionné reste possible au clavier.
-    window.addEventListener('contextmenu', (event) => event.preventDefault());
+    // Dans l'application livrée, la page n'est plus un site : ni F5, ni
+    // Ctrl+P, ni menu du navigateur. En développement et dans la démo, tout
+    // reste disponible.
+    silenceBrowser(window);
   }
 
   const backend = await chooseBackend();

@@ -4,7 +4,7 @@ members = [
     "crates/shinku-core",
     "crates/shinku-helper",
     "crates/shinku-agent",
-    # "apps/shinku/src-tauri",
+    "apps/shinku/src-tauri",
 ]
 # `cargo build` et `cargo test` sans option visent le cœur, le helper et l'agent.
 # L'application Tauri a besoin de l'interface compilée (voir README) :
