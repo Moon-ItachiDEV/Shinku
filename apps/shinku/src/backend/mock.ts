@@ -136,7 +136,7 @@ function duplicateGroups(now: number): DuplicateGroup[] {
   ];
 }
 
-const delay = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 export function mockBackend(options: MockOptions): Backend {
   let settings: Settings = {
