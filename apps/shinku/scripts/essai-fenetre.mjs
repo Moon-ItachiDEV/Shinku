@@ -22,6 +22,7 @@ import { existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from '
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const { values: options } = parseArgs({
@@ -38,6 +39,7 @@ const { values: options } = parseArgs({
 });
 
 const onWindows = process.platform === 'win32';
+const LAUNCHER = fileURLToPath(new URL('lancer-en-utilisateur.ps1', import.meta.url));
 const SCAN_BUDGET = Number(options['attente-analyse']) * 1000;
 
 /** Ce que disent les codes de sortie de shinku.exe (src-tauri/src/app.rs). */
@@ -120,23 +122,58 @@ function freePort() {
   });
 }
 
-/** Lance le programme, WebView2 ouvrant son port de débogage. */
-function launch(program, port) {
-  const run = { child: null, error: null, exit: null };
+/** Vrai si cet essai tourne avec les droits d'un administrateur. */
+function elevated() {
+  if (!onWindows) {
+    return false;
+  }
+  // Niveau d'intégrité élevé ou système.
+  const groups = spawnSync('whoami', ['/groups', '/fo', 'csv', '/nh'], { encoding: 'utf8' }).stdout ?? '';
+  return /S-1-16-(12288|16384)/.test(groups);
+}
+
+/**
+ * Lance le programme, WebView2 ouvrant son port de débogage.
+ *
+ * Quand l'essai tourne en administrateur (les machines de l'intégration
+ * continue), le programme est lancé avec les droits ordinaires d'un
+ * utilisateur, par `lancer-en-utilisateur.ps1` : c'est ainsi que Shinku tourne
+ * sur le PC de quelqu'un.
+ */
+function launch(program, port, asUser) {
+  /** `pid` est le numéro du programme lui-même, connu une fois qu'il tourne. */
+  const run = { child: null, pid: null, error: null, exit: null, messages: '' };
+  const [command, parameters] = asUser
+    ? ['powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', LAUNCHER, '-Programme', program]]
+    : [program, []];
   try {
-    run.child = spawn(program, [], {
+    run.child = spawn(command, parameters, {
       env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
-      stdio: 'ignore',
+      stdio: asUser ? ['ignore', 'pipe', 'pipe'] : 'ignore',
     });
   } catch (error) {
     // Windows a refusé de créer le processus (manifeste invalide, par exemple).
     run.error = error;
     return run;
   }
+  if (asUser) {
+    const read = (chunk) => {
+      run.messages += chunk;
+      const announced = /^PID (\d+)/m.exec(run.messages);
+      if (announced !== null) {
+        run.pid = Number(announced[1]);
+      }
+    };
+    run.child.stdout.setEncoding('utf8').on('data', read);
+    run.child.stderr.setEncoding('utf8').on('data', read);
+  } else {
+    run.pid = run.child.pid ?? null;
+  }
   run.child.once('error', (error) => {
     run.error = error;
   });
-  run.child.once('exit', (code, signal) => {
+  // « close » plutôt que « exit » : tout ce que le lanceur a écrit est alors lu.
+  run.child.once('close', (code, signal) => {
     run.exit = { code, signal };
   });
   return run;
@@ -244,6 +281,9 @@ async function findPage(port, run, timeout) {
     if (run.error !== null) {
       const reason = refusalReason(options.programme);
       fail(`Windows refuse de lancer le programme (${run.error.message}).${reason === '' ? '' : `\n${reason}`}`);
+    }
+    if (run.exit !== null && run.pid === null) {
+      fail(`Windows refuse de lancer le programme.\n${run.messages.trim()}`);
     }
     if (run.exit !== null) {
       const meaning = EXIT_CODES.get(run.exit.code);
@@ -698,8 +738,8 @@ async function checkSettings(window) {
 }
 
 /** Un second lancement ne doit pas ouvrir une seconde fenêtre. */
-async function checkSingleWindow(port) {
-  const second = launch(options.programme, port);
+async function checkSingleWindow(port, asUser) {
+  const second = launch(options.programme, port, asUser);
   try {
     await until('le second lancement rend la main', 30_000, () => second.error !== null || second.exit !== null);
   } finally {
@@ -746,8 +786,9 @@ async function main() {
   }
 
   const port = await freePort();
-  say(`lancement de ${options.programme}`);
-  const run = launch(options.programme, port);
+  const asUser = elevated();
+  say(`lancement de ${options.programme}${asUser ? ', avec les droits ordinaires d’un utilisateur' : ''}`);
+  const run = launch(options.programme, port, asUser);
   let window = null;
   try {
     const page = await findPage(port, run, 90_000);
@@ -763,7 +804,7 @@ async function main() {
     await checkModules(window);
     await checkSettings(window);
     if (onWindows) {
-      await checkSingleWindow(port);
+      await checkSingleWindow(port, asUser);
     }
     await checkClose(window, run);
 
@@ -789,8 +830,8 @@ async function main() {
         quote([...window.problems, ...window.notes].join('\n'));
       }
       await window.capture('echec');
-    } else if (run.exit === null && run.child?.pid !== undefined) {
-      const texts = windowTexts(run.child.pid);
+    } else if (run.exit === null && run.pid !== null) {
+      const texts = windowTexts(run.pid);
       if (texts !== '') {
         say('le programme affichait :');
         quote(texts);
