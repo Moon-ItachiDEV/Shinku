@@ -17,13 +17,14 @@ use std::path::{Component, Path, PathBuf, Prefix, PrefixComponent};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO, FILE_FULL_DIR_INFO, FILE_ID_BOTH_DIR_INFO,
-    FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FileAttributeTagInfo, FileBasicInfo, FileFullDirectoryInfo, FileIdBothDirectoryInfo,
-    FileIdExtdDirectoryInfo, FileIdInfo, FileStandardInfo, GetFileInformationByHandleEx,
+    FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FileAttributeTagInfo,
+    FileBasicInfo, FileFullDirectoryInfo, FileIdBothDirectoryInfo, FileIdExtdDirectoryInfo,
+    FileIdInfo, FileStandardInfo, GetFileInformationByHandleEx,
 };
 
+use super::attributes::{ATTR_REPARSE_POINT, classify};
 use super::{
-    ATTR_REPARSE_POINT, EntryFlags, EntryKind, EntryMeta, Fingerprint, Identity, OpenError,
-    ReadDirError, classify, same_file_id,
+    EntryFlags, EntryKind, EntryMeta, Fingerprint, Identity, OpenError, ReadDirError, same_file_id,
 };
 use crate::model::{FileId, Timestamp};
 
@@ -235,16 +236,12 @@ fn read_u128(bytes: &[u8], offset: usize) -> Option<u128> {
 /// Décode l'entrée qui commence au début de `bytes`. Renvoie le décalage de
 /// l'entrée suivante (0 pour la dernière du bloc), le nom en UTF-16 et les
 /// métadonnées. `None` si le bloc est incohérent : on arrête alors de le lire.
-fn decode_entry(
-    bytes: &[u8],
-    class: ListClass,
-    name: &mut Vec<u16>,
-) -> Option<(usize, EntryMeta)> {
+fn decode_entry(bytes: &[u8], class: ListClass, name: &mut Vec<u16>) -> Option<(usize, EntryMeta)> {
     let name_offset = class.name_offset();
     let next = read_u32(bytes, OFF_NEXT)? as usize;
     let name_length = read_u32(bytes, OFF_NAME_LENGTH)? as usize;
     let name_bytes = bytes.get(name_offset..name_offset.checked_add(name_length)?)?;
-    if name_length % 2 != 0 || (next != 0 && next < name_offset + name_length) {
+    if !name_length.is_multiple_of(2) || (next != 0 && next < name_offset + name_length) {
         return None;
     }
     name.clear();
@@ -662,10 +659,7 @@ mod tests {
 
     #[test]
     fn display_paths_drop_the_verbatim_prefix() {
-        assert_eq!(
-            to_display_path(Path::new(r"\\?\C:\Users\Léa")),
-            Path::new(r"C:\Users\Léa")
-        );
+        assert_eq!(to_display_path(Path::new(r"\\?\C:\Users\Léa")), Path::new(r"C:\Users\Léa"));
         assert_eq!(to_display_path(Path::new(r"\\?\C:\")), Path::new(r"C:\"));
         assert_eq!(
             to_display_path(Path::new(r"\\?\UNC\serveur\partage\dossier")),

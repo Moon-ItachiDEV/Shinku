@@ -4,6 +4,9 @@
 //! ils décrivent ce que le moteur d'analyse attend de `shinku_core::fs`, quelle
 //! que soit l'implémentation.
 
+// Dans un test, un `unwrap` qui échoue est un test qui échoue : c'est voulu.
+#![allow(clippy::unwrap_used)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};

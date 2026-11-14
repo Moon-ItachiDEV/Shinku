@@ -28,9 +28,9 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
     FOLDERID_LocalAppDataLow, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile,
-    FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86,
-    FOLDERID_RoamingAppData, FOLDERID_SkyDrive, FOLDERID_Videos, FOLDERID_Windows,
-    KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath, SHQUERYRBINFO, SHQueryRecycleBinW,
+    FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_RoamingAppData,
+    FOLDERID_SkyDrive, FOLDERID_Videos, FOLDERID_Windows, KF_FLAG_DONT_VERIFY,
+    SHGetKnownFolderPath, SHQUERYRBINFO, SHQueryRecycleBinW,
 };
 use windows::core::{GUID, HSTRING};
 

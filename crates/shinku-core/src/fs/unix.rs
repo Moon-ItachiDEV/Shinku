@@ -12,9 +12,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf, PrefixComponent};
 
-use super::{
-    EntryFlags, EntryKind, EntryMeta, Fingerprint, Identity, OpenError, ReadDirError,
-};
+use super::{EntryFlags, EntryKind, EntryMeta, Fingerprint, Identity, OpenError, ReadDirError};
 use crate::model::{FileId, Timestamp};
 
 /// Traduit des métadonnées obtenues sans suivre de lien.

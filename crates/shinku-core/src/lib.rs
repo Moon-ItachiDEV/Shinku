@@ -8,6 +8,9 @@
 //! sur lui.
 
 pub mod fs;
+pub mod guard;
 pub mod model;
 pub mod platform;
+pub mod rules;
 pub mod scope;
+pub mod walk;
