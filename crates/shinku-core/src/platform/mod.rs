@@ -173,6 +173,70 @@ pub fn system() -> impl Environment {
     imp::SystemEnvironment::new()
 }
 
+/// Vrai si ce processus a reçu les droits d'un administrateur par une
+/// élévation : « Exécuter en tant qu'administrateur », ou un lancement depuis
+/// un programme lui-même élevé. Toujours faux hors de Windows.
+///
+/// La fenêtre de Shinku et son agent s'en servent pour refuser de démarrer :
+/// ils affichent une page web et travaillent sur le profil de l'utilisateur,
+/// deux choses qui n'ont rien à faire avec des droits d'administrateur. Élevé,
+/// le processus peut même tourner sous un autre compte, donc regarder un autre
+/// profil que celui de la personne assise devant l'écran.
+///
+/// Faux, en revanche, sur un PC où tout tourne déjà avec tous les droits
+/// (contrôle de compte désactivé, session du compte Administrateur intégré) :
+/// il n'y existe aucune autre façon de lancer Shinku.
+pub fn runs_elevated() -> bool {
+    elevated_launch(imp::own_rights(), imp::desktop_rights)
+}
+
+/// Les droits d'un processus, tels que Windows les décrit dans son jeton.
+// Hors de Windows, un processus est toujours ordinaire : seuls les tests
+// fabriquent les autres cas.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rights {
+    /// Les droits ordinaires d'un programme lancé normalement.
+    Standard,
+    /// Tous les droits, obtenus par une élévation : ce jeton est la moitié
+    /// « administrateur » d'une paire, l'autre moitié sert au quotidien.
+    Elevated,
+    /// Tous les droits, sans paire : le jeton ne dit pas, à lui seul, si le
+    /// reste de la session tourne avec les mêmes droits.
+    Unrestricted,
+}
+
+/// Ce qu'on sait du bureau de la session (l'Explorateur de fichiers).
+// Hors de Windows, il est toujours absent.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Desktop {
+    /// Il tourne avec ces droits.
+    Running(Rights),
+    /// Il existe, mais Windows refuse qu'on le regarde : il appartient à un
+    /// autre compte.
+    Unreachable,
+    /// Il n'y a pas de bureau (session sans interface, bureau remplacé).
+    Absent,
+}
+
+/// La décision de [`runs_elevated`], séparée des appels à Windows pour être
+/// testée partout.
+fn elevated_launch(own: Rights, desktop: impl FnOnce() -> Desktop) -> bool {
+    match own {
+        Rights::Standard => false,
+        Rights::Elevated => true,
+        // Tous les droits sans paire de jetons : c'est normal si toute la
+        // session est dans ce cas, et c'est une élévation si le bureau, lui,
+        // tourne avec des droits ordinaires ou sous un autre compte (un
+        // compte standard a saisi le mot de passe d'un administrateur).
+        Rights::Unrestricted => match desktop() {
+            Desktop::Running(Rights::Standard) | Desktop::Unreachable => true,
+            Desktop::Running(Rights::Elevated | Rights::Unrestricted) | Desktop::Absent => false,
+        },
+    }
+}
+
 /// Passe le fil d'exécution courant en priorité basse (processeur et disque)
 /// tant que la valeur rendue vit. Sans effet hors de Windows.
 pub fn background_priority() -> BackgroundPriority {
@@ -303,6 +367,21 @@ mod tests {
     }
 
     #[test]
+    fn only_a_real_elevation_counts_as_an_elevated_launch() {
+        let never = || -> Desktop { panic!("le bureau n'a pas à être consulté") };
+        assert!(!elevated_launch(Rights::Standard, never));
+        assert!(elevated_launch(Rights::Elevated, never));
+
+        // Tous les droits sans paire de jetons : tout dépend du bureau.
+        let with = |desktop| elevated_launch(Rights::Unrestricted, || desktop);
+        assert!(with(Desktop::Running(Rights::Standard)), "bureau ordinaire : élévation");
+        assert!(with(Desktop::Unreachable), "bureau d'un autre compte : élévation");
+        assert!(!with(Desktop::Running(Rights::Unrestricted)), "tout le PC a tous les droits");
+        assert!(!with(Desktop::Running(Rights::Elevated)), "bureau lui-même élevé");
+        assert!(!with(Desktop::Absent), "pas de bureau : rien à comparer");
+    }
+
+    #[test]
     fn a_static_environment_answers_what_it_was_given() {
         let environment = StaticEnvironment::new()
             .with_now(Timestamp::from_unix(1_700_000_000, 0))
@@ -341,5 +420,7 @@ mod tests {
         let _ = machine.recycle_bin();
         assert!(machine.parallelism() >= 1);
         let _priority = background_priority();
+        // Les tests peuvent tourner avec ou sans droits d'administrateur.
+        let _ = runs_elevated();
     }
 }

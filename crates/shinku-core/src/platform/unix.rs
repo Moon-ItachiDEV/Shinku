@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use super::{Environment, KnownFolder, RecycleBin, Volume};
+use super::{Desktop, Environment, KnownFolder, RecycleBin, Rights, Volume};
 use crate::fs::to_internal_path;
 use crate::model::Timestamp;
 
@@ -76,4 +76,13 @@ impl Environment for SystemEnvironment {
 
 pub(super) fn set_background_priority(_on: bool) -> bool {
     false
+}
+
+/// L'élévation est une notion de Windows : ici, un processus est toujours ordinaire.
+pub(super) fn own_rights() -> Rights {
+    Rights::Standard
+}
+
+pub(super) fn desktop_rights() -> Desktop {
+    Desktop::Absent
 }

@@ -9,10 +9,14 @@ use std::ffi::{OsString, c_void};
 use std::fs::OpenOptions;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, HANDLE};
+use windows::Win32::Security::{
+    GetTokenInformation, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TokenElevation, TokenElevationType,
+    TokenElevationTypeFull, TokenElevationTypeLimited,
+};
 use windows::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
@@ -23,7 +27,9 @@ use windows::Win32::System::Ioctl::{
     StorageDeviceSeekPenaltyProperty,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN, THREAD_MODE_BACKGROUND_END,
+    GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken,
+    PROCESS_QUERY_LIMITED_INFORMATION, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+    THREAD_MODE_BACKGROUND_END,
 };
 use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
@@ -32,9 +38,10 @@ use windows::Win32::UI::Shell::{
     FOLDERID_SkyDrive, FOLDERID_Videos, FOLDERID_Windows, KF_FLAG_DONT_VERIFY,
     SHGetKnownFolderPath, SHQUERYRBINFO, SHQueryRecycleBinW,
 };
+use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
 use windows::core::{GUID, HSTRING};
 
-use super::{Environment, KnownFolder, RecycleBin, Volume};
+use super::{Desktop, Environment, KnownFolder, RecycleBin, Rights, Volume};
 use crate::fs::{fold_path, to_internal_path};
 use crate::model::Timestamp;
 
@@ -255,9 +262,104 @@ pub(super) fn set_background_priority(on: bool) -> bool {
     unsafe { SetThreadPriority(GetCurrentThread(), mode) }.is_ok()
 }
 
+/// Ouvre, en lecture seule, le jeton qui porte les droits d'un processus.
+fn token_of(process: HANDLE) -> Option<OwnedHandle> {
+    let mut token = HANDLE::default();
+    // SAFETY: `process` est un handle valide pendant l'appel, et `token` une
+    // variable locale où Windows écrit le handle qu'il ouvre.
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }.ok()?;
+    // SAFETY: en cas de succès, `token` est un handle ouvert qui n'appartient
+    // qu'à cette fonction : `OwnedHandle` le fermera, une seule fois.
+    Some(unsafe { OwnedHandle::from_raw_handle(token.0) })
+}
+
+/// Lit dans un jeton une information qui tient en quatre octets.
+fn token_number(token: &OwnedHandle, class: TOKEN_INFORMATION_CLASS) -> Option<u32> {
+    let mut value = 0u32;
+    let mut written = 0u32;
+    // SAFETY: le handle vit autant que `token`. Windows écrit au plus les
+    // quatre octets annoncés, dans la variable locale `value`.
+    unsafe {
+        GetTokenInformation(
+            HANDLE(token.as_raw_handle()),
+            class,
+            Some((&raw mut value).cast()),
+            size_of::<u32>() as u32,
+            &raw mut written,
+        )
+    }
+    .ok()?;
+    (written as usize == size_of::<u32>()).then_some(value)
+}
+
+/// Les droits que porte un jeton.
+fn rights_of(token: &OwnedHandle) -> Rights {
+    let kind = token_number(token, TokenElevationType);
+    if kind == Some(TokenElevationTypeFull.0 as u32) {
+        return Rights::Elevated;
+    }
+    if kind == Some(TokenElevationTypeLimited.0 as u32) {
+        return Rights::Standard;
+    }
+    // Pas de paire de jetons : seul l'indicateur d'élévation renseigne. Sans
+    // réponse de Windows, on ne bloque personne.
+    match token_number(token, TokenElevation) {
+        Some(0) | None => Rights::Standard,
+        Some(_) => Rights::Unrestricted,
+    }
+}
+
+pub(super) fn own_rights() -> Rights {
+    // SAFETY: `GetCurrentProcess` rend un pseudo-handle toujours valide, qui
+    // ne se ferme pas.
+    let process = unsafe { GetCurrentProcess() };
+    token_of(process).map_or(Rights::Standard, |token| rights_of(&token))
+}
+
+pub(super) fn desktop_rights() -> Desktop {
+    // SAFETY: appel sans argument, qui rend un handle nul s'il n'y a pas de bureau.
+    let window = unsafe { GetShellWindow() };
+    if window.is_invalid() {
+        return Desktop::Absent;
+    }
+    let mut process_id = 0u32;
+    // SAFETY: `process_id` est une variable locale où Windows écrit un nombre.
+    unsafe { GetWindowThreadProcessId(window, Some(&raw mut process_id)) };
+    if process_id == 0 {
+        return Desktop::Absent;
+    }
+    // SAFETY: appel sans pointeur ; le droit demandé ne permet que de lire
+    // quelques informations sur le processus.
+    let process = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+    {
+        // SAFETY: handle ouvert à l'instant, qui n'appartient qu'à cette fonction.
+        Ok(process) => unsafe { OwnedHandle::from_raw_handle(process.0) },
+        // Refusé : le bureau appartient à un autre compte que ce processus.
+        Err(error) if error.code() == ERROR_ACCESS_DENIED.to_hresult() => {
+            return Desktop::Unreachable;
+        }
+        // Le bureau vient de s'arrêter : il n'y a plus rien à comparer.
+        Err(_) => return Desktop::Absent,
+    };
+    match token_of(HANDLE(process.as_raw_handle())) {
+        Some(token) => Desktop::Running(rights_of(&token)),
+        None => Desktop::Unreachable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_rights_of_this_process_and_of_the_desktop_can_be_read() {
+        // Les réponses dépendent de la façon dont les tests sont lancés (avec
+        // ou sans droits d'administrateur, avec ou sans bureau) : on vérifie
+        // seulement que les deux lectures aboutissent, et deux fois de suite
+        // à la même réponse.
+        assert_eq!(own_rights(), own_rights());
+        assert_eq!(desktop_rights(), desktop_rights());
+    }
 
     #[test]
     fn drive_letters_are_read_from_internal_paths() {
