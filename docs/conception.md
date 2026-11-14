@@ -82,7 +82,7 @@ changer un réglage.
 
 La liste des commandes existe en quatre endroits (le code Rust, `build.rs`, les
 permissions, `backend/tauri.ts`). Le test `tests/wiring.test.ts` vérifie
-qu'ils s'accordent, puisque la fenêtre ne peut pas tourner dans un test.
+qu'ils s'accordent, sans avoir à lancer la fenêtre.
 
 ### Écart avec le document d'architecture : l'avancement est demandé, pas poussé
 
@@ -179,6 +179,39 @@ Microsoft).
 Pour l'instant, l'installeur ne contient que `shinku.exe`. Le helper et l'agent
 y entreront avec leurs premières fonctions.
 
+### Le manifeste de `shinku.exe`
+
+Le manifeste (`apps/shinku/src-tauri/windows-manifest.xml`) dit à Windows ce
+que le programme attend de lui. `tauri-build` le recopie ligne par ligne dans
+les ressources de l'exécutable, ce qui abîme trois écritures pourtant
+correctes en XML : la déclaration `<?xml … ?>`, les lettres accentuées et les
+apostrophes. Le fichier s'en passe, et `build.rs` refuse de compiler s'il en
+contient.
+
+La première version installée sur un vrai PC ne démarrait pas pour cette
+raison (« configuration côte-à-côte incorrecte »). Tous les tests passaient,
+et Wine, moins strict que Windows, lançait le programme.
+
+### Essayé avant d'être publié
+
+Depuis, l'intégration continue installe l'installeur qu'elle vient de
+fabriquer et lance Shinku pour de bon
+(`apps/shinku/scripts/essai-fenetre.mjs`). La fenêtre doit s'ouvrir, analyser
+le disque de la machine, montrer chacun de ses écrans, enregistrer un réglage,
+refuser de s'ouvrir en double et se fermer. Une erreur dans la console de la
+page ou un message d'erreur à l'écran fait échouer l'essai. L'installeur
+n'est publié que s'il passe.
+
+L'essai lit la page et clique par le port de débogage de WebView2, demandé de
+l'extérieur par une variable d'environnement : `shinku.exe` n'a aucune option
+d'essai.
+
+Les machines de GitHub font tout tourner en administrateur. Shinku y est donc
+lancé avec un jeton filtré, comme celui que donne le contrôle de compte
+d'utilisateur (`apps/shinku/scripts/lancer-en-utilisateur.ps1`) : ce sont les
+droits qu'il a sur le PC de quelqu'un, et WebView2 n'écoute cette variable
+d'environnement que dans un programme sans droits d'administrateur.
+
 ## Avant une version publique
 
 - **Signature du code.** L'installeur et les exécutables ne sont pas signés.
@@ -189,6 +222,11 @@ y entreront avec leurs premières fonctions.
   l'utilisateur peut modifier est exactement ce que le document d'architecture
   interdit au helper. À remplacer par un effacement fait par `shinku.exe`
   lui-même, sans élévation.
+- **Port de débogage de WebView2.** Un programme qui tourne déjà sous le
+  compte de l'utilisateur peut lancer Shinku avec ce port ouvert, comme le
+  fait l'essai de la fenêtre, et piloter sa page. Il n'y gagne rien tant que
+  Shinku ne supprime rien et ne demande aucune élévation. À réexaminer avec
+  les premières suppressions et le helper.
 - **Helper et agent.** Lier leur bibliothèque d'exécution C++ de façon
   statique, comme le fait déjà `shinku.exe`, pour ne dépendre d'aucun
   composant à installer.

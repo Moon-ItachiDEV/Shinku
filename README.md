@@ -99,11 +99,23 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   ```
 
 - Le câblage de la fenêtre (commandes, permissions, politique de sécurité) est
-  vérifié à la lecture des fichiers par `apps/shinku/tests/wiring.test.ts`,
-  puisque la fenêtre elle-même ne peut pas tourner dans un test.
+  vérifié à la lecture des fichiers par `apps/shinku/tests/wiring.test.ts` :
+  une commande oubliée se voit sans Windows.
+- La fenêtre elle-même est essayée sur un vrai Windows, une fois installée :
+  `apps/shinku/scripts/essai-fenetre.mjs` lance `shinku.exe`, lit ce qu'il
+  affiche et clique comme le ferait quelqu'un (analyse, résultats, chaque
+  module, réglages, fermeture). Sur un PC d'essai, depuis `apps/shinku` :
+
+  ```sh
+  node scripts/essai-fenetre.mjs --programme "C:\Program Files\Shinku\shinku.exe" --captures captures
+  ```
+
+  Il mène une vraie analyse du disque et change un instant le mode
+  d'affichage enregistré.
 - L'intégration continue (`.github/workflows/ci.yml`) rejoue le tout sous
-  Linux, passe le code propre à Windows au lint, puis lance les tests du cœur
-  et fabrique l'installeur sur un vrai Windows.
+  Linux, passe le code propre à Windows au lint, puis, sur un vrai Windows,
+  lance les tests du cœur, fabrique l'installeur, l'installe et essaie la
+  fenêtre. L'installeur n'est publié que si cet essai passe.
 
 ## Pour aller plus loin
 

@@ -5,7 +5,8 @@
 #     compilation de l'interface.
 #   - « Lint de la cible Windows » (Linux) : le code propre à Windows, que le
 #     premier travail ne compile pas, passe au lint par compilation croisée.
-#   - « Windows » : les tests du cœur sur un vrai NTFS, puis l'installeur.
+#   - « Windows » : les tests du cœur sur un vrai NTFS, puis l'installeur,
+#     installé et essayé pour de bon avant d'être publié.
 #
 # Les minutes Windows comptent double sur un dépôt privé : tout ce qui peut
 # être vérifié sous Linux l'est sous Linux.
@@ -152,6 +153,28 @@ jobs:
       - name: Installeur
         working-directory: apps/shinku
         run: npm run tauri build
+
+      # L'installeur est essayé comme le ferait quelqu'un : installé, puis
+      # lancé. La fenêtre doit s'ouvrir, analyser le disque et montrer chacun
+      # de ses écrans. Sans cela, l'installeur n'est pas publié.
+      - name: Installation
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "L'installeur s'arrête avec le code $($install.ExitCode)." }
+
+      - name: Essai de la fenêtre
+        working-directory: apps/shinku
+        run: node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures"
+
+      - name: Publier les captures de la fenêtre
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-de-la-fenetre
+          path: ${{ runner.temp }}/captures
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Publier l'installeur
         uses: actions/upload-artifact@v4
