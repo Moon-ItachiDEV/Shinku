@@ -9,8 +9,10 @@
 
 pub mod fs;
 pub mod guard;
+pub mod hash;
 pub mod model;
 pub mod platform;
 pub mod rules;
+pub mod scan;
 pub mod scope;
 pub mod walk;
