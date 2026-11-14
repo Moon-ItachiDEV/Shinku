@@ -9,6 +9,10 @@
 // Le port de débogage est une fonction de WebView2, activée de l'extérieur
 // par une variable d'environnement : shinku.exe n'a aucune option d'essai.
 //
+// Shinku est essayé avec les droits ordinaires d'un utilisateur, comme sur le
+// PC de quelqu'un. Les machines de l'intégration continue font tout tourner en
+// administrateur : l'essai y lance le programme par `lancer-en-utilisateur.ps1`.
+//
 // À lancer sur une machine d'essai (celle de l'intégration continue) : il
 // mène une vraie analyse du disque et change un instant le mode d'affichage
 // enregistré.
@@ -35,12 +39,6 @@ const { values: options } = parseArgs({
     'attente-analyse': { type: 'string', default: '600' },
     /** Début de l'adresse de la page (pour mettre l'essai au point hors de Windows). */
     adresse: { type: 'string' },
-    /** Mise au point : « admin » lance le programme tel quel, même en administrateur. */
-    droits: { type: 'string' },
-    /** Mise au point : « brut » laisse au jeton son propriétaire et ses droits par défaut. */
-    jeton: { type: 'string' },
-    /** Mise au point : demande aussi le port de débogage par le registre de la machine. */
-    registre: { type: 'boolean', default: false },
   },
 });
 
@@ -150,12 +148,7 @@ function launch(program, port, asUser) {
   /** `pid` est le numéro du programme lui-même, connu une fois qu'il tourne. */
   const run = { child: null, pid: null, error: null, exit: null, messages: '' };
   const [command, parameters] = asUser
-    ? [
-        'powershell',
-        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', LAUNCHER, '-Programme', program].concat(
-          options.jeton === 'brut' ? ['-JetonBrut'] : [],
-        ),
-      ]
+    ? ['powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', LAUNCHER, '-Programme', program]]
     : [program, []];
   try {
     run.child = spawn(command, parameters, {
@@ -482,6 +475,15 @@ function readLayout() {
   };
 }
 
+/** Vrai tant qu'un écran entre en fondu ou qu'un élément glisse vers sa place. */
+function animating() {
+  return document.getAnimations().some((animation) => {
+    // Les animations sans fin (l'orbe qui respire) ne comptent pas.
+    const end = animation.effect?.getComputedTiming().endTime;
+    return animation.playState === 'running' && Number.isFinite(end);
+  });
+}
+
 /** L'avancement de l'analyse, tel que l'écran « Grand vide » le montre. */
 function readScan() {
   const text = (element) => (element?.innerText ?? '').replace(/\s+/g, ' ').trim();
@@ -603,6 +605,13 @@ class Window {
     }
     this.#shots += 1;
     const file = path.join(options.captures, `${String(this.#shots).padStart(2, '0')}-${name}.png`);
+    // Les écrans entrent en fondu : on attend qu'ils soient en place, pour
+    // que l'image montre ce que la personne voit. Pendant une analyse, la
+    // barre d'avancement ne s'arrête jamais : on n'attend pas plus de 2,5 s.
+    const settled = Date.now() + 2500;
+    while (Date.now() < settled && (await this.session.run(animating).catch(() => false))) {
+      await sleep(100);
+    }
     try {
       const { data } = await this.session.send('Page.captureScreenshot', { format: 'png' }, 15_000);
       writeFileSync(file, Buffer.from(data, 'base64'));
@@ -797,11 +806,7 @@ async function main() {
   }
 
   const port = await freePort();
-  const asUser = elevated() && options.droits !== 'admin';
-  const policy = ['HKLM\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments', '/v', path.basename(options.programme)];
-  if (options.registre) {
-    spawnSync('reg', ['add', ...policy, '/t', 'REG_SZ', '/d', `--remote-debugging-port=${port}`, '/f'], { stdio: 'inherit' });
-  }
+  const asUser = elevated();
   say(`lancement de ${options.programme}${asUser ? ', avec les droits ordinaires d’un utilisateur' : ''}`);
   const run = launch(options.programme, port, asUser);
   let window = null;
@@ -859,9 +864,6 @@ async function main() {
   } finally {
     window?.session.close();
     stop(run);
-    if (options.registre) {
-      spawnSync('reg', ['delete', ...policy, '/f'], { stdio: 'inherit' });
-    }
   }
 }
 

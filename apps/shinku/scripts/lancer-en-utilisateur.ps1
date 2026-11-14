@@ -14,9 +14,7 @@
 # La première ligne écrite est « PID <numéro> », celui du programme lancé.
 
 param(
-    [Parameter(Mandatory = $true)][string]$Programme,
-    # Essai : laisse au jeton le propriétaire et les droits par défaut du jeton d'origine.
-    [switch]$JetonBrut
+    [Parameter(Mandatory = $true)][string]$Programme
 )
 
 $ErrorActionPreference = 'Stop'
@@ -152,7 +150,7 @@ public static class StandardUser
     }
 
     // Lance le programme et rend son numero de processus.
-    public static int Start(string program, bool rawToken)
+    public static int Start(string program)
     {
         IntPtr own;
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, out own))
@@ -177,10 +175,7 @@ public static class StandardUser
         {
             throw new Win32Exception();
         }
-        if (!rawToken)
-        {
-            OwnWhatItCreates(standard);
-        }
+        OwnWhatItCreates(standard);
 
         STARTUPINFO startup = new STARTUPINFO();
         startup.cb = Marshal.SizeOf(startup);
@@ -211,7 +206,7 @@ public static class StandardUser
 '@
 
 try {
-    $id = [StandardUser]::Start($Programme, $JetonBrut.IsPresent)
+    $id = [StandardUser]::Start($Programme)
 } catch {
     # Windows a refusé de créer le processus : sa raison est le message.
     [Console]::Error.WriteLine($_.Exception.GetBaseException().Message)

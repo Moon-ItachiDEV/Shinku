@@ -15,22 +15,9 @@ permissions:
 
 jobs:
   essai:
-    name: Essai ${{ matrix.nom }}
+    name: Essai
     runs-on: windows-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Droits d'un utilisateur, jeton filtré tel quel, port demandé par la variable d'environnement.
-          - nom: utilisateur-brut
-            options: --jeton brut
-          # Droits d'un utilisateur, jeton remis d'aplomb, port demandé aussi par le registre.
-          - nom: utilisateur
-            options: --registre
-          # Droits d'administrateur, port demandé par le registre.
-          - nom: admin
-            options: --droits admin --registre
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +39,7 @@ jobs:
 
       - name: Essai de la fenêtre
         continue-on-error: true
-        run: node apps/shinku/scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures captures ${{ matrix.options }}
+        run: node apps/shinku/scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures captures
 
       - name: Captures, lisibles dans le journal
         if: always()
@@ -61,8 +48,7 @@ jobs:
           $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object MimeType -eq 'image/jpeg'
           $quality = New-Object System.Drawing.Imaging.EncoderParameters 1
           $quality.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality, [long]60)
-          $wanted = '00-bureau.png', '01-accueil.png', '03-resultats.png', '99-bureau-echec.png'
-          foreach ($file in Get-ChildItem captures -Filter *.png -ErrorAction SilentlyContinue | Where-Object { $wanted -contains $_.Name -or $_.Name -like '*echec*' }) {
+          foreach ($file in Get-ChildItem captures -Filter *.png -ErrorAction SilentlyContinue) {
             $image = [System.Drawing.Image]::FromFile($file.FullName)
             $width = [Math]::Min(1100, $image.Width)
             $height = [int]($image.Height * $width / $image.Width)
@@ -82,7 +68,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: captures-${{ matrix.nom }}
+          name: captures
           path: captures
           if-no-files-found: ignore
           retention-days: 3
