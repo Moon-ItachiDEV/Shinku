@@ -1,0 +1,102 @@
+# Essai provisoire : installe un installeur déjà fabriqué par l'intégration
+# continue et lance Shinku pour de bon. Sert à mettre au point
+# scripts/essai-fenetre.mjs sans recompiler à chaque fois. Cette branche ne
+# sera pas fusionnée.
+
+name: Essai de la fenêtre
+
+on:
+  push:
+    branches: ['claude/essai-fenetre']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  essai:
+    name: Installeur ${{ matrix.nom }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Celui qui ne démarrait pas sur un vrai PC.
+          - nom: ancien
+            run: 43601804683
+          # Celui dont le manifeste est corrigé.
+          - nom: nouveau
+            run: 43604882589
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Télécharger l'installeur
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download ${{ matrix.run }} --repo ${{ github.repository }} --name shinku-installeur-x64 --dir installeur
+
+      - name: La machine
+        run: |
+          (Get-CimInstance Win32_OperatingSystem).Caption
+          "session : $((Get-Process -Id $PID).SessionId)"
+          "UAC (EnableLUA) : $((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA)"
+          whoami /groups | Select-String 'Mandatory|Administrators'
+          Get-Process explorer -ErrorAction SilentlyContinue | Format-Table Id, SessionId, ProcessName
+          Add-Type -AssemblyName System.Windows.Forms
+          "écran : $([System.Windows.Forms.SystemInformation]::VirtualScreen)"
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          "WebView2 : $((Get-ItemProperty $key -ErrorAction SilentlyContinue).pv)"
+
+      - name: Installer
+        run: |
+          $setup = Get-ChildItem installeur -Filter *-setup.exe | Select-Object -First 1
+          "installeur : $($setup.Name), $($setup.Length) octets"
+          "SHA-256 : $((Get-FileHash $setup.FullName -Algorithm SHA256).Hash)"
+          $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          "code de sortie : $($install.ExitCode)"
+          Get-ChildItem "$env:ProgramFiles\Shinku" | Format-Table Name, Length
+
+      - name: Manifeste incorporé
+        run: python .github/essai/manifeste.py "$env:ProgramFiles\Shinku\shinku.exe"
+
+      - name: Essai de la fenêtre
+        continue-on-error: ${{ matrix.nom == 'ancien' }}
+        run: node apps/shinku/scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures captures
+
+      - name: Captures, lisibles dans le journal
+        if: always()
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object MimeType -eq 'image/jpeg'
+          $quality = New-Object System.Drawing.Imaging.EncoderParameters 1
+          $quality.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality, [long]60)
+          $wanted = '00-bureau.png', '01-accueil.png', '03-resultats.png', '99-bureau-echec.png'
+          foreach ($file in Get-ChildItem captures -Filter *.png -ErrorAction SilentlyContinue | Where-Object { $wanted -contains $_.Name -or $_.Name -like '*echec*' }) {
+            $image = [System.Drawing.Image]::FromFile($file.FullName)
+            $width = [Math]::Min(1100, $image.Width)
+            $height = [int]($image.Height * $width / $image.Width)
+            $small = New-Object System.Drawing.Bitmap $width, $height
+            $drawing = [System.Drawing.Graphics]::FromImage($small)
+            $drawing.InterpolationMode = 'HighQualityBicubic'
+            $drawing.DrawImage($image, 0, 0, $width, $height)
+            $stream = New-Object System.IO.MemoryStream
+            $small.Save($stream, $codec, $quality)
+            $text = [Convert]::ToBase64String($stream.ToArray())
+            "IMAGE-DEBUT $($file.Name) $($image.Width)x$($image.Height) $($stream.Length)"
+            for ($i = 0; $i -lt $text.Length; $i += 160) { "B64:" + $text.Substring($i, [Math]::Min(160, $text.Length - $i)) }
+            "IMAGE-FIN $($file.Name)"
+          }
+
+      - name: Publier les captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-${{ matrix.nom }}
+          path: captures
+          if-no-files-found: ignore
+          retention-days: 3
