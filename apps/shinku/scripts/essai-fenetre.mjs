@@ -35,6 +35,12 @@ const { values: options } = parseArgs({
     'attente-analyse': { type: 'string', default: '600' },
     /** Début de l'adresse de la page (pour mettre l'essai au point hors de Windows). */
     adresse: { type: 'string' },
+    /** Mise au point : « admin » lance le programme tel quel, même en administrateur. */
+    droits: { type: 'string' },
+    /** Mise au point : « brut » laisse au jeton son propriétaire et ses droits par défaut. */
+    jeton: { type: 'string' },
+    /** Mise au point : demande aussi le port de débogage par le registre de la machine. */
+    registre: { type: 'boolean', default: false },
   },
 });
 
@@ -144,7 +150,12 @@ function launch(program, port, asUser) {
   /** `pid` est le numéro du programme lui-même, connu une fois qu'il tourne. */
   const run = { child: null, pid: null, error: null, exit: null, messages: '' };
   const [command, parameters] = asUser
-    ? ['powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', LAUNCHER, '-Programme', program]]
+    ? [
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', LAUNCHER, '-Programme', program].concat(
+          options.jeton === 'brut' ? ['-JetonBrut'] : [],
+        ),
+      ]
     : [program, []];
   try {
     run.child = spawn(command, parameters, {
@@ -786,7 +797,11 @@ async function main() {
   }
 
   const port = await freePort();
-  const asUser = elevated();
+  const asUser = elevated() && options.droits !== 'admin';
+  const policy = ['HKLM\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments', '/v', path.basename(options.programme)];
+  if (options.registre) {
+    spawnSync('reg', ['add', ...policy, '/t', 'REG_SZ', '/d', `--remote-debugging-port=${port}`, '/f'], { stdio: 'inherit' });
+  }
   say(`lancement de ${options.programme}${asUser ? ', avec les droits ordinaires d’un utilisateur' : ''}`);
   const run = launch(options.programme, port, asUser);
   let window = null;
@@ -844,6 +859,9 @@ async function main() {
   } finally {
     window?.session.close();
     stop(run);
+    if (options.registre) {
+      spawnSync('reg', ['delete', ...policy, '/f'], { stdio: 'inherit' });
+    }
   }
 }
 

@@ -14,7 +14,9 @@
 # La première ligne écrite est « PID <numéro> », celui du programme lancé.
 
 param(
-    [Parameter(Mandatory = $true)][string]$Programme
+    [Parameter(Mandatory = $true)][string]$Programme,
+    # Essai : laisse au jeton le propriétaire et les droits par défaut du jeton d'origine.
+    [switch]$JetonBrut
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,13 +25,19 @@ Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 
 public static class StandardUser
 {
     const uint TOKEN_ALL_ACCESS = 0xF01FF;
     const uint LUA_TOKEN = 0x4;
+    const int TokenUser = 1;
+    const int TokenOwner = 4;
+    const int TokenDefaultDacl = 6;
     const int TokenIntegrityLevel = 25;
+    const int GENERIC_ALL = 0x10000000;
     const uint SE_GROUP_INTEGRITY = 0x20;
     const uint INFINITE = 0xFFFFFFFF;
     const string MEDIUM_INTEGRITY = "S-1-16-8192";
@@ -85,7 +93,14 @@ public static class StandardUser
     static extern uint GetLengthSid(IntPtr sid);
 
     [DllImport("advapi32.dll", SetLastError = true)]
-    static extern bool SetTokenInformation(IntPtr token, int kind, ref TOKEN_MANDATORY_LABEL value, uint size);
+    static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr buffer, uint size, out uint needed);
+
+    [DllImport("advapi32.dll", SetLastError = true, EntryPoint = "SetTokenInformation")]
+    static extern bool SetTokenLabel(IntPtr token, int kind, ref TOKEN_MANDATORY_LABEL value, uint size);
+
+    // TOKEN_OWNER et TOKEN_DEFAULT_DACL tiennent chacun en un pointeur.
+    [DllImport("advapi32.dll", SetLastError = true, EntryPoint = "SetTokenInformation")]
+    static extern bool SetTokenPointer(IntPtr token, int kind, ref IntPtr value, uint size);
 
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     static extern bool CreateProcessAsUser(
@@ -102,8 +117,42 @@ public static class StandardUser
 
     static IntPtr started;
 
+    // Donne au jeton le proprietaire et les droits par defaut d'un utilisateur
+    // ordinaire. Ceux du jeton d'origine designent le groupe Administrateurs,
+    // que le jeton filtre ne peut plus faire valoir : sans cela, le programme
+    // n'aurait pas acces aux objets qu'il cree lui-meme.
+    static void OwnWhatItCreates(IntPtr token)
+    {
+        uint needed;
+        GetTokenInformation(token, TokenUser, IntPtr.Zero, 0, out needed);
+        IntPtr buffer = Marshal.AllocHGlobal((int)needed);
+        if (!GetTokenInformation(token, TokenUser, buffer, needed, out needed))
+        {
+            throw new Win32Exception();
+        }
+        IntPtr user = Marshal.ReadIntPtr(buffer);
+        if (!SetTokenPointer(token, TokenOwner, ref user, (uint)IntPtr.Size))
+        {
+            throw new Win32Exception();
+        }
+
+        RawAcl acl = new RawAcl(GenericAcl.AclRevision, 2);
+        acl.InsertAce(0, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, GENERIC_ALL,
+            new SecurityIdentifier(user), false, null));
+        acl.InsertAce(1, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, GENERIC_ALL,
+            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), false, null));
+        byte[] bytes = new byte[acl.BinaryLength];
+        acl.GetBinaryForm(bytes, 0);
+        IntPtr dacl = Marshal.AllocHGlobal(bytes.Length);
+        Marshal.Copy(bytes, 0, dacl, bytes.Length);
+        if (!SetTokenPointer(token, TokenDefaultDacl, ref dacl, (uint)IntPtr.Size))
+        {
+            throw new Win32Exception();
+        }
+    }
+
     // Lance le programme et rend son numero de processus.
-    public static int Start(string program)
+    public static int Start(string program, bool rawToken)
     {
         IntPtr own;
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, out own))
@@ -124,9 +173,13 @@ public static class StandardUser
         label.Label.Sid = medium;
         label.Label.Attributes = SE_GROUP_INTEGRITY;
         uint size = (uint)Marshal.SizeOf(label) + GetLengthSid(medium);
-        if (!SetTokenInformation(standard, TokenIntegrityLevel, ref label, size))
+        if (!SetTokenLabel(standard, TokenIntegrityLevel, ref label, size))
         {
             throw new Win32Exception();
+        }
+        if (!rawToken)
+        {
+            OwnWhatItCreates(standard);
         }
 
         STARTUPINFO startup = new STARTUPINFO();
@@ -158,7 +211,7 @@ public static class StandardUser
 '@
 
 try {
-    $id = [StandardUser]::Start($Programme)
+    $id = [StandardUser]::Start($Programme, $JetonBrut.IsPresent)
 } catch {
     # Windows a refusé de créer le processus : sa raison est le message.
     [Console]::Error.WriteLine($_.Exception.GetBaseException().Message)

@@ -15,16 +15,22 @@ permissions:
 
 jobs:
   essai:
-    name: Installeur ${{ matrix.nom }}
+    name: Essai ${{ matrix.nom }}
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Celui dont le manifeste est corrigé.
-          - nom: nouveau
-            run: 43604882589
+          # Droits d'un utilisateur, jeton filtré tel quel, port demandé par la variable d'environnement.
+          - nom: utilisateur-brut
+            options: --jeton brut
+          # Droits d'un utilisateur, jeton remis d'aplomb, port demandé aussi par le registre.
+          - nom: utilisateur
+            options: --registre
+          # Droits d'administrateur, port demandé par le registre.
+          - nom: admin
+            options: --droits admin --registre
     steps:
       - uses: actions/checkout@v4
 
@@ -35,65 +41,18 @@ jobs:
       - name: Télécharger l'installeur
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download ${{ matrix.run }} --repo ${{ github.repository }} --name shinku-installeur-x64 --dir installeur
-
-      - name: La machine
-        run: |
-          (Get-CimInstance Win32_OperatingSystem).Caption
-          "session : $((Get-Process -Id $PID).SessionId)"
-          "UAC (EnableLUA) : $((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA)"
-          whoami /groups | Select-String 'Mandatory|Administrators'
-          Get-Process explorer -ErrorAction SilentlyContinue | Format-Table Id, SessionId, ProcessName
-          Add-Type -AssemblyName System.Windows.Forms
-          "écran : $([System.Windows.Forms.SystemInformation]::VirtualScreen)"
-          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-          "WebView2 : $((Get-ItemProperty $key -ErrorAction SilentlyContinue).pv)"
+        run: gh run download 43604882589 --repo ${{ github.repository }} --name shinku-installeur-x64 --dir installeur
 
       - name: Installer
         run: |
           $setup = Get-ChildItem installeur -Filter *-setup.exe | Select-Object -First 1
-          "installeur : $($setup.Name), $($setup.Length) octets"
           "SHA-256 : $((Get-FileHash $setup.FullName -Algorithm SHA256).Hash)"
           $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
           "code de sortie : $($install.ExitCode)"
-          Get-ChildItem "$env:ProgramFiles\Shinku" | Format-Table Name, Length
-
-      - name: Manifeste incorporé
-        run: python .github/essai/manifeste.py "$env:ProgramFiles\Shinku\shinku.exe"
-
-      # Sonde : le port de débogage s'ouvre-t-il quand le programme est lancé
-      # sans droits d'administrateur, ou quand la demande vient du registre de
-      # la machine ?
-      - name: Sonde du port de débogage
-        run: |
-          function Sonde($port, $lancer) {
-            & $lancer
-            Start-Sleep 20
-            $engines = Get-CimInstance Win32_Process -Filter "name = 'msedgewebview2.exe'"
-            foreach ($engine in $engines) {
-              if ($engine.CommandLine -notmatch '--type=') { "moteur $($engine.ProcessId), lance par $($engine.ParentProcessId) : $($engine.CommandLine)" }
-            }
-            "--- /json/version sur 127.0.0.1:$port"
-            curl.exe -s --max-time 5 "http://127.0.0.1:$port/json/version"
-            "--- fin"
-            taskkill /im shinku.exe /t /f
-            Start-Sleep 3
-          }
-          "=== sans droits d'administrateur (runas /trustlevel), par la variable d'environnement"
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
-          Sonde 9222 { runas /trustlevel:0x20000 "$env:ProgramFiles\Shinku\shinku.exe" }
-          Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-          "=== en administrateur, par le registre de la machine"
-          $key = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
-          New-Item -Path $key -Force | Out-Null
-          Set-ItemProperty -Path $key -Name 'shinku.exe' -Value '--remote-debugging-port=9223'
-          Sonde 9223 { Start-Process "$env:ProgramFiles\Shinku\shinku.exe" }
-          Remove-Item -Path $key -Recurse -Force
-          $global:LASTEXITCODE = 0
 
       - name: Essai de la fenêtre
         continue-on-error: true
-        run: node apps/shinku/scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures captures
+        run: node apps/shinku/scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures captures ${{ matrix.options }}
 
       - name: Captures, lisibles dans le journal
         if: always()
