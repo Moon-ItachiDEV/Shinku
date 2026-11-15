@@ -120,6 +120,10 @@ pub enum ModuleId {
 pub enum Lot {
     /// Lot automatique : coché d'office, part avec « Faire le vide ».
     Auto,
+    /// Lot au choix : proposé à côté du lot automatique, jamais coché
+    /// d'office. Il ne part avec « Faire le vide » que si l'utilisateur l'a
+    /// coché lui-même.
+    Optional,
     /// Lot « À vérifier » : jamais coché d'office, ouvre le module concerné.
     Review,
 }

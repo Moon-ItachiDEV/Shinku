@@ -11,7 +11,7 @@ import type {
   SessionView,
   Theme,
 } from './backend/types.ts';
-import { ALL_SELECTED, type AutoRowId, type Selection } from './model/scan.ts';
+import { type CleanRowId, type Selection, UNTOUCHED } from './model/scan.ts';
 
 /** Les entrées du menu latéral. */
 export type Route =
@@ -36,7 +36,7 @@ export interface AppState {
   pane: HomePane;
   overview: Overview | null;
   session: SessionView;
-  /** Catégories cochées sur l'écran Résultats. */
+  /** Les cases que la personne a changées sur l'écran Résultats. */
   selection: Selection;
   junk: JunkReport | null;
   large: LargeFilesPage | null;
@@ -67,7 +67,7 @@ export function initialState(now: number): AppState {
     pane: 'home',
     overview: null,
     session: IDLE_SESSION,
-    selection: { ...ALL_SELECTED },
+    selection: UNTOUCHED,
     junk: null,
     large: null,
     duplicates: null,
@@ -86,7 +86,7 @@ export interface Actions {
   showScan(): void;
   showResults(): void;
   showHome(): void;
-  toggle(row: AutoRowId): void;
+  toggle(row: CleanRowId): void;
   loadMore(list: 'large' | 'duplicates'): void;
   setTheme(theme: Theme): void;
   addFolder(): void;

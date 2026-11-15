@@ -80,9 +80,11 @@ impl Report {
                 items: self.junk.files,
                 state: CategoryState::Ready,
             },
+            // Des fichiers personnels : jamais cochés d'office. Une photo ou
+            // une vidéo en double ne part que si l'utilisateur l'a choisi.
             CategorySummary {
                 module: ModuleId::Duplicates,
-                lot: Lot::Auto,
+                lot: Lot::Optional,
                 risk: RiskLevel::B,
                 bytes: self.duplicates.bytes,
                 items: self.duplicates.copies,
@@ -111,7 +113,13 @@ impl Report {
             .filter(|category| category.lot == Lot::Auto)
             .map(|category| category.bytes)
             .sum();
-        Summary { complete: self.complete, finished: self.finished, auto_bytes, categories }
+        Summary {
+            complete: self.complete,
+            started: self.started,
+            finished: self.finished,
+            auto_bytes,
+            categories,
+        }
     }
 
     /// Une page de la liste des gros fichiers.
@@ -137,9 +145,14 @@ fn page<T>(items: &[T], offset: usize, limit: usize) -> &[T] {
 pub struct Summary {
     /// Faux tant que la recherche de doublons continue.
     pub complete: bool,
+    /// Début de l'analyse. Le rapport partiel et le rapport complet d'une
+    /// même analyse portent le même : c'est à lui que l'interface reconnaît
+    /// qu'une nouvelle analyse a remplacé la précédente.
+    pub started: Timestamp,
     /// Moment où ces résultats ont été établis.
     pub finished: Timestamp,
-    /// Total du lot automatique : ce que « Faire le vide » libérerait.
+    /// Total du lot automatique : ce que « Faire le vide » libère si
+    /// l'utilisateur ne touche à aucune case.
     pub auto_bytes: u64,
     /// Les catégories, dans l'ordre du nettoyage puis de la vérification.
     pub categories: Vec<CategorySummary>,
@@ -151,7 +164,7 @@ pub struct Summary {
 pub struct CategorySummary {
     /// Module concerné.
     pub module: ModuleId,
-    /// Lot automatique ou « À vérifier ».
+    /// Lot automatique, au choix ou « À vérifier ».
     pub lot: Lot,
     /// Niveau de suppression.
     pub risk: RiskLevel,

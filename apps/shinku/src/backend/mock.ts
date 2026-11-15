@@ -189,14 +189,14 @@ export function mockBackend(options: MockOptions): Backend {
   const duplicateBytes = () => groups().reduce((total, group) => total + group.reclaimable, 0);
   const duplicateCopies = () => groups().reduce((total, group) => total + group.files.length - 1, 0);
 
-  function summary(complete: boolean, finished: number): Summary {
+  function summary(complete: boolean, begun: number, finished: number): Summary {
     const large = largeFiles(finished);
     const categories: CategorySummary[] = [
       { module: 'recycleBin', lot: 'auto', risk: 'D', bytes: bin.bytes, items: bin.items, state: 'ready' },
       { module: 'junkFiles', lot: 'auto', risk: 'A', bytes: JUNK.bytes, items: JUNK.files, state: 'ready' },
       {
         module: 'duplicates',
-        lot: 'auto',
+        lot: 'optional',
         risk: 'B',
         bytes: complete ? duplicateBytes() : 0,
         items: complete ? duplicateCopies() : 0,
@@ -215,7 +215,7 @@ export function mockBackend(options: MockOptions): Backend {
     const autoBytes = categories
       .filter((entry) => entry.lot === 'auto')
       .reduce((total, entry) => total + entry.bytes, 0);
-    return { complete, finished, autoBytes, categories };
+    return { complete, started: begun, finished, autoBytes, categories };
   }
 
   function view(): SessionView {
@@ -254,7 +254,7 @@ export function mockBackend(options: MockOptions): Backend {
     return {
       state: complete ? 'results' : 'scanning',
       progress: { phase, ...base, workDone, workTotal },
-      summary: time >= WALK ? summary(complete, finished) : null,
+      summary: time >= WALK ? summary(complete, started, finished) : null,
       skipped: { folders: time >= WALK ? 3 : 0, refusedRoots: 0 },
       stale: Date.now() - finished > 10 * 60 * 1000,
     };

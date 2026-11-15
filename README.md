@@ -103,8 +103,9 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   une commande oubliée se voit sans Windows.
 - La fenêtre elle-même est essayée sur un vrai Windows, une fois installée :
   `apps/shinku/scripts/essai-fenetre.mjs` lance `shinku.exe`, lit ce qu'il
-  affiche et clique comme le ferait quelqu'un (analyse, résultats, chaque
-  module, réglages, fermeture). Sur un PC d'essai, depuis `apps/shinku` :
+  affiche et clique comme le ferait quelqu'un (analyse, résultats et cases
+  cochées d'office, chaque module, réglages, fermeture). Sur un PC d'essai,
+  depuis `apps/shinku` :
 
   ```sh
   node scripts/essai-fenetre.mjs --programme "C:\Program Files\Shinku\shinku.exe" --captures captures

@@ -498,6 +498,20 @@ function readScan() {
   };
 }
 
+/** Les lignes à cocher de l'écran Résultats, telles qu'elles s'affichent. */
+function readChoices() {
+  const text = (element) => (element?.innerText ?? '').replace(/[ \u00a0\u202f]+/g, ' ').trim();
+  return [...document.querySelectorAll('.main label.row')].map((row) => {
+    const box = row.querySelector('input[type=checkbox]');
+    return {
+      name: text(row.querySelector('.t1')),
+      value: text(row.querySelector('.val')),
+      checked: box?.checked === true,
+      locked: box?.disabled === true,
+    };
+  });
+}
+
 // ── L'essai ────────────────────────────────────────────────────────────────
 
 /** La fenêtre en cours d'essai. */
@@ -691,7 +705,45 @@ async function checkScan(window) {
   done('« Voir les résultats » affiche les résultats');
   quote(results.main);
   await window.healthy('sur les résultats');
+  await checkChoices(window);
+}
+
+/**
+ * Ce que « Faire le vide » emporterait sans que la personne ait rien choisi :
+ * les fichiers inutiles, jamais les doublons, qui sont ses propres fichiers.
+ */
+async function checkChoices(window) {
+  const choice = async (name) => (await window.session.run(readChoices)).find((row) => row.name === name);
+  for (const row of await window.session.run(readChoices)) {
+    say(`  ${row.checked ? '[x]' : '[ ]'} ${row.name} : ${row.value}${row.locked ? ' (case fermée)' : ''}`);
+  }
+  const [junk, duplicates] = [await choice('Fichiers inutiles'), await choice('Doublons')];
+  if (junk === undefined || duplicates === undefined) {
+    fail('les résultats ne montrent pas les lignes « Fichiers inutiles » et « Doublons »');
+  }
+  if (!junk.checked) {
+    fail('la ligne « Fichiers inutiles » devrait être cochée d’office');
+  }
+  if (duplicates.checked) {
+    fail('la ligne « Doublons » est cochée d’office : des fichiers personnels partiraient sans avoir été choisis');
+  }
+  done('les fichiers inutiles sont cochés d’office, les doublons ne le sont pas');
   await window.capture('resultats');
+
+  if (duplicates.locked) {
+    say('  la case « Doublons » est fermée : rien à cocher');
+    return;
+  }
+  // La personne coche les doublons, puis change d'avis.
+  for (const wanted of [true, false]) {
+    await window.click('Doublons', '.main label.row', 'Doublons');
+    await until(`la case « Doublons » est ${wanted ? 'cochée' : 'décochée'}`, 10_000, async () => {
+      const row = await choice('Doublons');
+      return row !== undefined && row.checked === wanted;
+    });
+  }
+  await window.healthy('après avoir coché puis décoché « Doublons »');
+  done('la case « Doublons » se coche et se décoche à la main');
 }
 
 async function checkModules(window) {

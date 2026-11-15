@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 
 use shinku_core::fs::{DirReader, to_display_path, to_internal_path};
 use shinku_core::hash::{CacheKey, CachedDigests, DigestCache, MemoryCache, NoCache};
-use shinku_core::model::{Lot, ModuleId, Timestamp, Trigger};
+use shinku_core::model::{Lot, ModuleId, RiskLevel, Timestamp, Trigger};
 use shinku_core::platform::{KnownFolder, RecycleBin, StaticEnvironment, Volume};
 use shinku_core::rules::JunkCategory;
 use shinku_core::scan::report::{CategoryState, DuplicateGroup, DuplicatesState, JunkLine, Report};
@@ -713,21 +713,56 @@ fn the_summary_lists_the_five_categories_of_the_big_clean() {
         ]
     );
     let lots: Vec<Lot> = summary.categories.iter().map(|category| category.lot).collect();
-    assert_eq!(lots, [Lot::Auto, Lot::Auto, Lot::Auto, Lot::Review, Lot::Review]);
+    assert_eq!(lots, [Lot::Auto, Lot::Auto, Lot::Optional, Lot::Review, Lot::Review]);
     assert_eq!((summary.categories[0].bytes, summary.categories[0].items), (5_000_000, 12));
     assert_eq!(summary.categories[1].items, 1);
     assert_eq!(summary.categories[2].items, 1);
     assert_eq!(summary.categories[3].items, 1);
     assert_eq!(summary.categories[4].state, CategoryState::Unavailable);
-    // Les gros fichiers ne partent jamais avec « Faire le vide ».
+    // Sans rien cocher de plus, « Faire le vide » ne prend ni les doublons,
+    // ni les gros fichiers.
+    assert!(report.duplicates.bytes > 0);
     assert_eq!(
         summary.auto_bytes,
-        5_000_000 + report.junk.bytes + report.duplicates.bytes,
-        "corbeille, fichiers inutiles et doublons"
+        5_000_000 + report.junk.bytes,
+        "la corbeille et les fichiers inutiles, rien d'autre"
     );
+    assert_eq!(summary.started, report.started);
     assert!(summary.complete);
     assert!(!report.is_stale(report.finished));
     assert!(report.is_stale(Timestamp::from_ticks(report.finished.ticks() + 11 * 60 * 10_000_000)));
+}
+
+/// Le cas qui inquiète : une vidéo de souvenirs gardée en double. Ses deux
+/// exemplaires sont de gros fichiers, et l'un est le doublon de l'autre.
+#[test]
+fn personal_files_are_never_ticked_by_default() {
+    let pc = Pc::new();
+    write(&pc.temp().join("vieux.tmp"), &noise(9000, 1));
+    let film = noise(300_000, 3);
+    write(&pc.profile.join("Videos").join("vacances.mkv"), &film);
+    pause();
+    write(&pc.documents().join("vacances (copie).mkv"), &film);
+    let report = pc.scan();
+    let summary = report.summary();
+
+    assert_eq!(report.large_files.count, 2, "deux gros fichiers");
+    assert_eq!(report.duplicates.copies, 1, "dont un de trop");
+    let group = group_with(&report, "vacances.mkv").expect("le groupe des deux vidéos");
+    // Un exemplaire reste toujours : le plus ancien.
+    assert_eq!(names(group), ["vacances.mkv", "vacances (copie).mkv"]);
+    assert_eq!(group.files.iter().map(|file| file.keep).collect::<Vec<_>>(), [true, false]);
+    assert_eq!(group.reclaimable, group.files[1].on_disk);
+
+    // Aucune catégorie de fichiers personnels n'est cochée d'office.
+    for category in &summary.categories {
+        if category.risk == RiskLevel::B {
+            assert_ne!(category.lot, Lot::Auto, "{:?} : des fichiers personnels", category.module);
+        }
+    }
+    // « Faire le vide », sans rien cocher de plus, laisse donc les deux vidéos.
+    assert!(report.duplicates.bytes > 0);
+    assert_eq!(summary.auto_bytes, report.junk.bytes);
 }
 
 #[test]

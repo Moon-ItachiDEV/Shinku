@@ -9,7 +9,7 @@ import { render } from 'lit-html';
 
 import type { Backend, BackendError, SessionView, Settings, Theme } from './backend/types.ts';
 import { fr } from './i18n/fr.ts';
-import { reportKey } from './model/scan.ts';
+import { reportKey, toggled } from './model/scan.ts';
 import { type Actions, type AppState, initialState, type Route } from './state.ts';
 import { applyTheme } from './theme.ts';
 import { appView } from './views/shell.ts';
@@ -392,7 +392,7 @@ export class App {
       }
     },
     showHome: () => this.set({ route: 'home', pane: 'home' }),
-    toggle: (row) => this.set({ selection: { ...this.state.selection, [row]: !this.state.selection[row] } }),
+    toggle: (row) => this.set({ selection: toggled(this.state.session.summary, this.state.selection, row) }),
     loadMore: (list) => void this.loadMore(list),
     setTheme: (theme) => void this.setTheme(theme),
     addFolder: () => void this.addFolder(),

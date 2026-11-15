@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use shinku_core::fs::to_display_path;
 use shinku_core::hash::MemoryCache;
-use shinku_core::model::{ByteSize, ModuleId, Trigger};
+use shinku_core::model::{ByteSize, Lot, ModuleId, Trigger};
 use shinku_core::platform::system;
 use shinku_core::scan::report::{CategoryState, Report};
 use shinku_core::scan::{Phase, ScanOptions, start};
@@ -114,9 +114,15 @@ fn print_report(report: &Report) {
             ModuleId::RecycleBin => "Corbeille",
             ModuleId::JunkFiles => "Fichiers inutiles",
             ModuleId::Duplicates => "Doublons",
-            ModuleId::LargeFiles => "Gros fichiers (à vérifier)",
-            ModuleId::Startup => "Démarrage (à vérifier)",
+            ModuleId::LargeFiles => "Gros fichiers",
+            ModuleId::Startup => "Démarrage",
             _ => continue,
+        };
+        // Seul le lot automatique compte dans le total annoncé au-dessus.
+        let name = match category.lot {
+            Lot::Auto => name.to_owned(),
+            Lot::Optional => format!("{name} (au choix)"),
+            Lot::Review => format!("{name} (à vérifier)"),
         };
         match category.state {
             CategoryState::Ready => println!(
