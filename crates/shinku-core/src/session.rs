@@ -320,5 +320,7 @@ mod tests {
         assert_eq!(json["skipped"]["folders"], 0);
         assert_eq!(json["summary"]["categories"][1]["module"], "junkFiles");
         assert_eq!(json["summary"]["categories"][1]["lot"], "auto");
+        assert_eq!(json["summary"]["categories"][2]["module"], "duplicates");
+        assert_eq!(json["summary"]["categories"][2]["lot"], "optional");
     }
 }

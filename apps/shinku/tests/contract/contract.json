@@ -42,6 +42,7 @@
     ],
     "lot": [
       "auto",
+      "optional",
       "review"
     ],
     "moduleId": [
@@ -260,7 +261,8 @@
           }
         ],
         "complete": "boolean",
-        "finished": "number"
+        "finished": "number",
+        "started": "number"
       }
     },
     "settings": {

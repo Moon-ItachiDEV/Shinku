@@ -3,28 +3,44 @@
 // Ces fonctions sont pures : elles ne font que lire la vue rendue par le cœur.
 // Elles sont testées sans navigateur (tests/scan.test.ts).
 
-import type { CategorySummary, ModuleId, SessionView, Summary } from '../backend/types.ts';
+import type { CategorySummary, Lot, ModuleId, SessionView, Summary } from '../backend/types.ts';
 import { percent } from '../format.ts';
 
 /** Les lignes de l'écran Analyse, dans l'ordre de l'écran. */
 export const SCAN_ROWS = ['junkFiles', 'duplicates', 'recycleBin', 'largeFiles', 'startup'] as const;
 export type ScanRowId = (typeof SCAN_ROWS)[number];
 
-/** Les catégories cochées d'office, dans l'ordre de l'écran Résultats. */
-export const AUTO_ROWS = ['junkFiles', 'duplicates', 'recycleBin'] as const;
-export type AutoRowId = (typeof AUTO_ROWS)[number];
+/** Les lignes à cocher de l'écran Résultats, dans l'ordre de l'écran. */
+export const CLEAN_ROWS = ['junkFiles', 'duplicates', 'recycleBin'] as const;
+export type CleanRowId = (typeof CLEAN_ROWS)[number];
 
-export type Selection = Record<AutoRowId, boolean>;
+/** Les cases que la personne a changées, et dans quel sens. */
+export type Choices = Partial<Record<CleanRowId, boolean>>;
 
-export const ALL_SELECTED: Selection = { junkFiles: true, duplicates: true, recycleBin: true };
+/**
+ * Les cases que la personne a changées sur l'écran Résultats.
+ *
+ * Tant qu'elle n'y touche pas, une case suit le cœur : seul le lot automatique
+ * est coché d'office, jamais des fichiers personnels. Une case qu'elle a
+ * cochée ne vaut que pour l'analyse où elle l'a fait ; une case qu'elle a
+ * décochée le reste à l'analyse suivante. Une nouvelle analyse ne coche donc
+ * jamais rien de plus que les cases d'office.
+ */
+export interface Selection {
+  /** Début de l'analyse où ces choix ont été faits (`Summary.started`), ou `null` s'il n'y en a aucun. */
+  analysis: number | null;
+  changed: Choices;
+}
+
+export const UNTOUCHED: Selection = { analysis: null, changed: {} };
 
 export type ScanRow =
   /** Pas encore commencé. */
   | { id: ScanRowId; status: 'waiting' }
   /** En cours. `bytes` : chiffre provisoire. `percent` : avancement connu. */
   | { id: ScanRowId; status: 'running'; bytes?: number; percent?: number }
-  /** Terminé. */
-  | { id: ScanRowId; status: 'done'; bytes: number; items: number }
+  /** Terminé. Seul le lot `auto` compte dans le grand chiffre de l'écran. */
+  | { id: ScanRowId; status: 'done'; bytes: number; items: number; lot: Lot }
   /** Non mesuré dans cette analyse. */
   | { id: ScanRowId; status: 'unavailable' }
   /** Module à venir. */
@@ -64,7 +80,7 @@ export function scanRows(view: SessionView): ScanRow[] {
     }
     switch (entry.state) {
       case 'ready':
-        return { id, status: 'done', bytes: entry.bytes, items: entry.items };
+        return { id, status: 'done', bytes: entry.bytes, items: entry.items, lot: entry.lot };
       case 'pending':
         return { id, status: 'running', percent: duplicatesPercent(view) };
       case 'unavailable':
@@ -101,11 +117,52 @@ export function ringFraction(view: SessionView): number | null {
   }
 }
 
+/**
+ * Vrai si la case de cette ligne peut être cochée : son chiffre est définitif,
+ * et sa catégorie peut partir avec « Faire le vide ».
+ */
+export function selectable(summary: Summary | null, id: CleanRowId): boolean {
+  const entry = category(summary, id);
+  return entry !== undefined && entry.state === 'ready' && entry.lot !== 'review';
+}
+
+/** Ceux des choix de la personne qui valent pour ce rapport. */
+function choices(summary: Summary, selection: Selection): Choices {
+  if (selection.analysis === summary.started) {
+    return selection.changed;
+  }
+  // Une autre analyse : seules les cases décochées suivent.
+  const kept: Choices = {};
+  for (const id of CLEAN_ROWS) {
+    if (selection.changed[id] === false) {
+      kept[id] = false;
+    }
+  }
+  return kept;
+}
+
+/** Vrai si cette ligne est cochée : le choix de la personne, sinon la case d'office. */
+export function selected(summary: Summary | null, selection: Selection, id: CleanRowId): boolean {
+  if (summary === null || !selectable(summary, id)) {
+    return false;
+  }
+  return choices(summary, selection)[id] ?? (category(summary, id)?.lot === 'auto');
+}
+
+/** La sélection après un clic sur la case de cette ligne. */
+export function toggled(summary: Summary | null, selection: Selection, id: CleanRowId): Selection {
+  if (summary === null || !selectable(summary, id)) {
+    return selection;
+  }
+  const changed = { ...choices(summary, selection), [id]: !selected(summary, selection, id) };
+  return { analysis: summary.started, changed };
+}
+
 /** Total des catégories cochées : ce que « Faire le vide » libérerait. */
 export function selectedBytes(summary: Summary | null, selection: Selection): number {
   let total = 0;
-  for (const id of AUTO_ROWS) {
-    if (selection[id]) {
+  for (const id of CLEAN_ROWS) {
+    if (selected(summary, selection, id)) {
       total += category(summary, id)?.bytes ?? 0;
     }
   }
@@ -114,7 +171,7 @@ export function selectedBytes(summary: Summary | null, selection: Selection): nu
 
 /** Largeurs relatives de la barre en trois segments. */
 export function segments(summary: Summary | null, selection: Selection): number[] {
-  return AUTO_ROWS.map((id) => (selection[id] ? (category(summary, id)?.bytes ?? 0) : 0));
+  return CLEAN_ROWS.map((id) => (selected(summary, selection, id) ? (category(summary, id)?.bytes ?? 0) : 0));
 }
 
 /** Une clé qui change dès que le rapport publié change. */

@@ -155,7 +155,9 @@ L'ancien fichier est gardé sous le nom `settings.illisible.json`.
   ne peut proposer Windows, Program Files ou la racine d'une bibliothèque.
 - Les règles épargnent ce qui a moins de sept jours. Dans `%TEMP%`, chaque
   élément est jugé en bloc : le dossier d'un installeur en cours n'est pas
-  vidé à moitié.
+  vidé à moitié. Ces dossiers ne sont comptés qu'à la fin du parcours :
+  pendant l'analyse, le chiffre « à libérer » reste donc en dessous de la
+  vérité, puis rattrape son retard d'un coup. À corriger avec le moteur.
 - Doublons : même taille, puis empreinte d'un extrait, puis empreinte BLAKE3
   du fichier entier. L'exemplaire le plus ancien de chaque groupe est gardé.
   La comparaison octet par octet aura lieu au moment de supprimer.
@@ -164,6 +166,31 @@ L'ancien fichier est gardé sous le nom `settings.illisible.json`.
   pas encore.
 - Gros fichiers : à partir de 3 Go. Shinku ne coche jamais un gros fichier à
   la place de l'utilisateur.
+
+### Écart avec le plan technique : les doublons ne sont pas cochés d'office
+
+Le plan technique rangeait les doublons dans le lot automatique, avec les
+fichiers inutiles et la corbeille : cochés d'office, ils partaient avec
+« Faire le vide ». La première analyse d'un vrai PC a proposé ainsi plus de
+25 Go de doublons. Des photos ou des vidéos gardées en double pouvaient donc
+partir sans que personne ne l'ait décidé. Le choix a été fait le
+15 novembre 2026 : des fichiers personnels ne sont jamais cochés d'office.
+
+- Le cœur range chaque catégorie du grand vide dans un lot (`Lot`) :
+  automatique (fichiers inutiles, corbeille), au choix (doublons) ou « À
+  vérifier » (gros fichiers, démarrage). Un test refuse qu'une catégorie de
+  fichiers personnels, de niveau B, entre dans le lot automatique.
+- Les doublons restent sur l'écran Résultats, avec leur total et une case
+  décochée. Le chiffre « à libérer » de l'analyse et le total des résultats ne
+  comptent que le lot automatique, puis ce que la personne coche elle-même.
+- Une case cochée à la main ne vaut que pour l'analyse où elle l'a été : des
+  doublons cochés tout à l'heure ne le sont plus après une nouvelle analyse.
+  Une case décochée, elle, le reste. Une nouvelle analyse ne coche donc jamais
+  rien de plus que les cases d'office. L'interface reconnaît une nouvelle
+  analyse à son heure de début (`Summary.started`).
+- La case des doublons reste fermée tant que leur recherche continue : on ne
+  coche pas ce qu'on ne connaît pas encore.
+- Dans chaque groupe, un exemplaire est toujours gardé : le plus ancien.
 
 ## L'installeur
 
@@ -197,10 +224,10 @@ et Wine, moins strict que Windows, lançait le programme.
 Depuis, l'intégration continue installe l'installeur qu'elle vient de
 fabriquer et lance Shinku pour de bon
 (`apps/shinku/scripts/essai-fenetre.mjs`). La fenêtre doit s'ouvrir, analyser
-le disque de la machine, montrer chacun de ses écrans, enregistrer un réglage,
-refuser de s'ouvrir en double et se fermer. Une erreur dans la console de la
-page ou un message d'erreur à l'écran fait échouer l'essai. L'installeur
-n'est publié que s'il passe.
+le disque de la machine, laisser les doublons décochés, montrer chacun de ses
+écrans, enregistrer un réglage, refuser de s'ouvrir en double et se fermer.
+Une erreur dans la console de la page ou un message d'erreur à l'écran fait
+échouer l'essai. L'installeur n'est publié que s'il passe.
 
 L'essai lit la page et clique par le port de débogage de WebView2, demandé de
 l'extérieur par une variable d'environnement : `shinku.exe` n'a aucune option

@@ -122,6 +122,7 @@ export const fr = typeset({
     notMeasured: 'Non mesurée',
     notSearched: 'Non recherchés',
     none: 'Rien',
+    optional: (bytes: number) => `${formatBytes(bytes)} au choix`,
     toReview: (bytes: number) => `${formatBytes(bytes)} à vérifier`,
     walked: (folders: number, files: number) =>
       `${countOf(folders, 'dossier', 'dossiers')}, ${countOf(files, 'fichier', 'fichiers')}`,
@@ -133,6 +134,7 @@ export const fr = typeset({
     canFree: 'Le grand vide peut libérer',
     junkHint: 'Caches, fichiers temporaires et journaux',
     duplicatesHint: 'Gardés dans la corbeille, récupérables',
+    duplicatesChoice: 'Copies de tes fichiers : à toi de les cocher',
     duplicatesPending: (done: number) => `Recherche en cours… ${done}${NBSP}%`,
     duplicatesNone: 'Aucun doublon trouvé',
     duplicatesOff: 'Non recherchés dans cette analyse',

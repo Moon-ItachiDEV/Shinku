@@ -77,9 +77,16 @@ export type ModuleId =
 
 export type CategoryState = 'ready' | 'pending' | 'unavailable';
 
+/**
+ * Le lot d'une catégorie du grand vide. `auto` : cochée d'office. `optional` :
+ * proposée, jamais cochée d'office (des fichiers personnels). `review` : à
+ * vérifier dans son module.
+ */
+export type Lot = 'auto' | 'optional' | 'review';
+
 export interface CategorySummary {
   module: ModuleId;
-  lot: 'auto' | 'review';
+  lot: Lot;
   risk: 'A' | 'B' | 'C' | 'D';
   bytes: number;
   items: number;
@@ -88,8 +95,11 @@ export interface CategorySummary {
 
 export interface Summary {
   complete: boolean;
+  /** Début de l'analyse (millisecondes Unix) : le même pour ses résultats partiels et complets. */
+  started: number;
   /** Moment où ces résultats ont été établis (millisecondes Unix). */
   finished: number;
+  /** Total du lot automatique : ce que « Faire le vide » libère si aucune case n'est changée. */
   autoBytes: number;
   categories: CategorySummary[];
 }

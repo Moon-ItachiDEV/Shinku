@@ -6,10 +6,10 @@ import type { LoadIssue } from '../backend/types.ts';
 import { formatBytes } from '../format.ts';
 import { fr } from '../i18n/fr.ts';
 import {
-  AUTO_ROWS,
-  type AutoRowId,
   binOverThreshold,
   category,
+  CLEAN_ROWS,
+  type CleanRowId,
   counterBytes,
   duplicatesPercent,
   ringFraction,
@@ -17,6 +17,8 @@ import {
   type ScanRowId,
   scanRows,
   segments,
+  selectable,
+  selected,
   selectedBytes,
 } from '../model/scan.ts';
 import type { Actions, AppState } from '../state.ts';
@@ -126,6 +128,20 @@ function welcomePane(state: AppState, actions: Actions): TemplateResult {
 
 // ── Analyse ────────────────────────────────────────────────────────────────
 
+/**
+ * Le chiffre d'une ligne terminée. Hors du lot automatique, il ne compte pas
+ * dans le grand chiffre « à libérer » : la ligne dit pourquoi.
+ */
+function doneText(row: Extract<ScanRow, { status: 'done' }>): string {
+  if (row.lot === 'auto') {
+    return formatBytes(row.bytes);
+  }
+  if (row.items === 0) {
+    return fr.scan.none;
+  }
+  return row.lot === 'optional' ? fr.scan.optional(row.bytes) : fr.scan.toReview(row.bytes);
+}
+
 function rowStatus(row: ScanRow): { indicator: TemplateResult; text: string; tone: string } {
   switch (row.status) {
     case 'waiting':
@@ -139,15 +155,8 @@ function rowStatus(row: ScanRow): { indicator: TemplateResult; text: string; ton
             : fr.scan.working;
       return { indicator: html`<span class="pip on breathe"></span>`, text, tone: 'run' };
     }
-    case 'done': {
-      const text =
-        row.id === 'largeFiles'
-          ? row.items === 0
-            ? fr.scan.none
-            : fr.scan.toReview(row.bytes)
-          : formatBytes(row.bytes);
-      return { indicator: html`<span class="tick">${checkIcon()}</span>`, text, tone: 'done' };
-    }
+    case 'done':
+      return { indicator: html`<span class="tick">${checkIcon()}</span>`, text: doneText(row), tone: 'done' };
     case 'unavailable':
       return {
         indicator: html`<span class="pip off"></span>`,
@@ -198,13 +207,13 @@ function scanPane(state: AppState, actions: Actions): TemplateResult {
 
 // ── Résultats ──────────────────────────────────────────────────────────────
 
-const SEGMENT_CLASS: Record<AutoRowId, string> = {
+const SEGMENT_CLASS: Record<CleanRowId, string> = {
   junkFiles: 'seg-1',
   duplicates: 'seg-2',
   recycleBin: 'seg-3',
 };
 
-function autoHint(state: AppState, id: AutoRowId): string {
+function rowHint(state: AppState, id: CleanRowId, checked: boolean): string {
   const entry = category(state.session.summary, id);
   switch (id) {
     case 'junkFiles':
@@ -216,7 +225,11 @@ function autoHint(state: AppState, id: AutoRowId): string {
       if (entry?.state === 'unavailable') {
         return fr.results.duplicatesOff;
       }
-      return entry === undefined || entry.items === 0 ? fr.results.duplicatesNone : fr.results.duplicatesHint;
+      if (entry === undefined || entry.items === 0) {
+        return fr.results.duplicatesNone;
+      }
+      // Des fichiers personnels : la ligne reste décochée tant que la personne ne l'a pas choisie.
+      return checked ? fr.results.duplicatesHint : fr.results.duplicatesChoice;
     case 'recycleBin': {
       if (entry === undefined || entry.state === 'unavailable') {
         return fr.results.binUnknown;
@@ -238,21 +251,22 @@ function resultsPane(state: AppState, actions: Actions): TemplateResult {
   const { summary, skipped, stale } = state.session;
   const grow = segments(summary, state.selection);
 
-  const autoRows = AUTO_ROWS.map((id) => {
+  const cleanRows = CLEAN_ROWS.map((id) => {
     const entry = category(summary, id);
     const measured = entry !== undefined && entry.state !== 'unavailable';
+    const checked = selected(summary, state.selection, id);
     return html`<label class="row">
       <input
         type="checkbox"
-        .checked=${state.selection[id] && measured}
-        ?disabled=${!measured}
+        .checked=${checked}
+        ?disabled=${!selectable(summary, id)}
         @change=${() => actions.toggle(id)}
       />
       <span class="box">${checkIcon()}</span>
       <span class="dot ${SEGMENT_CLASS[id]}" aria-hidden="true"></span>
       <span class="tx">
         <span class="t1">${ROW_NAMES[id]}</span>
-        <span class="t2">${autoHint(state, id)}</span>
+        <span class="t2">${rowHint(state, id, checked)}</span>
       </span>
       <span class="val"><span>${measured ? formatBytes(entry.bytes) : '–'}</span></span>
     </label>`;
@@ -298,14 +312,14 @@ function resultsPane(state: AppState, actions: Actions): TemplateResult {
           <p class="big">${formatBytes(selectedBytes(summary, state.selection))}</p>
           <div class="segbox">
             <div class="seg" aria-hidden="true">
-              ${AUTO_ROWS.map(
+              ${CLEAN_ROWS.map(
                 (id, index) =>
                   html`<span class=${SEGMENT_CLASS[id]} ${styles({ 'flex-grow': String(grow[index] ?? 0) })}></span>`,
               )}
             </div>
           </div>
         </div>
-        <div class="list">${autoRows}</div>
+        <div class="list">${cleanRows}</div>
         <p class="sub">${fr.results.review}</p>
         <div class="list">${reviewRows}</div>
         ${notes.length > 0 ? html`<p class="note">${notes.join(' ')}</p>` : nothing}

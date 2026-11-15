@@ -229,7 +229,7 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         "moduleId",
         variants!(ModuleId: JunkFiles, Duplicates, LargeFiles, RecycleBin, Startup, GameMode, Uninstall, Privacy),
     );
-    enums.insert("lot", variants!(Lot: Auto, Review));
+    enums.insert("lot", variants!(Lot: Auto, Optional, Review));
     enums.insert("risk", variants!(RiskLevel: A, B, C, D));
     enums.insert("categoryState", variants!(CategoryState: Ready, Pending, Unavailable));
     enums.insert(
