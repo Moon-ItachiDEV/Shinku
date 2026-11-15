@@ -46,23 +46,24 @@ un message.
 
 ## Entre la page et le cœur : le guichet
 
-La page ne parle qu'à `shinku_core::backend::Backend`, au travers de onze
+La page ne parle qu'à `shinku_core::backend::Backend`, au travers de quatorze
 commandes Tauri (`apps/shinku/src-tauri/src/commands.rs`). Chaque commande est
 une demande précise et bornée : lancer une analyse, lire une page de résultats,
-changer un réglage.
+changer un réglage, faire le vide.
 
 - Aucune commande ne reçoit un chemin à lire ou à écrire. Le dossier à exclure
   est choisi par l'utilisateur dans une boîte de dialogue de Windows, ouverte
   par le programme ; la page n'en fournit pas le chemin. Le seul chemin que la
   page envoie sert à retirer un dossier de la liste des exclusions, et n'est
-  comparé qu'à cette liste.
+  comparé qu'à cette liste. Le grand vide lui-même ne reçoit que trois cases
+  cochées et la date de l'analyse affichée.
 - Les pages de résultats sont plafonnées côté cœur (`PAGE_LIMIT`), quelle que
   soit la taille demandée.
 
 ### Ce que la page a le droit de faire
 
 - **Permissions Tauri au plus juste.** `capabilities/default.json` donne à la
-  fenêtre ses onze commandes et les cinq gestes de sa barre de titre. Rien
+  fenêtre ses quatorze commandes et les cinq gestes de sa barre de titre. Rien
   d'autre : ni fichiers, ni réseau, ni lancement de programmes, ni événements.
   Les commandes de l'application passent elles aussi par les permissions
   (`AppManifest::commands` dans `build.rs`) : une commande absente de la liste
@@ -138,9 +139,12 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | Emplacement | Contenu |
 | --- | --- |
 | `%APPDATA%\Shinku\settings.json` | Les réglages. |
+| `%APPDATA%\Shinku\journal.json` | Les grands vides : dates et totaux, aucun chemin. |
 | `%LOCALAPPDATA%\fr.shinku.app\` | Le cache de WebView2 pour la fenêtre. |
 
-Rien d'autre, et rien hors du PC. L'analyse ne modifie aucun fichier.
+Rien d'autre, et rien hors du PC. L'analyse ne modifie aucun fichier. Seul le
+grand vide supprime, et seulement ce que décrit la section qui lui est
+consacrée.
 
 Un fichier de réglages illisible n'est jamais écrasé en silence : Shinku repart
 des valeurs par défaut, le dit, et bloque l'analyse tant que l'utilisateur n'a
@@ -192,6 +196,54 @@ partir sans que personne ne l'ait décidé. Le choix a été fait le
   coche pas ce qu'on ne connaît pas encore.
 - Dans chaque groupe, un exemplaire est toujours gardé : le plus ancien.
 
+## Le grand vide
+
+C'est la seule phase qui supprime (`crates/shinku-core/src/clean`). La page
+envoie trois cases et la date de l'analyse qu'elle affiche ; la liste de ce
+qui part vient du rapport gardé par le cœur, et du disque tel qu'il est au
+moment d'écrire. L'ordre est fixe :
+
+1. **La corbeille est vidée.** C'est le seul geste sans retour.
+2. **Les fichiers inutiles sont supprimés directement.** L'étape refait le
+   parcours de l'analyse, avec les mêmes règles et les mêmes âges, à la date
+   de l'analyse : rien de plus récent qu'elle n'est touché. Chaque entrée est
+   ouverte sans suivre de lien, revérifiée, puis supprimée par ce même accès.
+   Un élément de `%TEMP%` jugé en bloc part en entier ou reste en entier.
+3. **Les copies en double partent à la corbeille**, jamais ailleurs.
+   L'exemplaire le plus ancien de chaque groupe est gardé, et reste ouvert
+   tant que ses copies partent. Chaque copie lui est comparée octet par octet
+   avant de partir.
+
+Les garde-fous, chacun avec son test :
+
+- des résultats de plus de dix minutes, ou d'une autre analyse que celle
+  affichée, sont refusés ;
+- un fichier modifié depuis l'analyse reste. Un fichier qu'une app utilise
+  reste aussi : rien n'est forcé, rien n'est remis au prochain démarrage ;
+- le cache d'une app ouverte n'est pas touché, et le bilan le dit ;
+- les « dossiers jamais touchés » et la liste d'interdits sont relus au moment
+  de supprimer. Une exclusion qui ne peut pas être appliquée arrête l'étape
+  avant qu'elle commence ;
+- quand la corbeille ne peut pas recevoir un fichier (désactivée, trop
+  petite), Windows le supprimerait définitivement. Shinku écoute l'opération
+  du shell (`platform/windows/shell.rs`) et l'arrête avant ;
+- après chaque envoi, l'étape regarde ce que la copie est devenue. Une copie
+  introuvable, ou un exemplaire gardé qui a changé, arrête l'étape : c'est
+  l'arrêt de sécurité, que le bilan annonce avec le nom du fichier ;
+- arrêter laisse finir le fichier en cours et rend un bilan partiel. Fermer
+  la fenêtre fait de même avant que le programme ne s'arrête.
+
+Le bilan sépare ce qui est libéré pour de bon de ce qui attend dans la
+corbeille, et n'annonce pas plus que ce que les disques ont gagné. Le journal
+note le début, l'avancement et la fin de chaque grand vide : un grand vide
+resté « en cours » au lancement suivant a été interrompu, et l'Accueil le dit
+jusqu'à la prochaine analyse.
+
+Côté page, « Faire le vide » ouvre d'abord une confirmation, qui liste
+exactement la demande qui sera envoyée. Une case dont la catégorie n'a rien à
+nettoyer ne compte pas. Seul le grand vide supprime pour l'instant : les
+boutons des modules restent inactifs.
+
 ## L'installeur
 
 NSIS, installation par machine dans Program Files, en français, avec l'amorce
@@ -224,8 +276,13 @@ et Wine, moins strict que Windows, lançait le programme.
 Depuis, l'intégration continue installe l'installeur qu'elle vient de
 fabriquer et lance Shinku pour de bon
 (`apps/shinku/scripts/essai-fenetre.mjs`). La fenêtre doit s'ouvrir, analyser
-le disque de la machine, laisser les doublons décochés, montrer chacun de ses
-écrans, enregistrer un réglage, refuser de s'ouvrir en double et se fermer.
+le disque de la machine, laisser les doublons décochés, demander confirmation
+avant de faire le vide, montrer chacun de ses écrans, enregistrer un réglage,
+refuser de s'ouvrir en double et se fermer. Sur cette machine jetable, il va
+au bout du grand vide (`--grand-vide`) : il dépose un faux fichier inutile et
+deux fichiers identiques, confirme, puis vérifie sur le disque que le premier
+est parti et qu'il reste un exemplaire des seconds. Les tests du cœur y
+essaient aussi la vraie corbeille de Windows (`SHINKU_ESSAI_CORBEILLE`).
 Une erreur dans la console de la page ou un message d'erreur à l'écran fait
 échouer l'essai. L'installeur n'est publié que s'il passe.
 
@@ -251,9 +308,10 @@ d'environnement que dans un programme sans droits d'administrateur.
   lui-même, sans élévation.
 - **Port de débogage de WebView2.** Un programme qui tourne déjà sous le
   compte de l'utilisateur peut lancer Shinku avec ce port ouvert, comme le
-  fait l'essai de la fenêtre, et piloter sa page. Il n'y gagne rien tant que
-  Shinku ne supprime rien et ne demande aucune élévation. À réexaminer avec
-  les premières suppressions et le helper.
+  fait l'essai de la fenêtre, et piloter sa page. Depuis le grand vide, il
+  peut ainsi faire supprimer ce que Shinku juge inutile, ce qu'il pouvait
+  déjà faire lui-même avec les mêmes droits ; il n'y gagne aucune élévation.
+  À réexaminer avec le helper.
 - **Helper et agent.** Lier leur bibliothèque d'exécution C++ de façon
   statique, comme le fait déjà `shinku.exe`, pour ne dépendre d'aucun
   composant à installer.

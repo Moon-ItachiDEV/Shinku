@@ -421,6 +421,70 @@ mod tests {
         assert!(matches!(recycle(Path::new("fichier.txt")), Err(RecycleError::Failed(_))));
     }
 
+    /// La vraie corbeille de Windows, sur des fichiers fabriqués pour l'essai.
+    ///
+    /// Sur demande seulement (`SHINKU_ESSAI_CORBEILLE=1`) : l'essai laisse
+    /// trois petits fichiers dans la corbeille de la machine. Avec
+    /// `SHINKU_ESSAI_VIDE_LA_CORBEILLE=1` en plus, il la vide ensuite pour de
+    /// bon : à réserver à une machine jetable.
+    #[test]
+    fn the_real_recycle_bin_receives_one_file_and_keeps_it() {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+
+        if std::env::var_os("SHINKU_ESSAI_CORBEILLE").is_none() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let root = to_internal_path(workspace.path()).unwrap();
+        let drive: String = to_display_path(&root).to_string_lossy().chars().take(3).collect();
+        let drive = HSTRING::from(drive);
+        let before = bin_of(&drive).expect("Windows mesure la corbeille de ce disque");
+
+        // Un fichier que le moteur tient ouvert, comme pendant le grand vide.
+        let photo = root.join("photo de l'essai.bin");
+        std::fs::write(&photo, [7u8; 5000]).unwrap();
+        let mut held = std::fs::OpenOptions::new().read(true).share_mode(0x7).open(&photo).unwrap();
+        recycle(&photo).expect("un fichier ouvert en partage part à la corbeille");
+        assert!(!photo.exists(), "le fichier a quitté sa place");
+        let mut content = Vec::new();
+        held.read_to_end(&mut content).unwrap();
+        assert_eq!(content, [7u8; 5000], "il existe toujours : il est dans la corbeille");
+        let after = bin_of(&drive).unwrap();
+        assert_eq!(after.items, before.items + 1, "la corbeille compte un élément de plus");
+        assert!(after.bytes >= before.bytes + 5000, "mesurée en tailles de fichiers");
+
+        // Une page web enregistrée : son dossier associé ne part pas avec elle.
+        let page = root.join("page.htm");
+        let attached = root.join("page_files");
+        std::fs::write(&page, b"<html></html>").unwrap();
+        std::fs::create_dir(&attached).unwrap();
+        std::fs::write(attached.join("image.png"), b"png").unwrap();
+        recycle(&page).unwrap();
+        assert!(!page.exists());
+        assert!(attached.join("image.png").exists(), "le dossier associé est resté");
+
+        // Un fichier tenu sans partage : il reste, et le refus se lit.
+        let busy = root.join("occupé.bin");
+        std::fs::write(&busy, b"x").unwrap();
+        let exclusive = std::fs::OpenOptions::new().read(true).share_mode(0).open(&busy).unwrap();
+        let refused = recycle(&busy);
+        assert!(matches!(refused, Err(RecycleError::Locked)), "{refused:?}");
+        assert!(busy.exists());
+        drop(exclusive);
+
+        // Un nom que le shell lirait autrement (point final) : jamais envoyé.
+        let dotted = root.join("note.");
+        assert!(recycle(&dotted).is_err());
+
+        if std::env::var_os("SHINKU_ESSAI_VIDE_LA_CORBEILLE").is_some() {
+            empty_bins(vec![drive.to_string()]).expect("la corbeille se vide");
+            assert_eq!(bin_of(&drive).map(|bin| bin.items), Some(0));
+            // Vidée, elle a lâché le fichier que l'essai tenait encore.
+            drop(held);
+        }
+    }
+
     #[test]
     fn the_shell_thread_gives_back_what_the_work_returns() {
         // Sous Wine comme sous Windows, COM s'initialise sur un fil neuf.

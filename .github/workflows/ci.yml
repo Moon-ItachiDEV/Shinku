@@ -140,7 +140,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # La machine est jetable : les tests y essaient aussi la vraie corbeille
+      # de Windows, sur des fichiers qu'ils fabriquent, puis la vident.
       - name: Tests du cœur sur un vrai NTFS
+        env:
+          SHINKU_ESSAI_CORBEILLE: 1
+          SHINKU_ESSAI_VIDE_LA_CORBEILLE: 1
         run: cargo test --locked -p shinku-core -p shinku-helper -p shinku-agent
 
       - name: Dépendances de l'interface
@@ -155,8 +160,10 @@ jobs:
         run: npm run tauri build
 
       # L'installeur est essayé comme le ferait quelqu'un : installé, puis
-      # lancé. La fenêtre doit s'ouvrir, analyser le disque et montrer chacun
-      # de ses écrans. Sans cela, l'installeur n'est pas publié.
+      # lancé. La fenêtre doit s'ouvrir, analyser le disque, montrer chacun de
+      # ses écrans, puis faire le vide pour de bon (la machine est jetable) :
+      # l'essai vérifie sur le disque ce qui est parti et ce qui est resté.
+      # Sans cela, l'installeur n'est pas publié.
       - name: Installation
         run: |
           $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
@@ -165,7 +172,7 @@ jobs:
 
       - name: Essai de la fenêtre
         working-directory: apps/shinku
-        run: node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures"
+        run: node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures" --grand-vide
 
       - name: Publier les captures de la fenêtre
         if: always()
