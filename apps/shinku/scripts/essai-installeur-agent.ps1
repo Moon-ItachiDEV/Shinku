@@ -446,6 +446,12 @@ try {
 } catch {
     $exitCode = 1
     Say "ECHEC : $($_.Exception.Message)"
+    if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
+        foreach ($where in ("$($_.InvocationInfo.PositionMessage)" -split "`r?`n")) { if ("$where".Trim()) { Say "  $where" } }
+    }
+    if ($_.ScriptStackTrace) {
+        foreach ($where in ("$($_.ScriptStackTrace)" -split "`r?`n")) { if ("$where".Trim()) { Say "  $where" } }
+    }
     Say 'ce que la machine montrait :'
     try {
         Say "  dossier d'installation : $(Describe-Dir $Dossier)"
