@@ -44,6 +44,7 @@ public static class StandardUser
     const int GENERIC_ALL = 0x10000000;
     const uint SE_GROUP_INTEGRITY = 0x20;
     const uint INFINITE = 0xFFFFFFFF;
+    const uint NORMAL_PRIORITY_CLASS = 0x20;
     const string MEDIUM_INTEGRITY = "S-1-16-8192";
 
     [StructLayout(LayoutKind.Sequential)]
@@ -189,7 +190,11 @@ public static class StandardUser
         PROCESS_INFORMATION created;
         StringBuilder commandLine = new StringBuilder("\"" + program + "\"" + (arguments.Length > 0 ? " " + arguments : ""));
         // Sans bloc d'environnement : le programme reçoit celui de ce processus.
-        if (!CreateProcessAsUser(standard, program, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0,
+        // Priorité normale demandée en toutes lettres : sans elle, le programme
+        // hériterait de la priorité basse que les machines de l'intégration
+        // continue donnent à leurs étapes, alors que sur le PC de quelqu'un il
+        // part en priorité normale.
+        if (!CreateProcessAsUser(standard, program, commandLine, IntPtr.Zero, IntPtr.Zero, false, NORMAL_PRIORITY_CLASS,
                 IntPtr.Zero, null, ref startup, out created))
         {
             throw new Win32Exception();
