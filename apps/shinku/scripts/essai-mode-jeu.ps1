@@ -90,16 +90,16 @@ function Fail([string]$Message) { throw $Message }
 # l'intégration continue le relit si cet essai a été interrompu.
 # Chaque processus lancé est noté avec son chemin et son heure de départ (en
 # ticks UTC) : on ne l'arrêtera que si les deux correspondent encore.
-$State = @{ scheme = ''; settings = $false; game = $false; agent = ''; procs = @() }
+$State = @{ scheme = ''; settings = $false; game = $false; agent = ''; procs = @(); sddl = ''; sddlChanged = $false }
 
 function Save-State {
     New-Item -ItemType Directory -Force -Path $Work | Out-Null
     $entries = @($State.procs | ForEach-Object {
         '{{"id":{0},"path":{1},"start":"{2}"}}' -f $_.id, (Json-String $_.path), $_.start
     })
-    $text = '{{"scheme":"{0}","settings":{1},"game":{2},"agent":{3},"procs":[{4}]}}' -f `
+    $text = '{{"scheme":"{0}","settings":{1},"game":{2},"agent":{3},"procs":[{4}],"sddl":{5},"sddlChanged":{6}}}' -f `
         $State.scheme, $State.settings.ToString().ToLower(), $State.game.ToString().ToLower(), `
-        (Json-String $State.agent), ($entries -join ',')
+        (Json-String $State.agent), ($entries -join ','), (Json-String $State.sddl), $State.sddlChanged.ToString().ToLower()
     [IO.File]::WriteAllText($StateFile, $text, (New-Object System.Text.UTF8Encoding $false))
 }
 
@@ -109,6 +109,24 @@ function Active-Scheme {
         return $Matches[1].ToLower()
     }
     Fail "powercfg ne donne pas le mode d'alimentation actif : $text"
+}
+
+# La description de sécurité de l'action « changer de mode d'alimentation »
+# (SDDL, une ligne), ou $null si la commande n'existe pas ou ne la donne pas.
+function Get-ActionSddl {
+    try {
+        $lines = @(& cmd.exe /c 'powercfg /getsecuritydescriptor ActionSetActive 2>&1')
+        foreach ($line in $lines) {
+            $text = "$line".Trim()
+            if ($text -match '^O:') { return $text }
+        }
+    } catch { }
+    return $null
+}
+
+function Test-Administrator {
+    ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function Scheme-Name([string]$Guid) {
@@ -210,6 +228,17 @@ function Restore-Everything {
         }
     }
     Say '  réglages et journal d''origine remis'
+    # La description de sécurité de l'alimentation, si l'essai l'a changée : remise
+    # telle quelle, et relue. Si elle n'est pas identique, l'état reste sur le
+    # disque (le prochain essai ou -Restaurer réessaiera) et on échoue.
+    if ($saved.sddlChanged -and $saved.sddl) {
+        & powercfg /setsecuritydescriptor ActionSetActive ([string]$saved.sddl) | Out-Null
+        $now = Get-ActionSddl
+        if ($now -cne [string]$saved.sddl) {
+            throw "la description de sécurité de l'alimentation n'est pas revenue à l'identique : « $now » au lieu de « $($saved.sddl) »"
+        }
+        Say '  description de sécurité de l''alimentation remise, relue à l''identique'
+    }
     Remove-Item -Force $StateFile -ErrorAction SilentlyContinue
     # Les copies des réglages de la personne ne restent pas dans le dossier temporaire.
     Clean-Work
@@ -419,6 +448,8 @@ function Wait-For([string]$What, [int]$PingId, [scriptblock]$Test) {
 
 # ── L'essai ────────────────────────────────────────────────────────────────
 
+$OpenedLine = "machine mise dans l'état d'un Windows 11 : un compte ordinaire peut changer l'alimentation"
+$Opened = $false
 $NotProved = "cette machine refuse le changement d'alimentation à un compte ordinaire : le passage en Performances élevées n'est pas prouvé ici"
 $exitCode = 0
 $probeOk = $false
@@ -474,14 +505,57 @@ try {
         Done "sonde : $(if ($probeOk) { 'un compte ordinaire PEUT changer l''alimentation' } else { 'un compte ordinaire NE PEUT PAS changer l''alimentation' }) ; alimentation remise en « Utilisation normale »"
         # Pour le compte rendu : qui a le droit, et qui est ce compte ordinaire.
         Say 'sécurité de l''action SetActive (powercfg /getsecuritydescriptor ActionSetActive) :'
-        try {
-            $descriptor = @(& cmd.exe /c 'powercfg /getsecuritydescriptor ActionSetActive 2>&1')
-            foreach ($line in $descriptor) { if ("$line".Trim()) { Say "  $line" } }
-            Say "  (code $LASTEXITCODE)"
-        } catch { Say "  commande impossible : $($_.Exception.Message)" }
+        $sddl = Get-ActionSddl
+        if ($null -eq $sddl) {
+            try {
+                foreach ($line in @(& cmd.exe /c 'powercfg /getsecuritydescriptor ActionSetActive 2>&1')) { if ("$line".Trim()) { Say "  $line" } }
+            } catch { Say "  commande impossible : $($_.Exception.Message)" }
+        } else {
+            Say "  $sddl"
+        }
         $groups = Invoke-AsUser 'sonde-groupes' 'whoami /groups'
         Say "groupes du jeton ordinaire (whoami /groups, code $($groups.ExitCode)) :"
         foreach ($line in ($groups.Output -split "`r?`n")) { if ($line.Trim()) { Say "  $line" } }
+
+        # Sur un Windows Server (les machines de GitHub), les comptes ordinaires
+        # (BU) n'ont que la lecture sur cette action ; sur un Windows 11 de
+        # particulier, ils peuvent changer de mode d'alimentation, et c'est la cible
+        # du produit. Si la sonde a échoué et que l'essai tourne en administrateur,
+        # on met la machine dans l'état d'un Windows 11 : BU reçoit l'écriture
+        # (KRKW au lieu de KR), les autres entrées ne bougent pas. Le descripteur
+        # d'origine est noté dans etat.json avant le changement, et remis à la fin.
+        $bu = '(A;CI;KR;;;BU)'
+        if (-not $probeOk) {
+            if (-not (Test-Administrator)) {
+                Say 'sonde refusée, mais l''essai ne tourne pas en administrateur : la description de sécurité n''est pas changée'
+            } elseif ($null -eq $sddl) {
+                Say 'sonde refusée, mais la description de sécurité n''est pas lisible : rien n''est changé'
+            } elseif (($sddl.Split(@($bu), [StringSplitOptions]::None).Count - 1) -ne 1) {
+                Say "sonde refusée, mais la description de sécurité n'a pas exactement une entrée $bu : rien n'est changé"
+            } else {
+                $opened = $sddl.Replace($bu, '(A;CI;KRKW;;;BU)')
+                $State.sddl = $sddl
+                $State.sddlChanged = $true
+                Save-State
+                & powercfg /setsecuritydescriptor ActionSetActive $opened | Out-Null
+                $written = Get-ActionSddl
+                Say "description de sécurité posée : $written"
+                if ($written -cne $opened) { Fail "la description de sécurité relue n'est pas celle qui a été posée (« $written »)" }
+                $probe = Invoke-AsUser 'sonde-alimentation-2' "powercfg /setactive $HighPerformance"
+                $afterProbe = Active-Scheme
+                $probeOk = ($probe.ExitCode -eq 0) -and ($afterProbe -eq $HighPerformance)
+                Say "seconde sonde, BU ayant l'écriture : code $($probe.ExitCode), alimentation ensuite : $(Scheme-Name $afterProbe)"
+                if ($probe.Output) { Say "  sortie : $($probe.Output -replace '\s+', ' ')" }
+                & powercfg /setactive $Balanced | Out-Null
+                if ((Active-Scheme) -ne $Balanced) { Fail "impossible de remettre l'alimentation en « Utilisation normale » après la seconde sonde" }
+                if ($probeOk) {
+                    $Opened = $true
+                    Say $OpenedLine
+                } else {
+                    Say 'même avec l''écriture donnée à BU, un compte ordinaire ne peut pas changer l''alimentation sur cette machine'
+                }
+            }
+        }
     } else {
         Say "sonde : sans « Performances élevées » sur la machine, il n'y a rien à sonder"
     }
@@ -579,6 +653,7 @@ try {
         Write-Host "::warning title=Alimentation non prouvée::$NotProved"
     } else {
         Say 'Essai réussi.'
+        if ($Opened) { Say "  $OpenedLine (description de sécurité remise à la fin)" }
     }
 } catch {
     $exitCode = 1

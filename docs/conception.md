@@ -490,10 +490,12 @@ du PC ne l'est pas (voir « Limites connues »).
   de force, s'il en reste un en marche après la sortie de celui du compte. Leur
   journal est repris au prochain démarrage de leur agent (`--demarrage` remet
   d'abord en place la partie restée au journal).
-- **Une mise à jour qui passe par le désinstalleur** garde la valeur `Run`
-  quand Tauri la lance avec `/UPDATE` (le crochet envoie alors `--quitter`, pas
-  `--retirer`). Le choix « désinstaller avant d'installer » de la page de
-  réinstallation, lui, lance l'ancien désinstalleur sans `/UPDATE` : la valeur
+- **Le module de mise à jour de Tauri ne passe pas par le désinstalleur** : il
+  installe par-dessus, et la valeur `Run` n'est pas touchée. Le crochet sait
+  pourtant garder la valeur `Run` d'un désinstalleur lancé avec `/UPDATE`
+  (`--quitter` au lieu de `--retirer`), mais Tauri ne le lance jamais ainsi : la
+  page de réinstallation saute avant d'ajouter `/UPDATE`. Le choix « désinstaller
+  avant d'installer » de cette page lance l'ancien désinstalleur sans `/UPDATE` : la valeur
   `Run` est effacée, et le mode jeu ne démarre plus avec Windows tant que la
   personne n'a pas rouvert Shinku (qui la réécrit si le mode automatique est
   allumé).
@@ -586,10 +588,13 @@ Ce que font les crochets :
   alors le fichier. Une fois la fenêtre fermée, rien ne le relance plus.
 - **À la désinstallation**, `--retirer` si c'est une vraie désinstallation,
   `--quitter` si la variable `$UpdateMode` de Tauri vaut 1 (désinstalleur lancé
-  avec `/UPDATE` : la valeur `Run` doit survivre à la mise à jour). Le fichier de
+  avec `/UPDATE`, ce que Tauri ne fait pas aujourd'hui : la branche est sans
+  danger et juste si cela change). Le fichier de
   l'agent est supprimé tout de suite : Tauri retire le dossier d'installation
   avant le crochet suivant, et un dossier qui contient encore l'agent ne se
-  retire pas. Sans `/REBOOTOK` : une suppression remise au redémarrage effacerait
+  retire pas. Une fois `shinku.exe` fermé par Tauri (il a pu relancer l'agent
+  entre les deux crochets), le crochet suivant fait sortir une dernière fois
+  l'agent s'il reste un fichier. Sans `/REBOOTOK` : une suppression remise au redémarrage effacerait
   l'agent d'une réinstallation faite entre-temps.
 
 Le chemin du fichier compilé est bâti à partir de `${__FILEDIR__}`, par un
@@ -688,24 +693,54 @@ compte ordinaire : le passage en Performances élevées n'est pas prouvé ici »
 Sur les machines de GitHub, le passage effectif n'est donc **pas prouvé** ; il
 l'est seulement par un essai sur un Windows 11 de particulier.
 
+L'essai peut pourtant mettre la machine dans l'état d'un Windows 11. La
+description de sécurité de l'action (`powercfg /getsecuritydescriptor
+ActionSetActive`) donne, sur le Windows Server de GitHub, la seule lecture aux
+comptes ordinaires (`(A;CI;KR;;;BU)`) ; un Windows 11 de particulier les laisse
+changer de mode. Quand la sonde échoue, que l'essai tourne en administrateur et
+que cette entrée est présente une seule fois, il pose la même description avec
+`KRKW` pour `BU` seulement (`powercfg /setsecuritydescriptor`), refait la sonde,
+et, si elle passe, écrit « machine mise dans l'état d'un Windows 11 : un compte
+ordinaire peut changer l'alimentation » puis exige `applied`, le mode
+« Performances élevées » pendant la partie et le retour au mode d'avant. La
+description d'origine est notée dans `etat.json` avant le changement, remise à
+la fin (y compris par `-Restaurer` et après une interruption) et relue : si elle
+n'est pas identique, l'essai échoue. Si la sonde échoue encore, ou si l'essai
+n'a pas les droits, on retombe sur la branche `refused` ci-dessus. Ce que cela
+prouve : l'agent applique le mode quand le droit existe, pas que Windows 11
+donne ce droit (c'est un fait de Windows, pas de Shinku).
+
 Un troisième essai, `apps/shinku/scripts/essai-installeur-agent.ps1`, exerce les
 crochets de l'installeur, que l'installation sur machine vierge ne touche pas
 (pas encore d'agent). Il part de l'installation faite par la CI : réglages
 d'essai avec le mode automatique allumé, valeur `Run\Shinku` posée (c'est
-`shinku.exe` qui l'écrit, pas l'agent), agent lancé avec le jeton filtré. Il
-relance l'installeur tout juste fabriqué en `/S` et exige : code 0,
-`shinku-agent.exe` en place et identique à l'agent compilé, aucun agent en marche
+`shinku.exe` qui l'écrit, pas l'agent), agent lancé avec le jeton filtré. Sur la
+CI, l'installation vient du même installeur : l'essai ajoute d'abord un octet à
+la fin de `shinku-agent.exe` installé, et vérifie que son hachage diffère alors
+de l'agent compilé, pour que le retour du hachage prouve le remplacement (en
+silencieux, un `File` qui échoue est ignoré et l'installeur rend quand même 0).
+Il lance aussi `shinku.exe` avant la mise à jour. Il relance l'installeur tout
+juste fabriqué en `/S` et exige : code 0, `shinku-agent.exe` remplacé (identique
+à l'agent compilé), `shinku.exe` fermé par l'installeur, aucun agent en marche
 (l'ancien est parti, rien ne l'a relancé), valeur `Run` toujours là. Il relance
-alors l'agent, lance `uninstall.exe /S` (NSIS se recopie ailleurs et rend la main
-tout de suite : l'essai attend la disparition du dossier) et exige : plus aucun
-agent, plus de valeur `Run`, plus de dossier d'installation, alimentation
-inchangée. La valeur `Run` est aussi effacée par le modèle de Tauri : son
-absence prouve l'état final, pas lequel des deux l'a effacée. Shinku n'est plus
-installé ensuite, ce qui ne gêne rien : l'étape suivante publie l'installeur.
-Les réglages, le journal et la valeur `Run` d'origine sont remis comme pour
-l'essai précédent. Il ne couvre pas un agent qui refuse de sortir (le
-`taskkill` puis la reprise du journal) ni un agent en pleine partie : ces cas
-ne sont couverts que par la lecture du code.
+alors l'agent et lance `uninstall.exe /S`, le chemin de « Paramètres >
+Applications » : NSIS se recopie dans `%TEMP%\~nsu<n>.tmp\Un.exe` (NSIS 3.13,
+téléchargé par Tauri) et rend la main tout de suite. L'essai attend ce processus,
+borné, puis exige, dans l'ordre où le désinstalleur finit : dossier
+d'installation disparu, clé `HKLM\...\Uninstall\Shinku` disparue, valeur `Run`
+effacée, plus aucun agent. Le code de sortie n'est pas lisible sur ce chemin : un
+crochet qui abandonne se voit à la clé ou au dossier restés là. La remise en
+place ne tourne jamais tant qu'un désinstalleur recopié vit encore. La valeur
+`Run` est aussi effacée par le modèle de Tauri : son absence prouve l'état final,
+pas lequel des deux l'a effacée. Le contrôle « alimentation inchangée » est un
+garde-fou, pas une preuve : aucune partie n'a lieu. Shinku n'est plus installé
+ensuite, ce qui ne gêne rien : l'étape suivante publie l'installeur. Les
+réglages, le journal et la valeur `Run` d'origine sont remis comme pour l'essai
+précédent (`--quitter` d'abord, arrêt forcé ensuite). Il ne couvre pas un agent
+qui refuse de sortir (le `taskkill` puis la reprise du journal), un agent en
+pleine partie, ni la relance de l'agent par la page Mode jeu entre les deux
+crochets (la fenêtre n'est pas pilotée) : ces cas ne sont couverts que par la
+lecture du code.
 
 Les machines de GitHub font tout tourner en administrateur. Shinku y est donc
 lancé avec un jeton filtré, comme celui que donne le contrôle de compte

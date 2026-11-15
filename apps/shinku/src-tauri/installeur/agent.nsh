@@ -66,7 +66,9 @@
       ExecWait '"$INSTDIR\shinku-agent.exe" ${argument}' $0
     ${Else}
       !insertmacro ShinkuAgentStillRunning
-      ${If} $1 = 0
+      ; Comparaison de chaines : nsExec pousse "error" ou "timeout" s'il ne
+      ; peut pas lancer cmd, et une comparaison d'entiers lirait cela comme 0.
+      ${If} $1 == "0"
         nsExec::Exec 'taskkill /F /IM shinku-agent.exe'
         Pop $1
         Sleep 500
@@ -96,6 +98,11 @@
 ; Avant de retirer quoi que ce soit : l'agent remet tout en place. Une mise a
 ; jour qui passe par le desinstalleur (/UPDATE, $UpdateMode = 1) garde la valeur
 ; de demarrage : --quitter. Une vraie desinstallation l'efface : --retirer.
+; La branche /UPDATE ne sert aujourd'hui que si quelqu'un lance le
+; desinstalleur avec /UPDATE a la main : Tauri ne le fait pas (la page de
+; reinstallation saute avant d'ajouter /UPDATE, et la mise a jour par le module
+; de Tauri installe par-dessus sans desinstaller). Elle est sans danger, et
+; juste si ce comportement change.
 ; Le fichier de l'agent part tout de suite : Tauri retire le dossier
 ; d'installation avant le crochet suivant, et un dossier qui contient encore
 ; l'agent ne se retire pas. Pas de /REBOOTOK : une suppression remise au
@@ -109,9 +116,17 @@
   Delete "$INSTDIR\shinku-agent.exe"
 !macroend
 
-; Au cas ou l'agent n'a pas pu etre supprime plus tot (processus encore en train
-; de sortir). Pas de RMDir pendant une mise a jour : le dossier va resservir.
+; Au cas ou l'agent n'a pas pu etre supprime plus tot : processus encore en train
+; de sortir, ou relance par la fenetre de Shinku, que Tauri ne ferme qu'apres le
+; crochet precedent. Plus rien ne le relance maintenant : s'il reste un fichier,
+; l'agent sort une derniere fois (ShinkuAgentLeave ne fait rien si le fichier a
+; deja disparu). Pas de RMDir pendant une mise a jour : le dossier va resservir.
 !macro ShinkuAgentPostUninstall
+  ${If} $UpdateMode = 1
+    !insertmacro ShinkuAgentLeave "--quitter"
+  ${Else}
+    !insertmacro ShinkuAgentLeave "--retirer"
+  ${EndIf}
   Delete "$INSTDIR\shinku-agent.exe"
   ${If} $UpdateMode <> 1
     RMDir "$INSTDIR"

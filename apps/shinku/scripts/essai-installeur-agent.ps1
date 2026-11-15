@@ -14,11 +14,13 @@
 #      shinku-agent.exe à sa place (le même fichier que celui qui vient d'être
 #      compilé), ne laisser aucun agent en marche (l'ancien est parti, et
 #      personne ne l'a relancé), et laisser la valeur `Run` ;
-#   2. désinstallation : l'agent est relancé, puis uninstall.exe /S. NSIS se
-#      recopie dans un dossier temporaire et rend la main tout de suite : l'essai
-#      attend que le dossier d'installation disparaisse. Il exige : plus aucun
-#      agent, plus de valeur `Run`, plus de dossier d'installation, et un mode
-#      d'alimentation inchangé.
+#   2. désinstallation : l'agent est relancé, puis uninstall.exe /S, le chemin de
+#      « Paramètres > Applications ». NSIS se recopie dans %TEMP%\~nsu<n>.tmp\Un.exe
+#      et rend la main tout de suite : l'essai attend ce processus, puis exige,
+#      dans l'ordre où le désinstalleur finit : le dossier d'installation a
+#      disparu, la clé de désinstallation aussi, la valeur `Run` est effacée, plus
+#      aucun agent. Le code de sortie n'est pas lisible sur ce chemin : un crochet
+#      qui abandonne se voit à la clé ou au dossier restés là.
 #
 # La valeur `Run` est aussi effacée par le modèle de Tauri (DeleteRegValue) : sa
 # disparition prouve l'état final, pas lequel des deux l'a effacée.
@@ -57,6 +59,7 @@ $GameFile = Join-Path $env:LOCALAPPDATA 'Shinku\game.json'
 $Launcher = Join-Path $PSScriptRoot 'lancer-en-utilisateur.ps1'
 $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $RunName = 'Shinku'
+$UninstallKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Shinku'
 $InstalledAgent = Join-Path $Dossier 'shinku-agent.exe'
 
 $Started = Get-Date
@@ -133,7 +136,26 @@ function Active-Scheme {
 
 function Agents-Running { @(Get-Process -Name 'shinku-agent' -ErrorAction SilentlyContinue) }
 
+# Les désinstalleurs recopiés par NSIS : `uninstall.exe` se copie dans
+# `%TEMP%\~nsu<n>.tmp\Un.exe` (NSIS 3.09 et suivants, dont la version que Tauri
+# télécharge) et rend la main aussitôt ; le travail continue dans la copie.
+function Copied-Uninstallers {
+    @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' })
+}
+
+# Attend, au plus $Seconds s, qu'aucun désinstalleur recopié ne vive plus. Ne
+# lève rien : la remise en place ne doit jamais courir après un désinstalleur
+# qui n'a pas fini (il effacerait après coup une valeur `Run` qu'elle vient de remettre).
+function Wait-Uninstallers([int]$Seconds = 60) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Copied-Uninstallers).Count -gt 0) {
+        if ((Get-Date) -ge $deadline) { Say "  un désinstalleur recopié vit encore après $Seconds s : la remise en place continue"; return }
+        Start-Sleep -Milliseconds 500
+    }
+}
+
 function Restore-Everything {
+    Wait-Uninstallers
     if (-not (Test-Path $StateFile)) {
         Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue
         return
@@ -141,19 +163,35 @@ function Restore-Everything {
     $saved = Get-Content -Raw -Encoding UTF8 $StateFile | ConvertFrom-Json
     Say "remise en place de ce que l'essai a changé"
 
-    # Seulement ce que l'essai a lancé : même chemin et même heure de départ.
-    $killed = $false
+    # Les processus que l'essai avait lancés et qui tournent encore (même
+    # numéro, même chemin, même heure de départ). Un autre agent, celui de la
+    # personne par exemple, n'est pas à l'essai : `--quitter` l'arrêterait aussi,
+    # alors on ne l'envoie pas tant qu'il tourne.
+    $ownIds = @(@($saved.procs) | ForEach-Object { $found = Find-Own $_; if ($null -ne $found) { $found.Id } })
+    $foreign = @(Agents-Running | Where-Object { $ownIds -notcontains $_.Id })
+    $hasAgent = $saved.agent -and (Test-Path $saved.agent)
+    if ($foreign.Count -gt 0) {
+        Say "  un agent qui n'est pas celui de l'essai tourne (processus $(($foreign | ForEach-Object { $_.Id }) -join ', ')) : il n'est pas touché, et --quitter n'est pas envoyé"
+        $hasAgent = $false
+    }
+    # L'agent d'abord : il remet lui-même ce qu'il a changé.
+    if ($hasAgent) {
+        try {
+            $quit = Start-Process -FilePath $saved.agent -ArgumentList '--quitter' -Wait -PassThru -WindowStyle Hidden
+            Say "  agent : --quitter rend le code $($quit.ExitCode)"
+        } catch { Say "  agent : --quitter impossible ($($_.Exception.Message))" }
+    }
+    # Puis seulement ce que l'essai a lancé : même chemin et même heure de départ.
+    $killedAgent = $false
     foreach ($entry in @($saved.procs)) {
         $own = Find-Own $entry
         if ($null -eq $own) { continue }
         Stop-Process -Id $own.Id -Force -ErrorAction SilentlyContinue
-        $killed = $true
+        if ($saved.agent -and ([string]$entry.path -ieq [string]$saved.agent)) { $killedAgent = $true }
     }
     # Un agent arrêté de force n'a rien remis en place : `--quitter` reprend le
-    # journal avant qu'on le remette. Il ne part que si un agent installé existe
-    # encore, et si aucun autre agent ne tourne (celui d'un autre compte ou de
-    # la personne n'est pas à l'essai).
-    if ($killed -and $saved.agent -and (Test-Path $saved.agent) -and ((Agents-Running).Count -eq 0)) {
+    # journal avant qu'on le remette (plus aucun agent ne répond).
+    if ($killedAgent -and $hasAgent) {
         try {
             $quit = Start-Process -FilePath $saved.agent -ArgumentList '--quitter' -Wait -PassThru -WindowStyle Hidden
             Say "  agent arrêté de force : --quitter reprend le journal, code $($quit.ExitCode)"
@@ -302,7 +340,7 @@ try {
     $State.run = if ($null -ne $originalRun) { $originalRun } else { '' }
     Save-State
     $scheme = Active-Scheme
-    Say "alimentation au départ : $scheme (elle ne doit pas bouger)"
+    Say "alimentation au départ : $scheme (simple garde-fou : elle ne doit pas bouger)"
 
     # Les réglages d'essai : mode automatique allumé, sans jeu déclaré, et les
     # trois apps cochées d'office retirées (rien n'est mis en veilleuse).
@@ -323,9 +361,31 @@ try {
 
     # ── 1. Mise à jour ─────────────────────────────────────────────────────
     Say '1. mise à jour : l''installeur est relancé pendant que l''agent tourne'
+    # Un octet de plus à la fin du fichier installé (un exécutable en garde un
+    # sans broncher) : sur la CI, l'installation vient du même installeur, et le
+    # fichier a déjà le hachage de l'agent compilé. Après la mise à jour, le
+    # hachage prouve ainsi que l'installeur l'a vraiment remplacé (en silencieux,
+    # un `File` qui échoue est ignoré et l'installeur rend quand même 0).
+    $stream = [IO.File]::Open($InstalledAgent, [IO.FileMode]::Append)
+    try { $stream.WriteByte(0) } finally { $stream.Close() }
+    if ((Get-FileHash -Algorithm SHA256 $InstalledAgent).Hash -eq (Get-FileHash -Algorithm SHA256 $AgentCompile).Hash) {
+        Fail 'le fichier installé n''a pas pu être marqué : le hachage ne prouverait rien'
+    }
+    Done 'l''agent installé est marqué (un octet de plus) : son hachage diffère de l''agent compilé'
+
     $oldId = Start-Agent
     $oldEntry = @($State.procs)[-1]
     Done "l'agent tourne (processus $oldId)"
+    # Shinku ouvert aussi, comme sur un PC : l'installeur doit le fermer (Tauri le
+    # fait après le premier crochet), et rien ne doit relancer l'agent ensuite.
+    # Le cas où la page Mode jeu relance l'agent entre les deux crochets n'est pas
+    # exercé : la fenêtre n'est pas pilotée ici.
+    $shinku = Join-Path $Dossier 'shinku.exe'
+    $windowId = Start-AsUser $shinku
+    $windowEntry = @($State.procs)[-1]
+    Start-Sleep -Seconds 8
+    if ($null -eq (Find-Own $windowEntry)) { Fail "shinku.exe (processus $windowId) s'est arrêté seul avant la mise à jour" }
+    Done "shinku.exe est ouvert (processus $windowId)"
 
     $code = Run-AndWait $Installeur '/S' 300
     if ($code -ne 0) { Fail "l'installeur rend le code $code au lieu de 0" }
@@ -333,8 +393,10 @@ try {
     if (-not (Test-Path $InstalledAgent)) { Fail "après la mise à jour, $InstalledAgent n'existe plus" }
     $built = (Get-FileHash -Algorithm SHA256 $AgentCompile).Hash
     $installed = (Get-FileHash -Algorithm SHA256 $InstalledAgent).Hash
-    if ($built -ne $installed) { Fail "le shinku-agent.exe installé n'est pas celui qui vient d'être compilé (SHA-256 $installed au lieu de $built)" }
-    Done 'shinku-agent.exe est à sa place, identique à l''agent compilé'
+    if ($built -ne $installed) { Fail "l'installeur n'a pas remplacé shinku-agent.exe : il n'est pas identique à l'agent compilé (SHA-256 $installed au lieu de $built)" }
+    Done 'shinku-agent.exe a été remplacé : identique à l''agent compilé alors qu''il avait été marqué'
+    if ($null -ne (Find-Own $windowEntry)) { Fail "shinku.exe (processus $windowId) tourne encore après la mise à jour : l'installeur devait le fermer" }
+    Done 'shinku.exe a été fermé par l''installeur'
     if ($null -ne (Find-Own $oldEntry)) { Fail "l'agent de l'ancienne exécution (processus $oldId) tourne encore après la mise à jour" }
     $left = Agents-Running
     if ($left.Count -gt 0) { Fail "après la mise à jour, $($left.Count) agent(s) tournent (processus $(($left | ForEach-Object { $_.Id }) -join ', ')) : plus rien ne devait en laisser" }
@@ -351,26 +413,34 @@ try {
     Done "l'agent tourne (processus $agentId)"
     $schemeBefore = Active-Scheme
 
-    # NSIS se recopie dans un dossier temporaire et rend la main aussitôt : le
-    # travail continue dans le processus recopié. On attend la disparition du
-    # dossier d'installation, puis celle du processus recopié (Un_*.exe).
+    # Le chemin réel, celui de « Paramètres > Applications » : uninstall.exe /S se
+    # recopie dans %TEMP%\~nsu<n>.tmp\Un.exe et rend la main aussitôt. Le code de
+    # sortie du travail n'est donc pas lisible ici ; un crochet qui abandonne
+    # (Abort) se voit à ce qui reste : le dossier d'installation ou la clé de
+    # désinstallation. On attend d'abord le processus recopié, puis seulement on
+    # vérifie, dans l'ordre où le désinstalleur finit : dossier, clé, valeur `Run`,
+    # agent.
     $stub = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru -WindowStyle Hidden
     Say "désinstalleur lancé (processus $($stub.Id))"
-    try {
-        Wait-Until "le dossier $Dossier disparaît" { -not (Test-Path $Dossier) }
-    } catch {
-        Fail "$($_.Exception.Message) ; le dossier est $(Describe-Dir $Dossier)"
-    }
+    $seen = $false
+    Wait-Until 'le désinstalleur recopié a fini' {
+        if ((Copied-Uninstallers).Count -gt 0) { $script:seen = $true; return $false }
+        return ($script:seen -or -not (Test-Path $Dossier))
+    } $Attente
+    Done 'le désinstalleur recopié (~nsu*.tmp\Un.exe) a fini'
+    if (Test-Path $Dossier) { Fail "après la désinstallation, le dossier $Dossier existe encore : $(Describe-Dir $Dossier) ; un crochet a peut-être abandonné (le code de sortie n'est pas lisible sur ce chemin)" }
     Done 'le dossier d''installation a disparu'
-    Wait-Until 'le désinstalleur recopié a fini' { @(Get-Process -Name 'Un_*' -ErrorAction SilentlyContinue).Count -eq 0 } 60
+    if (Test-Path $UninstallKey) { Fail "après la désinstallation, la clé $UninstallKey existe encore : le désinstalleur n'est pas allé au bout" }
+    Done 'la clé de désinstallation a disparu'
+    if ($null -ne (Get-RunValue)) { Fail "après la désinstallation, la valeur de démarrage existe encore : « $(Get-RunValue) »" }
+    Done 'la valeur de démarrage est effacée'
     if ($null -ne (Find-Own $agentEntry)) { Fail "l'agent (processus $agentId) tourne encore après la désinstallation" }
     $left = Agents-Running
     if ($left.Count -gt 0) { Fail "après la désinstallation, $($left.Count) agent(s) tournent encore" }
     Done 'plus aucun agent en marche'
-    if ($null -ne (Get-RunValue)) { Fail "après la désinstallation, la valeur de démarrage existe encore : « $(Get-RunValue) »" }
-    Done 'la valeur de démarrage est effacée'
+    # Garde-fou, pas une preuve : aucune partie n'a lieu, l'alimentation ne pouvait pas bouger.
     if ((Active-Scheme) -ne $schemeBefore) { Fail "l'alimentation a changé : $schemeBefore avant, $(Active-Scheme) après" }
-    Done 'l''alimentation n''a pas bougé'
+    Done 'garde-fou : l''alimentation n''a pas bougé (aucune partie n''a eu lieu : ce n''est pas une preuve)'
 
     Say 'Essai réussi. Shinku n''est plus installé sur cette machine.'
 } catch {
