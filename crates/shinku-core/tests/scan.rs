@@ -578,20 +578,16 @@ fn the_summary_lists_the_five_categories_of_the_big_clean() {
         ]
     );
     let lots: Vec<Lot> = summary.categories.iter().map(|category| category.lot).collect();
-    assert_eq!(lots, [Lot::Auto, Lot::Auto, Lot::Optional, Lot::Review, Lot::Review]);
+    assert_eq!(lots, [Lot::Optional, Lot::Auto, Lot::Optional, Lot::Review, Lot::Review]);
     assert_eq!((summary.categories[0].bytes, summary.categories[0].items), (5_000_000, 12));
     assert_eq!(summary.categories[1].items, 1);
     assert_eq!(summary.categories[2].items, 1);
     assert_eq!(summary.categories[3].items, 1);
     assert_eq!(summary.categories[4].state, CategoryState::Unavailable);
-    // Sans rien cocher de plus, « Faire le vide » ne prend ni les doublons,
-    // ni les gros fichiers.
+    // Sans rien cocher de plus, « Faire le vide » ne prend ni la corbeille,
+    // ni les doublons, ni les gros fichiers.
     assert!(report.duplicates.bytes > 0);
-    assert_eq!(
-        summary.auto_bytes,
-        5_000_000 + report.junk.bytes,
-        "la corbeille et les fichiers inutiles, rien d'autre"
-    );
+    assert_eq!(summary.auto_bytes, report.junk.bytes, "les fichiers inutiles, rien d'autre");
     assert_eq!(summary.started, report.started);
     assert!(summary.complete);
     assert!(!report.is_stale(report.finished));

@@ -37,9 +37,10 @@ pub const PAGE_LIMIT: usize = 200;
 /// Nom du réglage des « dossiers jamais touchés » dans `settings.json`.
 const EXCLUDED_FIELD: &str = "excludedFolders";
 
-/// Temps laissé à un grand vide pour finir son fichier en cours et noter son
-/// bilan quand Shinku se ferme.
-const SHUTDOWN_PATIENCE: Duration = Duration::from_secs(5);
+/// Temps laissé à un grand vide pour finir son fichier ou son élément en
+/// cours et noter son bilan quand Shinku se ferme. Un élément jugé en bloc
+/// est borné en taille pour tenir dans ce délai.
+const SHUTDOWN_PATIENCE: Duration = Duration::from_secs(20);
 
 /// Ce que la fenêtre affiche dès son ouverture.
 #[derive(Clone, Debug, Serialize)]
@@ -468,7 +469,8 @@ impl Backend {
             return Err(BackendError::CleanRunning);
         }
         let settings = self.save_settings(&mut desk, edit)?;
-        self.session.cancel_scan();
+        // Le bilan d'un grand vide terminé n'a rien à voir avec la liste : il reste.
+        self.session.forget_scan();
         Ok(settings)
     }
 
@@ -997,10 +999,11 @@ mod tests {
         let report = wait_for_the_report(&backend);
         assert_eq!((report.recycle_bin.state, report.recycle_bin.items), (StepState::Done, 3));
 
-        // Le grand vide fini, les réglages se changent à nouveau.
+        // Le grand vide fini, les réglages se changent à nouveau. Le bilan,
+        // lui, reste affiché : il n'a rien à voir avec cette liste.
         let settings = backend.exclude_folder(&private).unwrap();
         assert_eq!(settings.excluded_folders, [to_display_path(&private)]);
-        assert_eq!(backend.view().state, SessionState::Idle);
+        assert_eq!(backend.view().state, SessionState::Cleaned);
     }
 
     #[test]

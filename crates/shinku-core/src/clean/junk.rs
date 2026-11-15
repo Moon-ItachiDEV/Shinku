@@ -134,8 +134,17 @@ fn remove_loose(guard: &Guard, file: &SweptFile) -> Result<(), Option<Left>> {
         .map_err(|error| reason(&error))
 }
 
+/// Au-delà de ce nombre d'entrées, un élément jugé en bloc est laissé. Toutes
+/// ses entrées sont tenues ouvertes en même temps, et la suppression d'un
+/// élément ne s'interrompt pas : elle doit rester courte, pour que fermer
+/// Shinku n'en laisse jamais un à moitié supprimé.
+const MAX_UNIT_ENTRIES: usize = 10_000;
+
 /// Supprime un élément jugé en bloc : tous ses fichiers, puis ses dossiers.
 fn remove_unit(guard: &Guard, unit: &Unit, cutoff: Timestamp) -> Result<Removed, Left> {
+    if unit.files.len() + unit.dirs.len() > MAX_UNIT_ENTRIES {
+        return Err(Left::Other);
+    }
     let paths = unit.files.iter().map(|file| &file.path).chain(unit.dirs.iter().map(|d| &d.path));
     if paths.into_iter().any(|path| guard.forbids(path)) {
         return Err(Left::Other);

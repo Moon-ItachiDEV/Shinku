@@ -62,7 +62,10 @@ impl Report {
             // les doublons qu'on y enverra ensuite restent récupérables.
             CategorySummary {
                 module: ModuleId::RecycleBin,
-                lot: Lot::Auto,
+                // Jamais d'office : la vider est sans retour, et elle garde
+                // ce que la personne a jeté comme les copies qu'un grand vide
+                // précédent y a envoyées « récupérables ».
+                lot: Lot::Optional,
                 risk: RiskLevel::D,
                 bytes: self.recycle_bin.map_or(0, |bin| bin.bytes),
                 items: self.recycle_bin.map_or(0, |bin| bin.items),

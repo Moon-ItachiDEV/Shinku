@@ -182,9 +182,20 @@ fn is_unsupported(error: &io::Error) -> bool {
 /// Ouvre un handle sur ce que désigne `path` (fichier ou dossier), sans
 /// suivre un lien final, avec les droits d'accès demandés.
 fn open_no_follow(path: &Path, access: u32, extra_flags: u32) -> io::Result<File> {
+    open_no_follow_sharing(path, access, SHARE_ALL, extra_flags)
+}
+
+/// Comme [`open_no_follow`], en choisissant ce que les autres programmes
+/// peuvent faire de l'entrée pendant ce temps (`share`).
+fn open_no_follow_sharing(
+    path: &Path,
+    access: u32,
+    share: u32,
+    extra_flags: u32,
+) -> io::Result<File> {
     OpenOptions::new()
         .access_mode(access)
-        .share_mode(SHARE_ALL)
+        .share_mode(share)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | extra_flags)
         .open(path)
 }
@@ -575,12 +586,18 @@ pub(super) struct Removal {
 
 impl Removal {
     pub(super) fn open(path: &Path, expected: &Expected) -> Result<Self, RemoveError> {
-        // Le partage reste entier : Shinku ne gêne personne. En revanche, si
-        // une app tient l'entrée sans permettre sa suppression, l'ouverture
-        // échoue ici et l'entrée est laissée.
-        let file = open_no_follow(
+        // Un fichier est ouvert sans aucun partage : si un autre programme le
+        // tient, pour le lire, l'écrire ou le supprimer, l'ouverture échoue
+        // ici et le fichier est laissé. Beaucoup d'apps ouvrent leurs fichiers
+        // en autorisant leur suppression : sans cela, ils partiraient sous
+        // elles. Un dossier ou un lien garde un partage entier : l'Explorateur
+        // et les antivirus les tiennent sans s'en servir, et un dossier ne
+        // part de toute façon que vide.
+        let share = if expected.kind == EntryKind::File { 0 } else { SHARE_ALL };
+        let file = open_no_follow_sharing(
             path,
             DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            share,
             FILE_FLAG_BACKUP_SEMANTICS,
         )
         .map_err(remove_error)?;

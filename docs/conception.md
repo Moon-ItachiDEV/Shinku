@@ -218,8 +218,17 @@ Les garde-fous, chacun avec son test :
 
 - des résultats de plus de dix minutes, ou d'une autre analyse que celle
   affichée, sont refusés ;
+- la corbeille n'est jamais cochée d'office. La vider est sans retour, et
+  elle garde ce que la personne a jeté comme les copies qu'un grand vide
+  précédent y a envoyées « récupérables ». C'est un second écart avec le plan
+  technique, qui la rangeait dans le lot automatique ;
 - un fichier modifié depuis l'analyse reste. Un fichier qu'une app utilise
-  reste aussi : rien n'est forcé, rien n'est remis au prochain démarrage ;
+  reste aussi : rien n'est forcé, rien n'est remis au prochain démarrage. Un
+  fichier inutile est ouvert sans aucun partage avant de partir : si un autre
+  programme le tient, même en autorisant sa suppression, il reste ;
+- un élément jugé en bloc de plus de dix mille entrées est laissé : sa
+  suppression ne s'interrompt pas, et doit rester assez courte pour que fermer
+  Shinku n'en laisse jamais un à moitié supprimé ;
 - le cache d'une app ouverte n'est pas touché, et le bilan le dit ;
 - les « dossiers jamais touchés » et la liste d'interdits sont relus au moment
   de supprimer. Une exclusion qui ne peut pas être appliquée arrête l'étape
@@ -232,6 +241,16 @@ Les garde-fous, chacun avec son test :
   l'arrêt de sécurité, que le bilan annonce avec le nom du fichier ;
 - arrêter laisse finir le fichier en cours et rend un bilan partiel. Fermer
   la fenêtre fait de même avant que le programme ne s'arrête.
+
+Limites connues, à traiter avant une version publique :
+
+- une corbeille pleine fait de la place en abandonnant ses éléments les plus
+  anciens. Le bilan le dit après coup (« récupérable » ne compte que ce
+  qu'elle a gardé), mais Shinku ne lit pas encore sa capacité avant d'y
+  envoyer des copies ;
+- les fichiers inutiles sont jugés tels qu'ils sont au moment de supprimer.
+  Un dossier ancien déplacé dans `%TEMP%` après l'analyse part donc avec le
+  reste, sans avoir figuré dans les totaux confirmés.
 
 Le bilan sépare ce qui est libéré pour de bon de ce qui attend dans la
 corbeille, et n'annonce pas plus que ce que les disques ont gagné. Le journal

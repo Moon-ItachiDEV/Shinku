@@ -317,7 +317,7 @@ export function mockBackend(options: MockOptions): Backend {
     const large = largeFiles(finished);
     const junk = junkFound();
     const categories: CategorySummary[] = [
-      { module: 'recycleBin', lot: 'auto', risk: 'D', bytes: bin.bytes, items: bin.items, state: 'ready' },
+      { module: 'recycleBin', lot: 'optional', risk: 'D', bytes: bin.bytes, items: bin.items, state: 'ready' },
       { module: 'junkFiles', lot: 'auto', risk: 'A', bytes: junk.bytes, items: junk.files, state: 'ready' },
       {
         module: 'duplicates',

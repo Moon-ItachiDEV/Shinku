@@ -192,6 +192,16 @@ impl Session {
         *activity = Activity::Idle;
     }
 
+    /// Arrête l'analyse en cours et oublie ses résultats. Sans effet sur un
+    /// grand vide, en cours ou terminé.
+    pub fn forget_scan(&self) {
+        let mut activity = self.activity();
+        if let Activity::Scan(scan) = &*activity {
+            scan.control().cancel();
+            *activity = Activity::Idle;
+        }
+    }
+
     /// Le dernier rapport publié : partiel tant que les doublons se cherchent.
     /// Il n'y en a plus dès qu'un grand vide a démarré.
     pub fn report(&self) -> Option<Arc<Report>> {

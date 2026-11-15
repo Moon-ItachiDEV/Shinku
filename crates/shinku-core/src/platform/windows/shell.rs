@@ -29,9 +29,9 @@ use windows::Win32::UI::Shell::{
     COPYENGINE_E_ACCESS_DENIED_SRC, COPYENGINE_E_RECYCLE_BIN_NOT_FOUND,
     COPYENGINE_E_RECYCLE_FORCE_NUKE, COPYENGINE_E_RECYCLE_PATH_TOO_LONG,
     COPYENGINE_E_RECYCLE_SIZE_TOO_BIG, COPYENGINE_E_REQUIRES_ELEVATION,
-    COPYENGINE_E_SHARING_VIOLATION_SRC, FILEOPERATION_FLAGS, FOF_NO_CONNECTED_ELEMENTS, FOF_NO_UI,
-    FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FileOperation, IFileOperation,
-    IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
+    COPYENGINE_E_SHARING_VIOLATION_SRC, FILEOPERATION_FLAGS, FOF_ALLOWUNDO,
+    FOF_NO_CONNECTED_ELEMENTS, FOF_NO_UI, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FileOperation,
+    IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
     SHCreateItemFromParsingName, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND,
     SHEmptyRecycleBinW, SHQUERYRBINFO, SHQueryRecycleBinW, SIGDN_FILESYSPATH,
     TSF_DELETE_RECYCLE_IF_POSSIBLE,
@@ -43,15 +43,20 @@ use crate::fs::{fold_path, to_display_path, to_internal_path};
 
 /// Ce que Shinku demande au shell pour un envoi à la corbeille :
 /// - aucune fenêtre, aucune question (`FOF_NO_UI`) ;
-/// - la corbeille plutôt que la suppression (`FOFX_RECYCLEONDELETE`), avec la
-///   possibilité d'annuler depuis l'Explorateur (`FOFX_ADDUNDORECORD`) ;
+/// - la corbeille plutôt que la suppression (`FOF_ALLOWUNDO` et
+///   `FOFX_RECYCLEONDELETE`), avec la possibilité d'annuler depuis
+///   l'Explorateur (`FOFX_ADDUNDORECORD`) ;
 /// - ce fichier et lui seul (`FOF_NO_CONNECTED_ELEMENTS`) : sans cela, jeter
 ///   `page.htm` emporte aussi le dossier `page_files` que Windows lui associe.
 ///
 /// Jamais d'élévation : un fichier qui demande des droits d'administrateur
 /// reste à sa place.
 const RECYCLE_FLAGS: FILEOPERATION_FLAGS = FILEOPERATION_FLAGS(
-    FOF_NO_UI.0 | FOFX_ADDUNDORECORD.0 | FOFX_RECYCLEONDELETE.0 | FOF_NO_CONNECTED_ELEMENTS.0,
+    FOF_NO_UI.0
+        | FOF_ALLOWUNDO.0
+        | FOFX_ADDUNDORECORD.0
+        | FOFX_RECYCLEONDELETE.0
+        | FOF_NO_CONNECTED_ELEMENTS.0,
 );
 
 /// Garde de COM sur le fil courant.
