@@ -15,6 +15,8 @@ import {
   headerState,
   inGame,
   isLeaving,
+  LEAVE_GRACE,
+  type Leaving,
   isRemovable,
   isRemovableApp,
   neighbour,
@@ -319,11 +321,25 @@ test('quand une ligne disparaît, le focus va à la suivante, sinon à la préc�
   assert.equal(neighbour([], 'a'), null);
 });
 
-test('l’en-tête attend tant que la vue montre la partie dont « Ce n’est pas un jeu » est parti', () => {
-  const playing = view({ session: session() });
-  assert.ok(isLeaving(playing, session().path));
-  assert.ok(!isLeaving(playing, null));
-  assert.ok(!isLeaving(playing, 'D:\\autre.exe'));
-  // La partie a disparu de la vue : plus d'attente.
-  assert.ok(!isLeaving(view(), session().path));
+test('l’en-tête n’attend que si la partie est vraiment en cours, l’agent vivant, l’ordre noté, et dans le délai', () => {
+  const leaving: Leaving = { path: session().path, until: NOW + LEAVE_GRACE };
+  const noted = [{ path: session().path, name: 'Hollow Peaks' }];
+  const playing = view({ session: session(), notGames: noted });
+  assert.ok(isLeaving(playing, leaving, NOW, true));
+  assert.ok(!isLeaving(playing, null, NOW, true));
+  // Une autre partie que celle dont l'ordre est parti, ou aucune partie : pas d'attente.
+  assert.ok(!isLeaving(playing, { ...leaving, path: 'D:\\autre.exe' }, NOW, true));
+  assert.ok(!isLeaving(view({ notGames: noted }), leaving, NOW, true));
+  // Le délai : à l'instant `until`, l'attente est finie.
+  assert.ok(isLeaving(playing, leaving, leaving.until - 1, true));
+  assert.ok(!isLeaving(playing, leaving, leaving.until, true));
+  // Une remise en place en attente n'est jamais cachée par l'attente.
+  assert.ok(!isLeaving(view({ session: session({ restorePending: true }), notGames: noted }), leaving, NOW, true));
+  // Personne ne terminera la partie si l'agent ne tourne pas.
+  assert.ok(!isLeaving(view({ session: session(), notGames: noted, agent: 'stopped' }), leaving, NOW, true));
+  assert.ok(!isLeaving(view({ session: session(), notGames: noted, agent: 'missing' }), leaving, NOW, true));
+  // Le cœur n'a pas noté l'ordre : une fois sa réponse arrivée, on ne l'attend plus ; avant elle, on ne sait pas.
+  const unnoted = view({ session: session() });
+  assert.ok(!isLeaving(unnoted, leaving, NOW, true));
+  assert.ok(isLeaving(unnoted, leaving, NOW, false));
 });

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 
 import type { Backend, GameView, OpenApp } from '../src/backend/types.ts';
 import { fr } from '../src/i18n/fr.ts';
-import { GAME_POLL_DELAY, gameWarning, STOPPED_GRACE } from '../src/model/game.ts';
+import { GAME_POLL_DELAY, GESTURE_TIMEOUT, gameWarning, LEAVE_GRACE, STOPPED_GRACE } from '../src/model/game.ts';
 
 // ── Un faux environnement de page ──────────────────────────────────────────
 
@@ -130,11 +130,13 @@ function start() {
         focus: () => focused.push(fk),
       })),
   } as unknown as HTMLElement;
-  const app = new App(fake.backend, root, () => {});
+  let drawn = 0;
+  const app = new App(fake.backend, root, () => (drawn += 1));
   const actions = app['actions'];
   return {
     ...fake,
     focused,
+    draws: () => drawn,
     app,
     actions,
     state: () => app['state'],
@@ -588,35 +590,99 @@ test('une réponse arrivée avant le délai annule l’abandon', async () => {
 
 // ── « Ce n'est pas un jeu » sur la partie en cours ─────────────────────────
 
+/** La partie en cours, une fois « Ce n'est pas un jeu » enregistré par le cœur (l'agent ne l'a pas encore terminée). */
+const left = (parts: Partial<GameView> = {}): GameView => ({
+  ...playing(),
+  notGames: [{ path: HOLLOW_PEAKS, name: 'Hollow Peaks' }],
+  ...parts,
+});
+
 test('« Ce n’est pas un jeu » : l’en-tête attend, puis le focus va au titre quand la partie a disparu', async () => {
   const page = start();
   await page.open(playing());
   page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
-  assert.equal(page.state().gameLeaving, HOLLOW_PEAKS);
-  page.of('setGameStatus')[0]?.resolve(playing());
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+  page.of('setGameStatus')[0]?.resolve(left());
   await flush();
   // Le cœur a répondu mais l'agent n'a pas fini : l'en-tête attend toujours, rien ne bouge.
-  assert.equal(page.state().gameLeaving, HOLLOW_PEAKS);
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
   assert.deepEqual(page.focused, []);
-  await page.poll(playing());
-  assert.equal(page.state().gameLeaving, HOLLOW_PEAKS);
+  await page.poll(left());
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
 
   // La partie n'est plus dans la vue : l'attente tombe, le focus va au titre.
-  await page.poll(gameView());
+  await page.poll(gameView({ notGames: left().notGames }));
   assert.equal(page.state().gameLeaving, null);
   assert.deepEqual(page.focused, ['title']);
 });
 
-test('« Ce n’est pas un jeu » refusé : l’en-tête reprend son état, avec le message habituel', async () => {
+test('« Ce n’est pas un jeu » refusé : l’en-tête reprend son état, le message s’affiche, le bouton retrouve le focus', async () => {
   const page = start();
   await page.open(playing());
   page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
-  assert.equal(page.state().gameLeaving, HOLLOW_PEAKS);
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
   page.of('setGameStatus')[0]?.reject({ kind: 'gameRefused', reason: 'unknownGame' });
   await flush();
   assert.equal(page.state().gameLeaving, null);
   assert.equal(page.state().toast, fr.game.toast.unknownGame);
-  assert.deepEqual(page.focused, []);
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('l’attente de l’en-tête tombe quand la remise en place échoue : l’avertissement n’est pas caché', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  page.of('setGameStatus')[0]?.resolve(left());
+  await flush();
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+
+  // L'agent ferme la partie, mais la remise en place échoue : la session reste, en attente.
+  const pending = left();
+  await page.poll({ ...pending, session: { ...pending.session!, restorePending: true } });
+  assert.equal(page.state().gameLeaving, null, 'plus d’attente : la page dit que la remise en place a échoué');
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('l’attente de l’en-tête tombe si l’agent s’arrête', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  page.of('setGameStatus')[0]?.resolve(left());
+  await flush();
+  await page.poll(left({ agent: 'stopped' }));
+  assert.equal(page.state().gameLeaving, null);
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('l’attente de l’en-tête tombe quand le geste est abandonné faute de réponse', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+  mock.timers.tick(GESTURE_TIMEOUT);
+  await flush();
+  assert.equal(page.state().gameLeaving, null);
+  assert.deepEqual(page.state().gameBusy, []);
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('l’attente de l’en-tête tombe au bout du délai, même si le sondage est arrêté, et la page est redessinée', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  page.of('setGameStatus')[0]?.resolve(left());
+  await flush();
+  // Le sondage ne répond plus (fenêtre cachée) : seul le délai peut finir l'attente.
+  environment.hidden = true;
+  const drawn = page.draws();
+  mock.timers.tick(LEAVE_GRACE - 1_000);
+  await flush();
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+  mock.timers.tick(1_000);
+  await flush();
+  assert.equal(page.state().gameLeaving, null);
+  assert.ok(page.draws() > drawn, 'la page est redessinée quand le délai est atteint');
+  assert.deepEqual(page.focused, ['header-notgame']);
 });
 
 // ── Le focus quand une ligne disparaît ─────────────────────────────────────
@@ -678,4 +744,30 @@ test('retirer une app ajoutée : le focus va à l’app voisine, sinon au bouton
   alone.of('setQuietApp')[0]?.resolve(gameView({ apps: [] }));
   await flush();
   assert.deepEqual(alone.focused, ['add-app']);
+});
+
+test('deux gestes croisés : la vue est relue dès que le dernier a répondu, sans attendre le sondage', async () => {
+  const page = start();
+  await page.open(gameView({ power: true, quietApps: true }));
+  page.actions.setGameOption('power', false);
+  page.actions.setGameOption('quietApps', false);
+  const asked = page.of('gameView').length;
+  page.of('setGameOption')[1]?.resolve(gameView({ power: true, quietApps: false }));
+  await flush();
+  assert.equal(page.of('gameView').length, asked, 'un geste est encore en vol : pas de relecture');
+  page.of('setGameOption')[0]?.resolve(gameView({ power: false, quietApps: true }));
+  await flush();
+  // Le dernier a répondu : la vue est redemandée tout de suite (le cœur a pu les appliquer dans l'autre ordre).
+  assert.equal(page.of('gameView').length, asked + 1);
+  page.of('gameView')[asked]?.resolve(gameView({ power: false, quietApps: false }));
+  await flush();
+  assert.equal(page.state().game?.power, false);
+  assert.equal(page.state().game?.quietApps, false);
+
+  // Un geste seul n'ajoute pas de relecture.
+  const before = page.of('gameView').length;
+  page.actions.setGameOption('power', true);
+  page.of('setGameOption')[2]?.resolve(gameView({ power: true, quietApps: false }));
+  await flush();
+  assert.equal(page.of('gameView').length, before);
 });

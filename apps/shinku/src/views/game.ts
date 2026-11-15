@@ -110,8 +110,13 @@ function lastGame(view: GameView): Content {
 function header(state: AppState, view: GameView, actions: Actions): TemplateResult {
   const head = headerState(view);
   const session = view.session;
-  // « Ce n'est pas un jeu » est parti : l'agent ne l'a pas encore noté, l'en-tête attend.
-  const leaving = isLeaving(view, state.gameLeaving);
+  // « Ce n'est pas un jeu » est parti : l'agent ne l'a pas encore terminé, l'en-tête attend (un délai, et jamais devant l'avertissement).
+  const leaving = isLeaving(
+    view,
+    state.gameLeaving,
+    state.now,
+    !isBusy(state, busyKey.status(state.gameLeaving?.path ?? '')),
+  );
   return html`<header class="ghead">
     <div class="gart">${moduleArt('gameMode')}</div>
     <div class="gtx">

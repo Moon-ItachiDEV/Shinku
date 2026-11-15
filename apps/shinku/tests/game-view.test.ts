@@ -5,13 +5,14 @@
 // Quand une app disparaît au-dessus de la case qui a le focus, la case garde
 // son focus mais montre l'app suivante, et la touche Espace coche une autre app
 // que celle que la personne avait choisie. Avec une clé par app, le nœud (donc
-// le focus) suit son app. Le scénario complet est joué dans la vraie page par
-// l'essai de la démo ; ici, on vérifie ce qui l'empêche : la clé.
+// le focus) suit son app. Sans navigateur, on ne peut pas jouer le scénario ;
+// on vérifie ce qui l'empêche : la clé.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { GameView, QuietApp } from '../src/backend/types.ts';
+import { formatSince } from '../src/format.ts';
 import { fr } from '../src/i18n/fr.ts';
 import { initialState } from '../src/state.ts';
 
@@ -78,7 +79,7 @@ function view(parts: Partial<GameView> = {}): GameView {
   };
 }
 
-const page = (game: GameView, gameLeaving: string | null = null) =>
+const page = (game: GameView, gameLeaving: { path: string; until: number } | null = null) =>
   gameView({ ...initialState(0), game, gameLeaving, route: 'gameMode' }, NO_ACTIONS as never);
 
 test('les listes de la page (apps, jeux, jeux écartés) se font par clé : le nom du fichier ou le chemin', () => {
@@ -132,22 +133,86 @@ function texts(value: unknown, found: string[] = []): string[] {
   return found;
 }
 
-test('quand « Ce n’est pas un jeu » est parti, l’en-tête dit qu’il remet tout en place, et ses boutons sont grisés', () => {
-  const session = {
-    name: 'Hollow Peaks',
-    path: 'D:\\b\\b.exe',
-    since: 0,
-    source: 'library' as const,
-    power: 'applied' as const,
-    quietedApps: 1,
-    released: false,
-    restorePending: false,
-  };
-  const waiting = texts(page(view({ session }), session.path));
-  assert.ok(waiting.includes(fr.game.textLeaving));
-  assert.ok(!waiting.includes(fr.game.textPlaying('00:00')));
-  const normal = texts(page(view({ session })));
-  assert.ok(!normal.includes(fr.game.textLeaving));
+/** Le gabarit qui porte ce texte de gabarit, quelque part dans le dessin. */
+function templateWith(value: unknown, marker: string): { strings: string[]; values: unknown[] } | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = templateWith(item, marker);
+      if (found !== null) {
+        return found;
+      }
+    }
+  } else if (typeof value === 'object' && value !== null) {
+    const result = value as { strings?: string[]; values?: unknown[] };
+    if (result.strings?.join('').includes(marker) === true) {
+      return { strings: result.strings, values: result.values ?? [] };
+    }
+    return templateWith(result.values, marker);
+  }
+  return null;
+}
+
+/** Les valeurs de tous les attributs `?disabled` d'un gabarit et de ses gabarits imbriqués. */
+function disabled(value: unknown, found: unknown[] = []): unknown[] {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      disabled(item, found);
+    }
+  } else if (typeof value === 'object' && value !== null) {
+    const result = value as { strings?: string[]; values?: unknown[] };
+    result.strings?.forEach((text, index) => {
+      if (/\?disabled=$/.test(text.trimEnd())) {
+        found.push(result.values?.[index]);
+      }
+    });
+    disabled(result.values, found);
+  }
+  return found;
+}
+
+const SESSION = {
+  name: 'Hollow Peaks',
+  path: 'D:\\b\\b.exe',
+  since: 0,
+  source: 'library' as const,
+  power: 'applied' as const,
+  quietedApps: 1,
+  released: false,
+  restorePending: false,
+};
+const LEAVING = { path: SESSION.path, until: 15_000 };
+const NOTED = [{ path: SESSION.path, name: 'Hollow Peaks' }];
+
+test('quand « Ce n’est pas un jeu » est parti, l’en-tête dit qu’il remet tout en place, et ses deux boutons sont grisés', () => {
+  const playing = view({ session: SESSION, notGames: NOTED });
+  const waiting = page(playing, LEAVING);
+  const texts_ = texts(waiting);
+  assert.ok(texts_.includes(fr.game.textLeaving));
+  assert.ok(!texts_.includes(fr.game.textPlaying(formatSince(0, 0))));
+  const buttons = templateWith(waiting, 'class="gbtns"');
+  assert.ok(buttons !== null);
+  assert.deepEqual(disabled(buttons), [true, true]);
+
+  // Sans attente, rien n'est grisé et la phrase est celle de la partie.
+  const normal = page(playing);
+  assert.ok(!texts(normal).includes(fr.game.textLeaving));
+  assert.deepEqual(disabled(templateWith(normal, 'class="gbtns"')), [false, false]);
   // Une autre partie que celle dont l'ordre est parti ne l'attend pas.
-  assert.ok(!texts(page(view({ session }), 'C:\\autre.exe')).includes(fr.game.textLeaving));
+  assert.ok(!texts(page(playing, { path: 'C:\\autre.exe', until: 15_000 })).includes(fr.game.textLeaving));
+});
+
+test('l’attente ne cache jamais « n’a pas encore pu tout remettre en place »', () => {
+  const pending = view({ session: { ...SESSION, restorePending: true }, notGames: NOTED });
+  const shown = texts(page(pending, LEAVING));
+  assert.ok(shown.includes(fr.game.textPending));
+  assert.ok(!shown.includes(fr.game.textLeaving));
+  assert.ok(shown.includes(fr.game.titlePending));
+});
+
+test('une attente dépassée, un agent arrêté ou un ordre non noté ne grisent plus l’en-tête', () => {
+  const noted = view({ session: SESSION, notGames: NOTED });
+  const expired = { ...initialState(20_000), game: noted, gameLeaving: LEAVING, route: 'gameMode' as const };
+  assert.ok(!texts(gameView(expired, NO_ACTIONS as never)).includes(fr.game.textLeaving));
+  assert.ok(!texts(page(view({ session: SESSION, notGames: NOTED, agent: 'stopped' }), LEAVING)).includes(fr.game.textLeaving));
+  assert.ok(!texts(page(view({ session: SESSION }), LEAVING)).includes(fr.game.textLeaving));
 });

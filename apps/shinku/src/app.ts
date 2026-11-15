@@ -29,6 +29,7 @@ import {
   GAME_POLL_DELAY,
   GESTURE_TIMEOUT,
   isLeaving,
+  LEAVE_GRACE,
   neighbour,
   noteStop,
   optionOf,
@@ -144,6 +145,8 @@ export class App {
   private readonly loading = new Set<string>();
   private lastOverviewRefresh = 0;
   private gameTimer: number | undefined;
+  /** Redessine l'en-tête quand le délai de son attente est atteint : le sondage peut être arrêté. */
+  private leaveTimer: number | undefined;
   /**
    * Change au départ et à la réception de chaque geste du mode jeu : une vue
    * demandée avant l'un ou l'autre et arrivée après est ignorée.
@@ -153,6 +156,8 @@ export class App {
   private gameSeq = 0;
   /** Les gestes du mode jeu en vol : tant qu'il y en a, aucune vue demandée par sondage n'est adoptée. */
   private gamePending = 0;
+  /** Des gestes se sont croisés (l'un est parti avant la réponse de l'autre) : la vue est relue quand le dernier a répondu. */
+  private gamesCrossed = false;
   private gameLoading = false;
   /** Les demandes de la vue du mode jeu échouées de suite. */
   private gameFailures = 0;
@@ -670,7 +675,8 @@ export class App {
       return;
     }
     // Une visite neuve : ni la vue ni l'arrêt noté de la précédente.
-    this.set({ game: null, gameStoppedSince: null, gameFailed: false, gameLeaving: null });
+    this.set({ game: null, gameStoppedSince: null, gameFailed: false });
+    this.endLeaving();
     this.gameFailures = 0;
     this.releasing = null;
     void this.refreshGame();
@@ -690,7 +696,8 @@ export class App {
     }
     window.clearInterval(this.gameTimer);
     this.gameTimer = undefined;
-    this.set({ game: null, gameStoppedSince: null, gameFailed: false, gameLeaving: null });
+    this.set({ game: null, gameStoppedSince: null, gameFailed: false });
+    this.endLeaving();
   }
 
   private adoptGame(received: GameView): void {
@@ -703,17 +710,29 @@ export class App {
     if (this.releasing !== null && view === received) {
       this.releasing = null;
     }
-    const gone = this.state.gameLeaving !== null && !isLeaving(view, this.state.gameLeaving);
-    this.set({
-      game: view,
-      gameStoppedSince: noteStop(this.state.gameStoppedSince, view, now),
-      now,
-      ...(gone ? { gameLeaving: null } : {}),
-    });
-    if (gone) {
-      // La partie est finie : les boutons de l'en-tête ont disparu, le focus va au titre de la page.
-      this.focusKey(focusKey.title);
+    this.set({ game: view, gameStoppedSince: noteStop(this.state.gameStoppedSince, view, now), now });
+    this.settleLeaving();
+  }
+
+  /** L'attente de l'en-tête (« Ce n'est pas un jeu ») est-elle finie ? Si oui, elle tombe et le focus va où il faut. */
+  private settleLeaving(): void {
+    const leaving = this.state.gameLeaving;
+    const view = this.state.game;
+    const now = Date.now();
+    if (leaving === null || view === null || isLeaving(view, leaving, now, true)) {
+      return;
     }
+    this.endLeaving();
+    this.set({ now });
+    // La partie a disparu : le focus va au titre. Sinon (délai dépassé, remise en place en attente, agent arrêté…),
+    // les boutons de l'en-tête sont encore là : il va à celui qui avait le focus.
+    this.focusKey(view.session?.path === leaving.path ? focusKey.headerNotGame : focusKey.title);
+  }
+
+  private endLeaving(): void {
+    window.clearTimeout(this.leaveTimer);
+    this.leaveTimer = undefined;
+    this.set({ gameLeaving: null });
   }
 
   private async refreshGame(): Promise<void> {
@@ -767,16 +786,21 @@ export class App {
     request: () => Promise<GameView>,
     options: {
       key?: string;
+      /** Appelé si le geste est abandonné faute de réponse. */
+      abandoned?: () => void;
       optimistic?: (view: GameView) => GameView;
       undo?: (view: GameView) => GameView;
     } = {},
   ): Promise<boolean> {
-    const { key, optimistic, undo } = options;
+    const { key, abandoned, optimistic, undo } = options;
     if (key !== undefined) {
       if (this.state.gameBusy.includes(key)) {
         return false;
       }
       this.set({ gameBusy: [...this.state.gameBusy, key] });
+    }
+    if (this.gamePending > 0) {
+      this.gamesCrossed = true;
     }
     this.gamePending += 1;
     this.gameEpoch += 1;
@@ -799,12 +823,18 @@ export class App {
       if (key !== undefined) {
         this.set({ gameBusy: this.state.gameBusy.filter((other) => other !== key) });
       }
+      if (this.gamePending === 0 && this.gamesCrossed) {
+        // Le cœur a pu appliquer les gestes dans l'autre ordre : on relit tout de suite, sans attendre le sondage.
+        this.gamesCrossed = false;
+        queueMicrotask(() => void this.refreshGame());
+      }
       return true;
     };
     // Un geste sans réponse bloquerait le sondage et son bouton pour toujours : passé le délai, on l'abandonne.
     // Sa réponse, si elle arrive plus tard, est ignorée (`over`).
     const giveUp = window.setTimeout(() => {
       if (answered()) {
+        abandoned?.();
         void this.refreshGame();
       }
     }, GESTURE_TIMEOUT);
@@ -895,19 +925,26 @@ export class App {
           ? view.notGames.map((entry) => focusKey.never(entry.path))
           : view.games.map((game) => focusKey.game(game.path));
     const row = view?.notGames.some((entry) => entry.path === path) ? focusKey.never(path) : focusKey.game(path);
-    // La partie en cours : l'en-tête attend que l'agent la termine, et le focus ira au titre quand elle aura disparu.
+    // La partie en cours : l'en-tête attend que l'agent la termine (au plus LEAVE_GRACE), et le focus ira au titre quand elle aura disparu.
     const ownGame = status === 'notGame' && view?.session?.path === path;
+    // Le cœur a refusé, ou le geste est abandonné : l'en-tête reprend son état, et son bouton, grisé, retrouve le focus.
+    const giveBack = (): void => {
+      if (ownGame && this.state.gameLeaving?.path === path) {
+        this.endLeaving();
+        this.focusKey(focusKey.headerNotGame);
+      }
+    };
     if (ownGame) {
-      this.set({ gameLeaving: path });
+      this.set({ gameLeaving: { path, until: Date.now() + LEAVE_GRACE } });
+      window.clearTimeout(this.leaveTimer);
+      this.leaveTimer = window.setTimeout(() => this.settleLeaving(), LEAVE_GRACE);
     }
     const done = await this.gameCommand(() => this.backend.setGameStatus(path, status), {
       key: busyKey.status(path),
+      abandoned: giveBack,
     });
     if (!done) {
-      if (ownGame) {
-        // Le cœur a refusé : l'en-tête reprend son état.
-        this.set({ gameLeaving: null });
-      }
+      giveBack();
     } else if (!ownGame) {
       this.focusKey(neighbour(keys, row) ?? focusKey.addGame);
     }

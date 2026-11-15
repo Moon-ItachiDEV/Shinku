@@ -198,12 +198,34 @@ export function withReleased(view: GameView, released: boolean): GameView {
   return view.session === null ? view : { ...view, session: { ...view.session, released } };
 }
 
+/** « Ce n'est pas un jeu » sur la partie en cours : l'en-tête attend au plus ce temps que l'agent la termine, en millisecondes. */
+export const LEAVE_GRACE = 15_000;
+
+/** La partie dont « Ce n'est pas un jeu » est parti, et jusqu'à quand l'en-tête l'attend. */
+export interface Leaving {
+  path: string;
+  until: number;
+}
+
 /**
- * « Ce n'est pas un jeu » est parti pour la partie en cours : l'en-tête attend
- * que l'agent la termine, tant que la vue montre encore cette partie.
+ * L'en-tête attend-il que l'agent termine la partie ? Seulement tant que la
+ * partie est vraiment en cours : pas pendant une remise en place en attente
+ * (l'avertissement ne doit jamais être caché), pas si l'agent ne tourne pas
+ * (personne ne la terminera), pas si le cœur n'a pas noté l'ordre (le jeu n'est
+ * pas dans `notGames`), et pas au-delà du délai. `sent` : la réponse du cœur est
+ * arrivée ; avant elle, `notGames` ne peut pas encore le dire.
  */
-export function isLeaving(view: GameView, leaving: string | null): boolean {
-  return leaving !== null && view.session?.path === leaving;
+export function isLeaving(view: GameView, leaving: Leaving | null, now: number, sent: boolean): boolean {
+  const session = view.session;
+  return (
+    leaving !== null &&
+    now < leaving.until &&
+    session !== null &&
+    session.path === leaving.path &&
+    !session.restorePending &&
+    view.agent === 'running' &&
+    (!sent || view.notGames.some((entry) => entry.path === leaving.path))
+  );
 }
 
 /** La partie dont « Tout remettre maintenant » est parti, et jusqu'à quand la page la tient pour remise en place. */

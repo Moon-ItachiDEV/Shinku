@@ -19,6 +19,7 @@ import type {
   Theme,
   WindowsPage,
 } from './backend/types.ts';
+import type { Leaving } from './model/game.ts';
 import { type CleanRowId, type Selection, UNTOUCHED } from './model/scan.ts';
 
 /** Les entrées du menu latéral. */
@@ -88,7 +89,7 @@ export interface AppState {
   /** Depuis quand l'agent du mode jeu est vu arrêté, le mode automatique allumé, ou `null`. */
   gameStoppedSince: number | null;
   /** Le chemin de la partie dont « Ce n'est pas un jeu » est parti : l'en-tête attend que l'agent la termine. */
-  gameLeaving: string | null;
+  gameLeaving: Leaving | null;
   /** Plusieurs demandes de suite de la vue du mode jeu ont échoué : la page le dit au lieu de « Chargement… ». */
   gameFailed: boolean;
   /** Les gestes du mode jeu en vol (voir `busyKey`) : leurs boutons attendent la réponse. */
