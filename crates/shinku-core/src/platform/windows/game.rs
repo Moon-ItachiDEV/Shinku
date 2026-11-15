@@ -16,7 +16,8 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{
-    ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, FILETIME, HANDLE, HLOCAL, LocalFree,
+    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, FILETIME, HANDLE, HLOCAL,
+    LocalFree,
 };
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
@@ -44,7 +45,8 @@ use windows::core::{GUID, HSTRING, PCWSTR, PWSTR};
 
 use super::text_from;
 use crate::game::host::{
-    Foreground, GameHost, PowerPlan, ProcessRef, ProcessState, RunningProcess, priority, stem,
+    Foreground, GameHost, Liveness, PowerPlan, ProcessRef, ProcessState, RunningProcess, priority,
+    stem,
 };
 use crate::model::Timestamp;
 
@@ -105,6 +107,34 @@ fn alive(handle: &OwnedHandle) -> bool {
     let mut code = 0u32;
     // SAFETY: le handle vit autant que `handle` ; `code` est une variable locale.
     unsafe { GetExitCodeProcess(raw(handle), &raw mut code) }.is_ok() && code == STILL_ACTIVE
+}
+
+/// Ce que Windows dit de ce processus, avec des droits limités : `Dead` si son
+/// numéro n'existe pas, si sa date de création diffère ou s'il a un code de
+/// sortie ; `Unknown` pour tout le reste (accès refusé, autre erreur).
+fn liveness_of(process: ProcessRef) -> Liveness {
+    // SAFETY: appel sans pointeur ; le handle rendu est vérifié avant tout usage.
+    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process.pid) }
+    {
+        Ok(handle) => handle,
+        Err(error) if error.code() == ERROR_INVALID_PARAMETER.to_hresult() => {
+            return Liveness::Dead;
+        }
+        Err(_) => return Liveness::Unknown,
+    };
+    // SAFETY: handle ouvert à l'instant, qui n'appartient qu'à cette fonction :
+    // `OwnedHandle` le fermera, une seule fois.
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle.0) };
+    let Some(started) = created(&handle) else { return Liveness::Unknown };
+    if started != process.started {
+        return Liveness::Dead;
+    }
+    let mut code = 0u32;
+    // SAFETY: le handle vit autant que `handle` ; `code` est une variable locale.
+    if unsafe { GetExitCodeProcess(raw(&handle), &raw mut code) }.is_err() {
+        return Liveness::Unknown;
+    }
+    if code == STILL_ACTIVE { Liveness::Alive } else { Liveness::Dead }
 }
 
 /// Ouvre ce processus, à condition qu'il tourne encore et que sa date de
@@ -249,16 +279,29 @@ impl GameHost for SystemHost {
                 && let Some(handle) = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION)
                 && let Some(started) = created(&handle)
             {
-                found.push(RunningProcess {
-                    process: ProcessRef { pid, started },
-                    parent: entry.th32ParentProcessID,
-                    exe_name: text_from(&entry.szExeFile).to_lowercase(),
-                });
+                // Le nom se lit sur le même handle que la date de création : si
+                // le numéro a été repris entre la capture et l'ouverture, le nom
+                // de la capture n'est plus celui de ce processus, et la ligne
+                // est écartée (sinon un étranger porterait un nom listé).
+                let listed = text_from(&entry.szExeFile).to_lowercase();
+                let opened = image_path(&handle)
+                    .map(|path| path.rsplit(['\\', '/']).next().unwrap_or("").to_lowercase());
+                if opened.as_deref() == Some(listed.as_str()) {
+                    found.push(RunningProcess {
+                        process: ProcessRef { pid, started },
+                        parent: entry.th32ParentProcessID,
+                        exe_name: listed,
+                    });
+                }
             }
             // SAFETY: comme ci-dessus.
             more = unsafe { Process32NextW(raw(&snapshot), &raw mut entry) }.is_ok();
         }
         found
+    }
+
+    fn liveness(&self, process: ProcessRef) -> Liveness {
+        liveness_of(process)
     }
 
     fn exe_path(&self, process: ProcessRef) -> Option<String> {
@@ -549,6 +592,61 @@ mod tests {
         me.started += 1;
         assert_eq!(host.exe_path(me), None);
         assert_eq!(host.inspect(me), None);
+    }
+
+    #[test]
+    fn this_program_is_alive_and_a_wrong_creation_date_is_dead() {
+        let host = SystemHost::new();
+        let mut me = me();
+        assert_eq!(host.liveness(me), Liveness::Alive);
+        me.started += 1;
+        assert_eq!(host.liveness(me), Liveness::Dead, "un pid repris n'est pas ce processus");
+    }
+
+    #[test]
+    fn a_finished_child_is_dead_and_a_living_one_is_alive() {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/c", "pause"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("un processus fils");
+        let host = SystemHost::new();
+        let process = host
+            .processes()
+            .into_iter()
+            .find(|entry| entry.process.pid == child.id())
+            .map(|entry| entry.process);
+        let Some(process) = process else {
+            let _ = child.kill();
+            panic!("le fils n'est pas listé");
+        };
+        let alive = host.liveness(process);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(alive, Liveness::Alive);
+        assert_eq!(host.liveness(process), Liveness::Dead, "un processus fini est mort");
+    }
+
+    #[test]
+    fn the_name_in_the_snapshot_is_the_name_of_the_opened_process() {
+        let host = SystemHost::new();
+        let me = me();
+        let name = host
+            .processes()
+            .into_iter()
+            .find(|entry| entry.process == me)
+            .map(|entry| entry.exe_name)
+            .expect("ce programme est listé");
+        let own = std::env::current_exe().unwrap();
+        assert_eq!(
+            name.to_lowercase(),
+            own.file_name().unwrap().to_string_lossy().to_lowercase(),
+            "le nom du relevé est celui du fichier ouvert"
+        );
     }
 
     #[test]

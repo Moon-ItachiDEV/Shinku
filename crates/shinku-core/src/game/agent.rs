@@ -162,7 +162,7 @@ impl Agent {
             waited: 0,
         };
         agent.reload_settings(true);
-        let flow = agent.flow();
+        let flow = agent.flow(true);
         (agent, flow)
     }
 
@@ -187,14 +187,14 @@ impl Agent {
                 self.reload_settings(false);
                 let detect = !self.away && !self.in_start_delay();
                 self.watcher.tick_detecting(&self.settings, detect);
-                self.flow()
+                self.flow(true)
             }
             // Windows envoie cet événement à chaque variation de la batterie :
             // ce n'est pas un pas, seule l'alimentation est réévaluée.
             AgentEvent::PowerChanged => {
                 self.reload_settings(false);
                 self.watcher.power_changed(&self.settings);
-                self.flow()
+                self.flow(false)
             }
             AgentEvent::Release => {
                 self.watcher.release();
@@ -247,14 +247,17 @@ impl Agent {
     /// ouverte. Un agent qui s'arrête tente d'abord d'écrire un journal en
     /// retard ; s'il n'y arrive pas, il attend quelques pas (le disque était
     /// plein, un antivirus tenait le fichier) avant de s'arrêter quand même.
-    fn flow(&mut self) -> Flow {
+    ///
+    /// Seuls les vrais pas (`step`) comptent dans l'attente : les variations de
+    /// la batterie arrivent par rafales et ne la raccourciraient pas de 10 s.
+    fn flow(&mut self, step: bool) -> Flow {
         if self.settings.game_mode_auto || self.watcher.has_session() {
             self.waited = 0;
             return Flow::Continue;
         }
         self.watcher.flush();
         if self.watcher.is_dirty() && self.waited < LATE_JOURNAL_STEPS {
-            self.waited += 1;
+            self.waited += u32::from(step);
             return Flow::Continue;
         }
         Flow::Stop
@@ -692,6 +695,25 @@ mod tests {
         fs::remove_dir(&tmp).unwrap();
         assert_eq!(bench.tick(&mut agent), Flow::Stop, "le journal est écrit, l'agent s'arrête");
         assert!(bench.session().is_none(), "le disque dit la vérité");
+    }
+
+    #[test]
+    fn power_events_do_not_shorten_the_wait_for_a_late_journal() {
+        let bench = Bench::new(true);
+        let (mut agent, _) = bench.start(false, false);
+        let game = bench.play(&mut agent);
+        bench.write(false);
+        let tmp = bench.game.path().with_extension("json.tmp");
+        fs::create_dir(&tmp).unwrap();
+        bench.host.kill(game);
+        assert_eq!(bench.tick(&mut agent), Flow::Continue);
+        // Une rafale de variations de batterie n'use pas l'attente.
+        for _ in 0..20 {
+            assert_eq!(agent.handle(AgentEvent::PowerChanged), Flow::Continue);
+        }
+        fs::remove_dir(&tmp).unwrap();
+        assert_eq!(bench.tick(&mut agent), Flow::Stop, "l'attente n'était pas épuisée");
+        assert!(bench.session().is_none());
     }
 
     #[test]

@@ -382,52 +382,92 @@ laisser une app en priorité basse, sans que personne le sache, est un défaut
 grave. L'heure murale, qui peut sauter ou reculer, ne décide donc de rien de
 grave.
 
-**Les racines et les descendants.** Un processus créé par un processus en
-veilleuse hérite de sa priorité. La session note donc ses *racines* (`roots` :
-numéro, date de création, et `goneMs` / `goneUptime`, l'instant où la racine a
-disparu, à l'heure murale et à l'horloge monotone ; 512 au plus, la racine
-morte depuis le plus longtemps part la première, jamais une vivante tant qu'il
-reste une morte) : tout ce qui est en veilleuse
-ou l'a été. La mort d'une racine est notée à chaque pas, avant tout retour
-anticipé (veilleuse éteinte, partie relâchée, remise en cours), et à la reprise
-de l'agent pour celles trouvées mortes (à cet instant). À la remise en place,
-les descendants des racines (né après son parent, né après `opened`, et, si la
-racine est morte, né dans les trente secondes qui suivent sa mort : au-delà,
-c'est un numéro recyclé) trouvés en
-priorité basse y sont remis aussi. Un descendant de la liste, trouvé déjà bas
-parce qu'il a hérité, est noté « normale » comme état d'avant. Un descendant qui
-est le jeu (ou un ancêtre du jeu) n'est jamais ralenti, et est remis « normale »
-à chaque pas s'il l'a été ; une app en veilleuse qui a lancé le jeu retrouve son
-état d'avant à chaque pas, y compris après un changement de jeu. Un relèvement
-ou une remise qui échoue est retenté toutes les 30 secondes, vingt fois au plus ;
-au-delà, l'entrée reste au journal pour la remise de fin de partie. Cela ne dépend pas du journal des processus en
-veilleuse : un orphelin dont le parent a quitté le journal est toujours remis.
+**Les processus nés d'une app en veilleuse.** Un processus créé par un
+processus dont la classe de priorité a été baissée en hérite. La règle est un
+invariant, sans date ni horloge : *seuls les processus du journal restent en
+veilleuse ; tout autre processus trouvé exactement « sous la normale » par
+héritage est relevé dès qu'on le voit.* L'identité d'un processus est le couple
+(numéro, date de création), comparé par égalité seulement : aucune comparaison
+d'ordre, aucune heure murale, aucune horloge monotone dans la filiation.
 
-**Les dates de la session.** `opened` est l'ouverture de la partie : elle ne
-change jamais, et c'est elle qui borne ce qui peut être remis (rien de plus
-ancien). `openedUptime` est la valeur de l'horloge monotone à ce moment.
-`since` est le début du jeu affiché : un changement de jeu en cours de partie le
-déplace sans toucher à `opened` ni aux racines. Les dates de naissance des
-processus sont à l'heure murale du moment : avant toute comparaison, `opened`
-(et la date de mort d'une racine) est ramené au repère d'aujourd'hui avec
-l'horloge monotone (`min(opened, maintenant − (uptime − openedUptime))`), et si
-l'heure murale a reculé de plus d'une minute depuis l'ouverture, l'ordre « né
-après son parent » n'est plus exigé. Les champs `openedUptime` et `goneUptime`
-sont lisibles à partir d'un ancien `game.json` : s'ils manquent, `opened` vaut
-`since` et les dates murales seules servent.
+- Un **émetteur** est une entrée du journal dont l'état d'avant était
+  strictement au-dessus de « sous la normale » (`priority::lowers`). Une app
+  déjà basse avant Shinku n'émet rien : ses enfants ne sont jamais touchés.
+- La **famille** (en mémoire seulement) : les processus hors journal, ni le jeu
+  ni ancêtre du jeu, vus naître d'un émetteur ou d'un membre. Un processus est
+  *nouveau* s'il est absent du dernier relevé lisible ; un **héritier** est un
+  membre nouveau trouvé exactement « sous la normale ». Les processus déjà là
+  avant la partie, ou déjà bas avant d'être vus, ne sont jamais touchés.
+- À chaque pas où le journal n'est pas vide, avant tout retour anticipé
+  (veilleuse éteinte, partie relâchée, remise en attente), la passe de famille
+  cherche les membres jusqu'au point fixe : l'ensemble de départ réunit les
+  numéros des émetteurs vivants, des membres vivants et des morts de ce pas (un
+  parent mort au pas où son enfant apparaît reste un émetteur) ; un membre qui
+  s'est remis « normale » lui-même laisse passer ses propres enfants, car
+  ceux-ci ont pu hériter à travers lui. La famille est bornée à 2048 membres.
+  Chaque membre est évalué une seule fois (priorité illisible : trois essais).
+  Trouvé sous la normale, il est relevé en « normale » avec le mode efficacité
+  par défaut, en un seul essai ; un héritier qui se rabaisse ensuite lui-même
+  n'est pas poursuivi.
+- Un héritier **listé** et coché passe par le chemin normal du journal, avec
+  « normale » (mode efficacité par défaut) pour état d'avant, qu'il ait hérité
+  ou non du mode efficacité. Si le journal ne peut pas le prendre (veilleuse
+  éteinte, app décochée, journal plein, écriture impossible), il est relevé tout
+  de suite. Un nouveau processus listé dont le parent n'est dans aucun processus
+  du relevé (orphelin : l'intermédiaire a vécu moins d'un pas) est traité de
+  même ; un nouveau processus listé dont le parent est un processus vivant
+  étranger garde l'état lu comme état d'avant. Si le geste de mise en veilleuse
+  échoue, l'entrée ne sort du journal que si l'état lu est celui qu'on avait
+  noté.
+- Le jeu et ses ancêtres ne sont jamais ralentis : un ancêtre absent du journal
+  trouvé bas est relevé, un ancêtre du journal est remis à chaque pas, y compris
+  après un changement de jeu.
 
-**L'horloge et le redémarrage.** Tous les délais (deux pas pour confirmer un
-jeu, dix minutes d'arrière-plan, trente secondes de relevé, soixante secondes
-avant de réessayer une écriture, les deux minutes de l'agent lancé par Windows)
-se comptent avec l'horloge monotone (`GetTickCount64`), jamais avec l'heure
-murale. **Windows a redémarré si, au démarrage de l'agent, l'horloge monotone
-est plus petite que `openedUptime`** (elle ne fait que croître tant que le PC
-reste allumé). Alors la partie est close, seul le mode d'alimentation est
-remis, aucun processus n'est touché et aucun descendant n'est cherché (les
-numéros ne désignent plus les mêmes). Sans `openedUptime` (ancien journal), on
-suppose qu'il n'a pas redémarré : `inspect` et `apply` vérifient la date de
-création, et au pire un processus est relevé à tort. Un saut de l'heure murale
-n'est jamais pris pour un redémarrage.
+**Les morts.** Une entrée du journal absente du relevé n'en sort que si Windows
+prouve que le processus n'existe plus : `liveness` rend `Dead`, `Alive` ou
+`Unknown` (accès refusé, relevé incomplet), et seul `Dead` retire l'entrée.
+Sinon l'entrée garde son état d'avant et la remise la retentera. Un relevé
+illisible (vide, ou sans le jeu alors que son processus n'est pas prouvé mort)
+suspend seulement les morts, la famille, la mise en veilleuse des nouveaux et la
+fin « plus aucun processus du jeu » ; les autres fins (mode automatique éteint,
+« Ce n'est pas un jeu », dix minutes d'arrière-plan, nouveaux essais de remise)
+passent.
+
+**Une seule remise en place** sert à la fin de partie, à « Tout remettre », aux
+nouveaux essais, à la reprise après plantage et à `--quitter` / `--retirer`,
+avec ou sans mémoire. Au plus trois tours : (a) chaque entrée retrouve son état
+d'avant par identité exacte (un processus mort sort, un processus illisible
+reste en attente) ; (b) un relevé frais, puis la passe de famille en mode
+remise, qui relève tout membre entrant trouvé sous la normale, listé ou non ;
+(c) un tour de plus si quelque chose a été relevé. Le journal n'est écrit
+qu'après (b). Sans mémoire (reprise après plantage, ordres sans agent), il n'y a
+pas de filtre « nouveau », les points de départ sont les émetteurs trouvés
+vivants, et tout membre sous la normale est relevé une fois ; une entrée morte
+ne donne rien. Après un redémarrage du PC, aucune identité du journal ne
+correspond : rien n'est touché, sans qu'on ait à détecter le redémarrage.
+
+**Les dates.** `since` est le début du jeu affiché ; il ne sert qu'à
+l'affichage. Les délais (deux pas pour confirmer un jeu, dix minutes
+d'arrière-plan, trente secondes de relevé, soixante secondes avant de réessayer
+une écriture, les deux minutes de l'agent lancé par Windows) se comptent avec
+l'horloge monotone (`GetTickCount64`), jamais avec l'heure murale ; aucun n'entre
+dans la filiation. Un ancien `game.json` reste lisible : les champs `opened`,
+`openedUptime` et `roots` (avec `goneMs`, `goneUptime`) sont ignorés et ne sont
+plus écrits.
+
+**Limites connues.**
+
+- Un programme non listé lancé par un intermédiaire qui a vécu moins de deux
+  secondes, jamais vu, garde la priorité basse héritée.
+- Reprise après plantage : les enfants nés pendant que l'agent était arrêté, de
+  parents déjà morts, ne sont pas retrouvés ; sans mémoire, un assistant qui
+  s'était baissé lui-même peut être relevé.
+- Un héritier qui se rabaisse lui-même après son relèvement n'est pas repris
+  (un essai par identité).
+- L'état d'avant d'un héritier listé est « normale », mode efficacité par défaut,
+  que le mode efficacité soit hérité ou non (non vérifié sous Windows).
+- Après un redémarrage du PC avec le même jeu ouvert, la partie reprise peut
+  afficher une durée fausse (cosmétique).
 
 **Les échecs.** Un processus dont la priorité a changé mais pas le mode
 efficacité est remis tel qu'il était (`SetPriorityClass`), et le cœur relit son

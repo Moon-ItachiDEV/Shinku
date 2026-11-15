@@ -10,13 +10,11 @@
 //! périodiquement, d'un seul geste (voir [`crate::settings`]). La fenêtre ne
 //! fait que le lire.
 //!
-//! La partie en cours garde deux dates : `opened`, l'ouverture, qui ne change
-//! jamais pendant la partie (c'est la borne de tout ce qui touche à la remise
-//! en place), et `since`, le début du jeu en cours, qui change quand la partie
-//! passe d'un jeu à l'autre (c'est ce que la page affiche). Elle garde aussi
-//! ses **racines** : tout processus qui est passé par le journal pendant la
-//! partie, même s'il en est sorti depuis, pour retrouver ceux qui ont hérité de
-//! sa priorité basse.
+//! La partie en cours garde `since`, le début du jeu en cours (c'est ce que la
+//! page affiche). Rien d'autre n'est daté : la remise en place retrouve ce
+//! qu'il faut par l'identité exacte des processus (pid et date de création),
+//! jamais par une comparaison de dates. Un ancien journal peut encore porter
+//! `opened`, `openedUptime` ou `roots` : ces champs sont ignorés.
 //!
 //! **Lecture méfiante** : n'importe quel programme du compte peut écrire ce
 //! fichier. Absent, illisible ou de plus de 1 Mo, c'est un état vide. Chaque
@@ -48,8 +46,6 @@ pub(crate) const APP_DIR: &str = "Shinku";
 pub const SEEN_KEPT: usize = 20;
 /// Nombre maximal de processus en veilleuse dans le journal.
 pub const QUIETED_KEPT: usize = 512;
-/// Nombre maximal de racines dans le journal.
-pub const ROOTS_KEPT: usize = 512;
 /// Taille maximale du fichier : au-delà, il est traité comme illisible.
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 /// Longueur maximale d'une chaîne lue dans le fichier, en caractères.
@@ -120,41 +116,12 @@ pub struct Quieted {
     pub throttle_state: u32,
 }
 
-/// Un processus passé par le journal pendant la partie : la racine d'une
-/// famille de processus qui ont pu hériter de sa priorité basse.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Root {
-    /// Son numéro.
-    pub pid: u32,
-    /// Sa date de création (`FILETIME`).
-    pub started: i64,
-    /// Date, en millisecondes depuis 1970, où un relevé l'a vu mort. Absente
-    /// tant qu'il vit.
-    #[serde(rename = "goneMs", skip_serializing_if = "Option::is_none")]
-    pub gone: Option<i64>,
-    /// Le même instant sur l'horloge monotone de la machine (millisecondes
-    /// depuis le démarrage de Windows) : l'heure murale peut avoir sauté depuis.
-    /// Absent dans un journal d'avant ce champ.
-    #[serde(rename = "goneUptime", skip_serializing_if = "Option::is_none")]
-    pub gone_uptime: Option<u64>,
-}
-
 /// La partie en cours.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     /// Le jeu.
     pub game: GameRef,
-    /// Ouverture de la partie, en millisecondes depuis 1970. Ne change jamais
-    /// pendant la partie : tout ce qui est né avant n'est pas d'elle.
-    pub opened: i64,
-    /// L'horloge monotone de la machine (millisecondes depuis le démarrage de
-    /// Windows) à l'ouverture de la partie : si elle est plus grande que celle
-    /// d'à présent, Windows a redémarré. Absente dans un journal d'avant ce
-    /// champ : on suppose alors qu'il n'a pas redémarré.
-    #[serde(rename = "openedUptime", skip_serializing_if = "Option::is_none")]
-    pub opened_uptime: Option<u64>,
     /// Début du jeu en cours, en millisecondes depuis 1970 (c'est l'affichage).
     pub since: i64,
     /// La personne a demandé de tout remettre en place : rien n'est plus appliqué.
@@ -163,50 +130,8 @@ pub struct Session {
     pub power: PowerRecord,
     /// Les processus en veilleuse.
     pub quieted: Vec<Quieted>,
-    /// Tous les processus passés par le journal pendant la partie.
-    pub roots: Vec<Root>,
     /// Quelque chose n'a pas pu être remis en place : Shinku réessaie.
     pub restore_pending: bool,
-}
-
-impl Session {
-    /// Note un processus comme racine. Si la liste est pleine, la racine morte
-    /// depuis le plus longtemps lui laisse la place, jamais une racine vivante
-    /// tant qu'il reste une morte ; s'il n'y en a pas, il n'est pas noté (il
-    /// reste dans `quieted`, qui sert aussi de racines).
-    pub fn add_root(&mut self, pid: u32, started: i64) {
-        if self.roots.iter().any(|root| root.pid == pid && root.started == started) {
-            return;
-        }
-        if self.roots.len() >= ROOTS_KEPT {
-            let oldest = self
-                .roots
-                .iter()
-                .enumerate()
-                .filter_map(|(index, root)| root.gone.map(|gone| (gone, index)))
-                .min();
-            let Some((_, dead)) = oldest else { return };
-            self.roots.remove(dead);
-        }
-        self.roots.push(Root { pid, started, gone: None, gone_uptime: None });
-    }
-
-    /// Les racines de la partie : celles qui sont notées, plus les processus
-    /// en veilleuse (qui en sont toujours).
-    pub fn all_roots(&self) -> Vec<Root> {
-        let mut roots = self.roots.clone();
-        for entry in &self.quieted {
-            if !roots.iter().any(|root| root.pid == entry.pid && root.started == entry.started) {
-                roots.push(Root {
-                    pid: entry.pid,
-                    started: entry.started,
-                    gone: None,
-                    gone_uptime: None,
-                });
-            }
-        }
-        roots
-    }
 }
 
 /// Le bilan de la dernière partie terminée.
@@ -400,16 +325,6 @@ fn parse_quieted(value: &Value) -> Option<Quieted> {
     })
 }
 
-fn parse_root(value: &Value) -> Option<Root> {
-    let root = value.as_object()?;
-    Some(Root {
-        pid: u32::try_from(integer(root.get("pid"))?).ok()?,
-        started: integer(root.get("started"))?,
-        gone: integer(root.get("goneMs")),
-        gone_uptime: integer(root.get("goneUptime")).and_then(|at| u64::try_from(at).ok()),
-    })
-}
-
 fn parse_session(value: &Value) -> Option<Session> {
     let session = value.as_object()?;
     let game = session.get("game").and_then(Value::as_object);
@@ -420,12 +335,6 @@ fn parse_session(value: &Value) -> Option<Session> {
         }
         _ => Vec::new(),
     };
-    let roots = match session.get("roots") {
-        Some(Value::Array(entries)) => {
-            entries.iter().filter_map(parse_root).take(ROOTS_KEPT).collect()
-        }
-        _ => Vec::new(),
-    };
     let since = integer(session.get("since")).unwrap_or(0);
     Some(Session {
         game: GameRef {
@@ -433,14 +342,10 @@ fn parse_session(value: &Value) -> Option<Session> {
             name: field("name"),
             source: source(game.and_then(|game| game.get("source"))),
         },
-        // Un journal d'avant `opened` se relit avec `opened = since`.
-        opened: integer(session.get("opened")).unwrap_or(since),
-        opened_uptime: integer(session.get("openedUptime")).and_then(|at| u64::try_from(at).ok()),
         since,
         released: session.get("released").and_then(Value::as_bool).unwrap_or(false),
         power: parse_power(session.get("power")),
         quieted,
-        roots,
         restore_pending: session.get("restorePending").and_then(Value::as_bool).unwrap_or(false),
     })
 }
@@ -521,26 +426,10 @@ mod tests {
                     name: "Hollow Peaks".to_owned(),
                     source: Source::Library,
                 },
-                opened: 1_794_765_000_000,
-                opened_uptime: Some(3_600_000),
                 since: 1_794_765_291_613,
                 released: false,
                 power: PowerRecord::applied(PowerPlan::BALANCED),
                 quieted: vec![quieted(111), Quieted { priority: priority::HIGH, ..quieted(112) }],
-                roots: vec![
-                    Root {
-                        pid: 111,
-                        started: 133_800_000_000_000_000,
-                        gone: None,
-                        gone_uptime: None,
-                    },
-                    Root {
-                        pid: 90,
-                        started: 133_799_000_000_000_000,
-                        gone: Some(1_794_765_200_000),
-                        gone_uptime: Some(3_700_000),
-                    },
-                ],
                 restore_pending: false,
             }),
             last: Some(Last {
@@ -738,34 +627,23 @@ mod tests {
     }
 
     #[test]
-    fn a_journal_without_opened_takes_the_start_of_the_game_as_its_opening() {
+    fn an_old_journal_with_roots_and_dates_is_still_read_and_those_fields_are_ignored() {
         let (_temp, store) = store();
         write_raw(
             &store,
             &json!({"session": {"game": {"path": r"D:\x\hp.exe", "name": "x", "source": "library"},
-                "since": 42, "quieted": []}})
+                "opened": 1, "openedUptime": 5000, "since": 2,
+                "quieted": [{"pid": 4, "started": 5, "exe": "onedrive.exe", "priority": 32}],
+                "roots": [{"pid": 4, "started": 5, "goneMs": 7, "goneUptime": 6000}]}})
             .to_string(),
         );
         let session = store.load().session.expect("une partie");
-        assert_eq!((session.opened, session.since), (42, 42));
-        assert!(session.roots.is_empty());
-    }
-
-    #[test]
-    fn roots_are_read_with_their_death_date_and_bounded() {
-        let (_temp, store) = store();
-        let roots: Vec<Value> =
-            (0..(ROOTS_KEPT + 100)).map(|n| json!({"pid": n, "started": 5, "goneMs": 7})).collect();
-        write_raw(
-            &store,
-            &json!({"session": {"game": {"path": r"D:\x\hp.exe", "name": "x", "source": "library"},
-                "opened": 1, "since": 2, "quieted": [], "roots": roots}})
-            .to_string(),
-        );
-        let session = store.load().session.expect("une partie");
-        assert_eq!(session.roots.len(), ROOTS_KEPT);
-        assert_eq!(session.roots[0].gone, Some(7));
-        assert_eq!(session.opened, 1);
+        assert_eq!(session.since, 2);
+        assert_eq!(session.quieted.len(), 1, "le reste du journal se lit");
+        // Réécrit, il ne porte plus ces champs.
+        store.save(&store.load()).unwrap();
+        let text = fs::read_to_string(store.path()).unwrap();
+        assert!(!text.contains("roots") && !text.contains("opened") && !text.contains("goneMs"));
     }
 
     #[test]
@@ -801,70 +679,6 @@ mod tests {
         let padding = " ".repeat(usize::try_from(MAX_FILE_BYTES).unwrap() + 10);
         write_raw(&store, &format!("{{\"seen\": []{padding}}}"));
         assert_eq!(store.load(), GameFile::default());
-    }
-
-    #[test]
-    fn the_opening_uptime_and_the_death_uptime_are_read_and_old_journals_have_none() {
-        let (_temp, store) = store();
-        write_raw(
-            &store,
-            &json!({"session": {"game": {"path": r"D:\x\hp.exe", "name": "x", "source": "library"},
-                "opened": 1, "openedUptime": 5000, "since": 2, "quieted": [],
-                "roots": [{"pid": 4, "started": 5, "goneMs": 7, "goneUptime": 6000},
-                          {"pid": 5, "started": 5, "goneMs": 7}]}})
-            .to_string(),
-        );
-        let session = store.load().session.expect("une partie");
-        assert_eq!(session.opened_uptime, Some(5000));
-        assert_eq!(session.roots[0].gone_uptime, Some(6000));
-        assert_eq!(session.roots[1].gone_uptime, None);
-        // Écrits tels quels, relus tels quels.
-        store.save(&store.load()).unwrap();
-        assert_eq!(store.load().session.expect("une partie"), session);
-        // Un champ négatif ou absurde ne se lit pas.
-        write_raw(
-            &store,
-            &json!({"session": {"game": {"path": "x", "name": "x", "source": "library"},
-                "since": 2, "openedUptime": -4}})
-            .to_string(),
-        );
-        assert_eq!(store.load().session.expect("une partie").opened_uptime, None);
-    }
-
-    #[test]
-    fn a_full_root_list_gives_up_the_dead_root_gone_for_longest_and_never_a_live_one() {
-        let mut session = full_file().session.expect("une partie");
-        session.quieted.clear();
-        session.roots = (0..u32::try_from(ROOTS_KEPT).unwrap())
-            .map(|n| Root {
-                pid: n,
-                started: 5,
-                gone: (n % 2 == 1).then_some(1000 - i64::from(n)),
-                gone_uptime: None,
-            })
-            .collect();
-        // Les racines mortes ont `goneMs` = 1000 - n : la plus ancienne est celle de n = 511.
-        session.add_root(9000, 7);
-        assert_eq!(session.roots.len(), ROOTS_KEPT);
-        assert!(session.roots.iter().any(|root| root.pid == 9000));
-        assert!(
-            session.roots.iter().all(|root| root.pid != 511),
-            "la plus anciennement morte part"
-        );
-        let live_before = (0..u32::try_from(ROOTS_KEPT).unwrap()).filter(|n| n % 2 == 0).count();
-        let live_after = session.roots.iter().filter(|root| root.gone.is_none()).count();
-        assert_eq!(
-            live_after,
-            live_before + 1,
-            "aucune racine vivante n'est évincée (+ la nouvelle)"
-        );
-        // Toutes vivantes : la nouvelle n'est pas notée, aucune n'est évincée.
-        for root in &mut session.roots {
-            root.gone = None;
-        }
-        session.add_root(9001, 7);
-        assert!(session.roots.iter().all(|root| root.pid != 9001));
-        assert_eq!(session.roots.len(), ROOTS_KEPT);
     }
 
     #[test]
