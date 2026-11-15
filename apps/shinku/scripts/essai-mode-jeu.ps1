@@ -104,10 +104,9 @@ function Save-State {
 }
 
 function Active-Scheme {
-    $text = (& powercfg /getactivescheme) -join ' '
-    if ($text -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
-        return $Matches[1].ToLower()
-    }
+    $text = "$((& powercfg /getactivescheme) -join ' ')"
+    $found = [regex]::Match($text, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+    if ($found.Success) { return $found.Value.ToLower() }
     Fail "powercfg ne donne pas le mode d'alimentation actif : $text"
 }
 
@@ -394,8 +393,14 @@ function Invoke-AsUser([string]$Name, [string]$Command) {
         Fail "la commande « $Command » ne rend pas la main en 30 s"
     }
     if ($null -eq $launched.Launcher.ExitCode) { Fail "le code de sortie de « $Command » est illisible" }
-    $text = if (Test-Path $output) { (Get-Content -Raw -ErrorAction SilentlyContinue $output) } else { '' }
-    return [pscustomobject]@{ ExitCode = $launched.Launcher.ExitCode; Output = ([string]$text).Trim() }
+    # Une commande qui réussit sans rien écrire laisse un fichier vide, et
+    # Get-Content ne rend alors rien du tout : le texte part d'une chaîne vide.
+    $text = ''
+    if (Test-Path $output) {
+        $read = Get-Content -Raw -ErrorAction SilentlyContinue $output
+        if ($null -ne $read) { $text = "$read".Trim() }
+    }
+    return [pscustomobject]@{ ExitCode = $launched.Launcher.ExitCode; Output = $text }
 }
 
 function Read-Game {
@@ -533,14 +538,14 @@ try {
             } elseif (($sddl.Split(@($bu), [StringSplitOptions]::None).Count - 1) -ne 1) {
                 Say "sonde refusée, mais la description de sécurité n'a pas exactement une entrée $bu : rien n'est changé"
             } else {
-                $opened = $sddl.Replace($bu, '(A;CI;KRKW;;;BU)')
+                $widened = $sddl.Replace($bu, '(A;CI;KRKW;;;BU)')
                 $State.sddl = $sddl
                 $State.sddlChanged = $true
                 Save-State
-                & powercfg /setsecuritydescriptor ActionSetActive $opened | Out-Null
+                & powercfg /setsecuritydescriptor ActionSetActive $widened | Out-Null
                 $written = Get-ActionSddl
                 Say "description de sécurité posée : $written"
-                if ($written -cne $opened) { Fail "la description de sécurité relue n'est pas celle qui a été posée (« $written »)" }
+                if ($written -cne $widened) { Fail "la description de sécurité relue n'est pas celle qui a été posée (« $written »)" }
                 $probe = Invoke-AsUser 'sonde-alimentation-2' "powercfg /setactive $HighPerformance"
                 $afterProbe = Active-Scheme
                 $probeOk = ($probe.ExitCode -eq 0) -and ($afterProbe -eq $HighPerformance)
@@ -658,6 +663,12 @@ try {
 } catch {
     $exitCode = 1
     Say "ECHEC : $($_.Exception.Message)"
+    if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
+        foreach ($where in ("$($_.InvocationInfo.PositionMessage)" -split "`r?`n")) { if ("$where".Trim()) { Say "  $where" } }
+    }
+    if ($_.ScriptStackTrace) {
+        foreach ($where in ("$($_.ScriptStackTrace)" -split "`r?`n")) { if ("$where".Trim()) { Say "  $where" } }
+    }
     Say 'ce que la machine montrait :'
     try {
         Say "  premier plan : $(Foreground-Name)"
