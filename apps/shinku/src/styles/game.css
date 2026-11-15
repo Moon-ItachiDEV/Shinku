@@ -40,6 +40,11 @@
   font-size: 24px;
 }
 
+/* Le titre reçoit le focus quand la partie disparaît (pour que le clavier ne reparte pas du haut) : ce n'est pas un contrôle, pas d'anneau. */
+.ghead h1:focus {
+  outline: none;
+}
+
 .gtext {
   max-width: 620px;
   margin: 8px 0 0;

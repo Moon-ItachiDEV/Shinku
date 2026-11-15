@@ -27,6 +27,9 @@ export const GAME_POLL_DELAY = 2000;
  */
 export const RELEASE_GRACE = 6000;
 
+/** Un geste resté sans réponse ce temps-là est abandonné : son bouton se libère et le sondage reprend, en millisecondes. */
+export const GESTURE_TIMEOUT = 10_000;
+
 /** Les échecs de suite de `game_view` après lesquels la page le dit, au lieu de « Chargement… ». */
 export const VIEW_FAILURES = 3;
 
@@ -195,6 +198,14 @@ export function withReleased(view: GameView, released: boolean): GameView {
   return view.session === null ? view : { ...view, session: { ...view.session, released } };
 }
 
+/**
+ * « Ce n'est pas un jeu » est parti pour la partie en cours : l'en-tête attend
+ * que l'agent la termine, tant que la vue montre encore cette partie.
+ */
+export function isLeaving(view: GameView, leaving: string | null): boolean {
+  return leaving !== null && view.session?.path === leaving;
+}
+
 /** La partie dont « Tout remettre maintenant » est parti, et jusqu'à quand la page la tient pour remise en place. */
 export interface Releasing {
   path: string;
@@ -242,6 +253,7 @@ export const busyKey = {
 /** Ce qui identifie un bouton où le focus peut être rendu (`data-fk` dans la page). */
 export const focusKey = {
   headerNotGame: 'header-notgame',
+  title: 'title',
   addGame: 'add-game',
   addApp: 'add-app',
   game: (path: string): string => `game:${path}`,

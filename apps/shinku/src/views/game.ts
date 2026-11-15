@@ -7,6 +7,7 @@
 
 import { html, nothing, type TemplateResult } from 'lit-html';
 import { ref } from 'lit-html/directives/ref.js';
+import { repeat } from 'lit-html/directives/repeat.js';
 
 import type { GameOption, GameSession, GameView, KnownGame, OpenApp, QuietApp } from '../backend/types.ts';
 import { formatAgo, formatDuration, formatSince, listOf } from '../format.ts';
@@ -20,6 +21,7 @@ import {
   type HeaderState,
   headerState,
   inGame,
+  isLeaving,
   isRemovable,
   isRemovableApp,
   type PowerChip,
@@ -56,7 +58,10 @@ function headerTitle(state: HeaderState, session: GameSession | null): string {
   }
 }
 
-function headerText(state: HeaderState, session: GameSession | null, now: number): string {
+function headerText(state: HeaderState, session: GameSession | null, now: number, leaving: boolean): string {
+  if (leaving) {
+    return fr.game.textLeaving;
+  }
   switch (state) {
     case 'off':
       return fr.game.textOff;
@@ -105,12 +110,14 @@ function lastGame(view: GameView): Content {
 function header(state: AppState, view: GameView, actions: Actions): TemplateResult {
   const head = headerState(view);
   const session = view.session;
+  // « Ce n'est pas un jeu » est parti : l'agent ne l'a pas encore noté, l'en-tête attend.
+  const leaving = isLeaving(view, state.gameLeaving);
   return html`<header class="ghead">
     <div class="gart">${moduleArt('gameMode')}</div>
     <div class="gtx">
       <p class="eb">${fr.game.eyebrow}</p>
-      <h1>${headerTitle(head, session)}</h1>
-      <p class="gtext" role="status">${headerText(head, session, state.now)}</p>
+      <h1 tabindex="-1" data-fk=${focusKey.title}>${headerTitle(head, session)}</h1>
+      <p class="gtext" role="status">${headerText(head, session, state.now, leaving)}</p>
       ${session !== null && showsChips(head) ? chips(session) : nothing}
       ${session !== null && showsButtons(head)
         ? html`<div class="gbtns">
@@ -118,7 +125,7 @@ function header(state: AppState, view: GameView, actions: Actions): TemplateResu
               ? html`<button
                   type="button"
                   class="ghost small"
-                  ?disabled=${isBusy(state, busyKey.release)}
+                  ?disabled=${leaving || isBusy(state, busyKey.release)}
                   @click=${actions.releaseGame}
                 >
                   ${fr.game.release}
@@ -129,7 +136,7 @@ function header(state: AppState, view: GameView, actions: Actions): TemplateResu
               class="ghost small"
               data-fk=${focusKey.headerNotGame}
               aria-label=${fr.game.notAGameNamed(session.name)}
-              ?disabled=${isBusy(state, busyKey.status(session.path))}
+              ?disabled=${leaving || isBusy(state, busyKey.status(session.path))}
               @click=${() => actions.setGameStatus(session.path, 'notGame')}
             >
               ${fr.game.notAGame}
@@ -285,7 +292,11 @@ function quietBlock(state: AppState, view: GameView, actions: Actions): Content 
   return html`<div class="sblock gquiet">
     ${shown.length > 0
       ? html`<ul class="list glist" aria-labelledby="game-quietApps-l">
-          ${shown.map((app) => quietRow(state, app, actions))}
+          ${repeat(
+            shown,
+            (app) => app.exe,
+            (app) => quietRow(state, app, actions),
+          )}
         </ul>`
       : nothing}
     ${waiting.length > 0 ? html`<p class="d">${fr.game.quietAlso(listOf(waiting))}</p>` : nothing}
@@ -371,7 +382,11 @@ function gamesSection(state: AppState, view: GameView, actions: Actions): Templa
         ${view.games.length === 0
           ? html`<p class="d gempty">${fr.game.gamesEmpty}</p>`
           : html`<ul class="list">
-              ${view.games.map((game) => gameRow(state, game, actions))}
+              ${repeat(
+                view.games,
+                (game) => game.path,
+                (game) => gameRow(state, game, actions),
+              )}
             </ul>`}
         <button type="button" class="ghost small add" data-fk=${focusKey.addGame} @click=${() => actions.openPicker('game')}>
           ${fr.game.addGame}
@@ -381,7 +396,11 @@ function gamesSection(state: AppState, view: GameView, actions: Actions): Templa
           ? nothing
           : html`<h3 class="sub gnever">${fr.game.never}</h3>
               <ul class="list">
-                ${view.notGames.map((entry) => notGameRow(state, entry, actions))}
+                ${repeat(
+                  view.notGames,
+                  (entry) => entry.path,
+                  (entry) => notGameRow(state, entry, actions),
+                )}
               </ul>`}
       </div>
     </div>
@@ -443,22 +462,35 @@ function pickRow(app: OpenApp, busy: boolean, actions: Actions): TemplateResult 
   </li>`;
 }
 
+/**
+ * Échap et clic sur le voile : c'est l'application qui referme, pour que
+ * l'écran et son état disent la même chose.
+ */
+export function pickerHandlers(actions: Pick<Actions, 'closePicker'>): {
+  onCancel: (event: Event) => void;
+  onClick: (event: Event) => void;
+} {
+  return {
+    onCancel: (event) => {
+      event.preventDefault();
+      actions.closePicker();
+    },
+    // Un clic à côté de la boîte tombe sur le voile, donc sur le dialogue lui-même.
+    onClick: (event) => {
+      if (event.target === event.currentTarget) {
+        actions.closePicker();
+      }
+    },
+  };
+}
+
 /** Le sélecteur d'un jeu ou d'une app, parmi ce qui est ouvert en ce moment. */
 export function pickerDialog(state: AppState, actions: Actions): Content {
   const picker = state.picker;
   if (picker === null) {
     return nothing;
   }
-  // Échap et clic sur le voile : c'est l'application qui referme, pour que l'écran et son état disent la même chose.
-  const onCancel = (event: Event): void => {
-    event.preventDefault();
-    actions.closePicker();
-  };
-  const onClick = (event: Event): void => {
-    if (event.target === event.currentTarget) {
-      actions.closePicker();
-    }
-  };
+  const { onCancel, onClick } = pickerHandlers(actions);
   const apps = picker.apps;
   return html`<dialog
     class="ask"
@@ -477,7 +509,11 @@ export function pickerDialog(state: AppState, actions: Actions): Content {
         : apps.length === 0
           ? html`<p class="note">${fr.game.pickEmpty}</p>`
           : html`<ul class="list pickl">
-              ${apps.map((app) => pickRow(app, isBusy(state, busyKey.pick), actions))}
+              ${repeat(
+                apps,
+                (app) => app.id,
+                (app) => pickRow(app, isBusy(state, busyKey.pick), actions),
+              )}
             </ul>`}
       <div class="askbtns">
         <button type="button" class="ghost" autofocus @click=${actions.closePicker}>${fr.game.cancel}</button>

@@ -233,8 +233,11 @@ test('le chemin envoyé avec l’id doit être celui de cet id dans la dernière
   const view = await backend.gameView();
   assert.ok(!view.games.some((entry) => entry.name === 'Roblox'));
   assert.ok(!view.apps.some((entry) => entry.exe === 'robloxplayerbeta.exe'));
-  // Le bon couple passe, quelle que soit la casse du chemin.
-  const added = await backend.addGame(roblox.id, roblox.path.toUpperCase());
+  // Le cœur compare le chemin exactement, casse comprise : une autre casse est refusée.
+  assert.equal(await refusal(backend.addGame(roblox.id, roblox.path.toUpperCase())), 'unknownApp');
+  assert.equal(await refusal(backend.addQuietApp(roblox.id, roblox.path.toLowerCase())), 'unknownApp');
+  // Le bon couple passe.
+  const added = await backend.addGame(roblox.id, roblox.path);
   assert.ok(added.games.some((entry) => entry.name === 'Roblox'));
 });
 

@@ -27,6 +27,8 @@ import {
   busyKey,
   focusKey,
   GAME_POLL_DELAY,
+  GESTURE_TIMEOUT,
+  isLeaving,
   neighbour,
   noteStop,
   optionOf,
@@ -668,7 +670,7 @@ export class App {
       return;
     }
     // Une visite neuve : ni la vue ni l'arrêt noté de la précédente.
-    this.set({ game: null, gameStoppedSince: null, gameFailed: false });
+    this.set({ game: null, gameStoppedSince: null, gameFailed: false, gameLeaving: null });
     this.gameFailures = 0;
     this.releasing = null;
     void this.refreshGame();
@@ -688,7 +690,7 @@ export class App {
     }
     window.clearInterval(this.gameTimer);
     this.gameTimer = undefined;
-    this.set({ game: null, gameStoppedSince: null, gameFailed: false });
+    this.set({ game: null, gameStoppedSince: null, gameFailed: false, gameLeaving: null });
   }
 
   private adoptGame(received: GameView): void {
@@ -701,7 +703,17 @@ export class App {
     if (this.releasing !== null && view === received) {
       this.releasing = null;
     }
-    this.set({ game: view, gameStoppedSince: noteStop(this.state.gameStoppedSince, view, now), now });
+    const gone = this.state.gameLeaving !== null && !isLeaving(view, this.state.gameLeaving);
+    this.set({
+      game: view,
+      gameStoppedSince: noteStop(this.state.gameStoppedSince, view, now),
+      now,
+      ...(gone ? { gameLeaving: null } : {}),
+    });
+    if (gone) {
+      // La partie est finie : les boutons de l'en-tête ont disparu, le focus va au titre de la page.
+      this.focusKey(focusKey.title);
+    }
   }
 
   private async refreshGame(): Promise<void> {
@@ -774,23 +786,41 @@ export class App {
     if (optimistic !== undefined && before !== null) {
       this.set({ game: optimistic(before) });
     }
-    // La réponse arrive : un sondage parti avant elle serait plus vieux qu'elle.
-    const answered = (): void => {
+    // La réponse arrive (ou le geste est abandonné) : un sondage parti avant serait plus vieux qu'elle.
+    let over = false;
+    const answered = (): boolean => {
+      if (over) {
+        return false;
+      }
+      over = true;
+      window.clearTimeout(giveUp);
       this.gamePending -= 1;
       this.gameEpoch += 1;
       if (key !== undefined) {
         this.set({ gameBusy: this.state.gameBusy.filter((other) => other !== key) });
       }
+      return true;
     };
+    // Un geste sans réponse bloquerait le sondage et son bouton pour toujours : passé le délai, on l'abandonne.
+    // Sa réponse, si elle arrive plus tard, est ignorée (`over`).
+    const giveUp = window.setTimeout(() => {
+      if (answered()) {
+        void this.refreshGame();
+      }
+    }, GESTURE_TIMEOUT);
     try {
       const view = await request();
-      answered();
+      if (!answered()) {
+        return false;
+      }
       if (mine === this.gameSeq) {
         this.adoptGame(view);
       }
       return true;
     } catch (error) {
-      answered();
+      if (!answered()) {
+        return false;
+      }
       const current = this.state.game;
       if (undo !== undefined && current !== null) {
         this.set({ game: undo(current) });
@@ -865,10 +895,20 @@ export class App {
           ? view.notGames.map((entry) => focusKey.never(entry.path))
           : view.games.map((game) => focusKey.game(game.path));
     const row = view?.notGames.some((entry) => entry.path === path) ? focusKey.never(path) : focusKey.game(path);
+    // La partie en cours : l'en-tête attend que l'agent la termine, et le focus ira au titre quand elle aura disparu.
+    const ownGame = status === 'notGame' && view?.session?.path === path;
+    if (ownGame) {
+      this.set({ gameLeaving: path });
+    }
     const done = await this.gameCommand(() => this.backend.setGameStatus(path, status), {
       key: busyKey.status(path),
     });
-    if (done) {
+    if (!done) {
+      if (ownGame) {
+        // Le cœur a refusé : l'en-tête reprend son état.
+        this.set({ gameLeaving: null });
+      }
+    } else if (!ownGame) {
       this.focusKey(neighbour(keys, row) ?? focusKey.addGame);
     }
   }

@@ -87,6 +87,8 @@ export interface AppState {
   game: GameView | null;
   /** Depuis quand l'agent du mode jeu est vu arrêté, le mode automatique allumé, ou `null`. */
   gameStoppedSince: number | null;
+  /** Le chemin de la partie dont « Ce n'est pas un jeu » est parti : l'en-tête attend que l'agent la termine. */
+  gameLeaving: string | null;
   /** Plusieurs demandes de suite de la vue du mode jeu ont échoué : la page le dit au lieu de « Chargement… ». */
   gameFailed: boolean;
   /** Les gestes du mode jeu en vol (voir `busyKey`) : leurs boutons attendent la réponse. */
@@ -128,6 +130,7 @@ export function initialState(now: number): AppState {
     toastShown: false,
     game: null,
     gameStoppedSince: null,
+    gameLeaving: null,
     gameFailed: false,
     gameBusy: [],
     picker: null,

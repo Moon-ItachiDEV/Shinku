@@ -14,6 +14,7 @@ import {
   focusKey,
   headerState,
   inGame,
+  isLeaving,
   isRemovable,
   isRemovableApp,
   neighbour,
@@ -316,4 +317,13 @@ test('quand une ligne disparaît, le focus va à la suivante, sinon à la préc�
   assert.equal(neighbour(['seule'], 'seule'), null);
   assert.equal(neighbour(rows, 'absente'), null);
   assert.equal(neighbour([], 'a'), null);
+});
+
+test('l’en-tête attend tant que la vue montre la partie dont « Ce n’est pas un jeu » est parti', () => {
+  const playing = view({ session: session() });
+  assert.ok(isLeaving(playing, session().path));
+  assert.ok(!isLeaving(playing, null));
+  assert.ok(!isLeaving(playing, 'D:\\autre.exe'));
+  // La partie a disparu de la vue : plus d'attente.
+  assert.ok(!isLeaving(view(), session().path));
 });

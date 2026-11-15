@@ -58,6 +58,34 @@ test('les commandes sont les mêmes partout où elles sont listées', () => {
   assert.deepEqual(sorted(new Set(called)), sorted(declared), 'backend/tauri.ts et build.rs');
 });
 
+const camel = (name: string): string => name.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+
+test('chaque commande reçoit de la page les arguments que commands.rs attend, sous les mêmes noms', () => {
+  // Ce que le cœur attend : les paramètres de chaque commande, sans l'état ni la fenêtre, en camelCase (Tauri convertit).
+  const rust = new Map<string, string[]>();
+  for (const match of read('src-tauri/src/commands.rs').matchAll(
+    /#\[tauri::command[^\]]*\]\s*pub (?:async )?fn (\w+)\s*(?:<[^>]*>)?\(([^)]*)\)/g,
+  )) {
+    const parameters = Array.from((match[2] ?? '').matchAll(/(\w+)\s*:\s*([\w:]+)(?:<[^>]*>)?/g))
+      .filter((parameter) => !['State', 'AppHandle', 'Window', 'WebviewWindow'].includes(parameter[2] ?? ''))
+      .map((parameter) => camel(parameter[1] ?? ''));
+    rust.set(match[1] ?? '', parameters.sort());
+  }
+  // Ce que la page envoie : les clés de l'objet passé à `invoke`.
+  const page = new Map<string, string[]>();
+  for (const match of read('src/backend/tauri.ts').matchAll(/invoke(?:<[^>]*>)?\(\s*'(\w+)'\s*(?:,\s*\{([^}]*)\})?\s*\)/g)) {
+    const keys = (match[2] ?? '')
+      .split(',')
+      .map((part) => part.trim().split(':')[0]?.trim() ?? '')
+      .filter((key) => key !== '');
+    page.set(match[1] ?? '', keys.sort());
+  }
+  assert.deepEqual([...page.keys()].sort(), [...rust.keys()].sort());
+  for (const [command, parameters] of rust) {
+    assert.deepEqual(page.get(command), parameters, command);
+  }
+});
+
 test('la fenêtre ne reçoit que les permissions dont elle se sert', () => {
   const core = capability.permissions.filter((permission) => permission.includes(':'));
   assert.deepEqual(sorted(core), [
