@@ -168,6 +168,7 @@ jobs:
       # l'essai vérifie sur le disque ce qui est parti et ce qui est resté.
       # Sans cela, l'installeur n'est pas publié.
       - name: Installation
+        id: install
         run: |
           $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
           $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
@@ -182,7 +183,11 @@ jobs:
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Preparer
 
+      # Les trois essais qui suivent tournent chacun même si un essai d'avant a
+      # échoué (il suffit que Shinku soit installé) : un passage dit ainsi tout
+      # ce qu'il peut dire. Le travail échoue quand même si l'un d'eux échoue.
       - name: Essai de la fenêtre
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: apps/shinku
         run: node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures" --grand-vide
 
@@ -193,6 +198,7 @@ jobs:
       # administrateur : l'essai lance l'agent et le jeu avec les droits
       # ordinaires d'un utilisateur, comme sur un PC.
       - name: Essai du mode jeu
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-mode-jeu.ps1 -Agent "$env:ProgramFiles\Shinku\shinku-agent.exe"
 
@@ -218,6 +224,7 @@ jobs:
       # besoin (elles publient des fichiers). L'installeur n'est publié que si
       # tout a réussi.
       - name: Essai de la mise à jour et de la désinstallation
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: apps/shinku
         run: |
           $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis" -Filter *-setup.exe | Select-Object -First 1

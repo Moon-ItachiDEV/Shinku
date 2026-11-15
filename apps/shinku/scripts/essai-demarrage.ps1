@@ -118,7 +118,9 @@ function Show-Machine {
             'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved',
             'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved')) {
         Say "reg query $key /s /reg:64 :"
-        $shown = @(& reg.exe query $key /s /reg:64 2>$null)
+        # Par cmd : dans Windows PowerShell, rediriger ici la sortie d'erreur d'un
+        # programme transforme sa première ligne en erreur qui arrête le script.
+        $shown = @(& cmd.exe /c "reg query $key /s /reg:64 2>nul")
         if ($shown.Count -eq 0) { Say '  (absente ou vide)' }
         foreach ($line in $shown) { Say "  $line" }
     }
@@ -173,6 +175,12 @@ try {
 } catch {
     $exitCode = 1
     Say "ECHEC : $($_.Exception.Message)"
+    if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
+        foreach ($where in ("$($_.InvocationInfo.PositionMessage)" -split "`r?`n")) { if ("$where".Trim()) { Say "  $where" } }
+    }
+    if ($_.ScriptStackTrace) {
+        foreach ($where in ("$($_.ScriptStackTrace)" -split "`r?`n")) { if ("$where".Trim()) { Say "  $where" } }
+    }
     # Une préparation à moitié faite ne reste pas sur la machine.
     if ($Preparer) {
         try { Clean-Up } catch { Say "nettoyage incomplet : $($_.Exception.Message)" }
