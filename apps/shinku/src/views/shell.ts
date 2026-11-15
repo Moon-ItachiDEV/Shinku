@@ -13,6 +13,7 @@ import { gameView, pickerDialog } from './game.ts';
 import { homeView, shownPane } from './home.ts';
 import { binView, duplicatesView, junkView, largeView, soonView } from './modules.ts';
 import { settingsView } from './settings.ts';
+import { startupView } from './startup.ts';
 import { styles } from './style.ts';
 
 interface NavItem {
@@ -125,6 +126,7 @@ function page(state: AppState, actions: Actions): TemplateResult {
     case 'gameMode':
       return gameView(state, actions);
     case 'startup':
+      return startupView(state, actions);
     case 'uninstall':
     case 'privacy':
       return soonView(state.route);

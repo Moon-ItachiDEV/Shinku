@@ -76,6 +76,20 @@ pub mod priority {
     pub fn is_known(class: u32) -> bool {
         matches!(class, IDLE | BELOW_NORMAL | NORMAL | ABOVE_NORMAL | HIGH)
     }
+
+    /// Vrai si passer de la classe `from` à la classe `to` baisse la priorité.
+    /// Une classe inconnue n'est jamais « plus basse ».
+    pub fn lowers(from: u32, to: u32) -> bool {
+        let rank = |class| match class {
+            IDLE => Some(0),
+            BELOW_NORMAL => Some(1),
+            NORMAL => Some(2),
+            ABOVE_NORMAL => Some(3),
+            HIGH => Some(4),
+            _ => None,
+        };
+        matches!((rank(from), rank(to)), (Some(from), Some(to)) if to < from)
+    }
 }
 
 /// Un mode d'alimentation de Windows : un GUID.
@@ -307,6 +321,8 @@ struct FakeProcess {
     writable: bool,
     /// Le mode efficacité refuse de changer, après la priorité (comme sous Wine).
     throttle_broken: bool,
+    /// Même le retour en arrière d'un abaissement raté échoue.
+    rollback_broken: bool,
 }
 
 #[derive(Debug)]
@@ -323,6 +339,8 @@ struct Fake {
     power_refused: bool,
     /// Nombre de changements d'alimentation encore refusés avant que Windows accepte.
     power_refusals_left: u32,
+    /// Nombre de gestes refusés sur un processus (accès refusé).
+    apply_refusals: u32,
     gestures: Vec<Gesture>,
     opened: Vec<u32>,
     name_reads: u32,
@@ -371,6 +389,7 @@ impl FakeHost {
                 processor: "Intel(R) Core(TM) i7-13700K".to_owned(),
                 power_refused: false,
                 power_refusals_left: 0,
+                apply_refusals: 0,
                 gestures: Vec::new(),
                 opened: Vec::new(),
                 name_reads: 0,
@@ -428,6 +447,15 @@ impl FakeHost {
         }
     }
 
+    /// Le retour en arrière d'un abaissement raté échoue lui aussi : la
+    /// priorité baissée reste (un cas rare, mais que le cœur doit savoir
+    /// reprendre).
+    pub fn break_rollback(&self, process: ProcessRef, broken: bool) {
+        if let Some(known) = self.state().processes.iter_mut().find(|p| p.process == process) {
+            known.rollback_broken = broken;
+        }
+    }
+
     /// Lance un processus de ce chemin. Les processus sont créés dans l'ordre
     /// de ces appels, jamais deux à la même date.
     pub fn spawn(&self, pid: u32, parent: u32, path: &str) -> ProcessRef {
@@ -447,6 +475,7 @@ impl FakeHost {
             readable: true,
             writable: true,
             throttle_broken: false,
+            rollback_broken: false,
         });
         process
     }
@@ -526,6 +555,11 @@ impl FakeHost {
     /// puis les accepte à nouveau.
     pub fn refuse_power_changes_for(&self, count: u32) {
         self.state().power_refusals_left = count;
+    }
+
+    /// Combien de fois un geste sur un processus a été refusé (accès refusé).
+    pub fn apply_refusals(&self) -> u32 {
+        self.state().apply_refusals
     }
 
     /// Les gestes faits sur la machine, dans l'ordre.
@@ -649,16 +683,24 @@ impl GameHost for FakeHost {
             return Err(io::Error::new(io::ErrorKind::NotFound, "ce processus n'existe plus"));
         };
         if !fake.processes[index].readable || !fake.processes[index].writable {
+            fake.apply_refusals += 1;
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "accès refusé"));
         }
         let current = fake.processes[index].state;
         let throttle_changes = (current.throttle_control, current.throttle_state)
             != (state.throttle_control, state.throttle_state);
         if fake.processes[index].throttle_broken && throttle_changes {
-            // La priorité a changé, le mode efficacité refuse : rien ne la remet.
-            let half = ProcessState { priority: state.priority, ..current };
-            fake.note(Gesture::Apply { process, state: half });
-            fake.processes[index].state = half;
+            // Comme l'hôte Windows : la priorité change d'abord, le mode
+            // efficacité refuse. Si le geste baissait la priorité, elle est
+            // remise avant de rendre l'erreur ; une remise, elle, garde la
+            // priorité rendue (sinon rien ne la rendrait jamais).
+            if fake.processes[index].rollback_broken
+                || !priority::lowers(current.priority, state.priority)
+            {
+                let half = ProcessState { priority: state.priority, ..current };
+                fake.note(Gesture::Apply { process, state: half });
+                fake.processes[index].state = half;
+            }
             return Err(io::Error::other("mode efficacité refusé"));
         }
         fake.note(Gesture::Apply { process, state });
@@ -670,6 +712,39 @@ impl GameHost for FakeHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_lower_class_lowers() {
+        assert!(priority::lowers(priority::NORMAL, priority::BELOW_NORMAL));
+        assert!(priority::lowers(priority::HIGH, priority::NORMAL));
+        assert!(!priority::lowers(priority::BELOW_NORMAL, priority::NORMAL));
+        assert!(!priority::lowers(priority::NORMAL, priority::NORMAL));
+        assert!(!priority::lowers(priority::NORMAL, 0x100));
+    }
+
+    #[test]
+    fn a_broken_throttle_undoes_a_lowering_but_keeps_a_restoring() {
+        let host = FakeHost::new();
+        let process = host.spawn(10, 1, r"C:\x\a.exe");
+        host.break_throttle(process, true);
+        let normal =
+            ProcessState { priority: priority::NORMAL, throttle_control: 0, throttle_state: 0 };
+        let low = ProcessState {
+            priority: priority::BELOW_NORMAL,
+            throttle_control: 1,
+            throttle_state: 1,
+        };
+        host.set_state(process, normal);
+        assert!(host.apply(process, low).is_err());
+        assert_eq!(host.state_of(process), Some(normal), "l'abaissement raté est défait");
+        host.set_state(process, low);
+        assert!(host.apply(process, normal).is_err());
+        assert_eq!(
+            host.state_of(process).map(|state| state.priority),
+            Some(priority::NORMAL),
+            "la remise ratée garde la priorité rendue"
+        );
+    }
 
     #[test]
     fn a_power_plan_goes_through_text_and_back() {

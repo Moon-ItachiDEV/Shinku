@@ -38,6 +38,9 @@ pub struct Report {
     pub duplicates: DuplicatesReport,
     /// Corbeille, si elle a pu être mesurée.
     pub recycle_bin: Option<RecycleBin>,
+    /// Nombre d'apps inscrites au démarrage de Windows (hors celle de
+    /// Shinku), si toutes les places ont pu être lues.
+    pub startup: Option<u64>,
     /// Ce qui n'a pas pu être analysé.
     pub skipped: Skipped,
     /// Chiffres du parcours.
@@ -101,14 +104,19 @@ impl Report {
                 items: self.large_files.count,
                 state: CategoryState::Ready,
             },
-            // Le module Démarrage n'existe pas encore : sa place est réservée.
+            // Le module Démarrage : un nombre d'apps, pas d'octets. Une place
+            // illisible fait que le chiffre ne serait pas le bon : non mesuré.
             CategorySummary {
                 module: ModuleId::Startup,
                 lot: Lot::Review,
                 risk: RiskLevel::C,
                 bytes: 0,
-                items: 0,
-                state: CategoryState::Unavailable,
+                items: self.startup.unwrap_or(0),
+                state: if self.startup.is_some() {
+                    CategoryState::Ready
+                } else {
+                    CategoryState::Unavailable
+                },
             },
         ];
         let auto_bytes = categories

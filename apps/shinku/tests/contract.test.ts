@@ -43,6 +43,13 @@ import type {
   RunState,
   SessionState,
   Settings,
+  StartupEntry,
+  StartupMark,
+  StartupOrigin,
+  StartupRefusal,
+  StartupScope,
+  StartupState,
+  StartupTarget,
   StepState,
   StopReason,
   Theme,
@@ -106,6 +113,7 @@ const enums: Record<string, readonly string[]> = {
     'cleanRefused',
     'cleanNotStarted',
     'gameRefused',
+    'startupRefused',
   ]),
   agentState: allOf<AgentState>()(['running', 'stopped', 'missing']),
   powerOutcome: allOf<PowerOutcome>()([
@@ -120,11 +128,18 @@ const enums: Record<string, readonly string[]> = {
   ]),
   powerSupport: allOf<PowerSupport>()(['available', 'unavailable', 'unsuited']),
   gameSource: allOf<GameSource>()(['added', 'library']),
-  windowsPage: allOf<WindowsPage>()(['gameMode', 'power']),
+  windowsPage: allOf<WindowsPage>()(['gameMode', 'power', 'startupApps']),
   gameStatus: allOf<GameStatus>()(['notGame', 'forgotten']),
   gameOption: allOf<GameOption>()(['auto', 'power', 'quietApps']),
   gameRefusal: allOf<GameRefusal>()(['unknownApp', 'unknownGame', 'notAGame', 'protectedApp', 'listFull']),
   loadIssue: allOf<LoadIssue['kind']>()(['unreadable', 'partial']),
+  startupScope: allOf<StartupScope>()(['user', 'machine']),
+  startupState: allOf<StartupState>()(['enabled', 'disabled', 'unknown']),
+  startupTarget: allOf<StartupTarget>()(['found', 'missing', 'hosted', 'unknown']),
+  startupOrigin: allOf<StartupOrigin>()(['registry', 'folder']),
+  startupMark: allOf<StartupMark['kind']>()(['cutByShinku', 'cameBack']),
+  startupHint: allOf<NonNullable<StartupEntry['hint']>>()(['sync']),
+  startupRefusal: allOf<StartupRefusal>()(['unknownEntry', 'notAdjustable', 'busy', 'failed']),
 };
 
 test('les énumérations de l’interface sont celles du cœur', () => {
@@ -214,6 +229,7 @@ const OPTIONS: MockOptions = {
   clean: 'rough',
   interrupted: true,
   game: { state: 'playing', agent: 'running', power: 'available', startup: 'enabled' },
+  boot: { data: 'few', fail: false, read: 'all', load: 'ok', shinku: 'on' },
 };
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -273,6 +289,18 @@ async function samples(): Promise<Record<string, unknown>> {
     (error: unknown) => error,
   );
 
+  // Le démarrage : la vue (une ligne de chaque sorte), et un refus.
+  const booting = mockBackend(OPTIONS);
+  const startupView = await booting.startupView();
+  assert.ok(startupView.entries.some((entry) => entry.mark?.kind === 'cutByShinku'));
+  assert.ok(startupView.entries.some((entry) => entry.mark?.kind === 'cameBack'));
+  const unreadableBoot = await mockBackend({ ...OPTIONS, boot: { ...OPTIONS.boot, read: 'user' } }).startupView();
+  assert.deepEqual(unreadableBoot.unreadable, ['user']);
+  const startupRefusal: unknown = await booting.setStartupEntry('ur-0000000000000000', false).then(
+    () => null,
+    (error: unknown) => error,
+  );
+
   const unreadable = (await mockBackend({ ...OPTIONS, issue: 'unreadable' }).overview()).settingsIssue;
   const partial = (await mockBackend({ ...OPTIONS, issue: 'partial' }).overview()).settingsIssue;
 
@@ -285,8 +313,10 @@ async function samples(): Promise<Record<string, unknown>> {
     cleanRefused: { kind: 'cleanRefused', reason: 'staleResults' },
     cleanNotStarted: { kind: 'cleanNotStarted', reason: 'raison' },
     gameRefused: { kind: 'gameRefused', reason: 'unknownGame' },
+    startupRefused: { kind: 'startupRefused', reason: 'unknownEntry' },
   };
   assert.deepEqual(refusal, errors.gameRefused, 'le faux cœur refuse un jeu inconnu comme le cœur');
+  assert.deepEqual(startupRefusal, errors.startupRefused, 'le faux cœur refuse une entrée inconnue comme le cœur');
 
   return {
     overview,
@@ -312,6 +342,8 @@ async function samples(): Promise<Record<string, unknown>> {
     'error.cleanRefused': errors.cleanRefused,
     'error.cleanNotStarted': errors.cleanNotStarted,
     'error.gameRefused': errors.gameRefused,
+    startupView,
+    'error.startupRefused': errors.startupRefused,
   };
 }
 

@@ -36,6 +36,10 @@ use crate::scan::ScanOptions;
 use crate::scan::report::{DuplicateGroup, DuplicatesState, JunkReport, KeepChoice, LargeFile};
 use crate::session::{Session, SessionError, SessionView};
 use crate::settings::{LoadIssue, Loaded, Settings, SettingsStore, Theme};
+use crate::startup::desk::StartupDesk;
+use crate::startup::host::{InertStartupHost, StartupHost};
+use crate::startup::store::StartupStore;
+use crate::startup::view::{StartupRefusal, StartupView};
 
 /// Nombre maximal d'éléments rendus par page, quelle que soit la demande.
 pub const PAGE_LIMIT: usize = 200;
@@ -166,6 +170,11 @@ pub enum BackendError {
         /// La raison.
         reason: GameRefusal,
     },
+    /// Le module Démarrage refuse cette demande : rien n'a changé.
+    StartupRefused {
+        /// La raison.
+        reason: StartupRefusal,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -187,6 +196,7 @@ impl fmt::Display for BackendError {
                 write!(f, "le grand vide n'a pas pu démarrer : {reason}")
             }
             Self::GameRefused { reason } => write!(f, "mode jeu : {reason}"),
+            Self::StartupRefused { reason } => write!(f, "démarrage : {reason}"),
         }
     }
 }
@@ -219,8 +229,13 @@ pub struct Backend {
     desk: Mutex<Desk>,
     scan_defaults: ScanOptions,
     game: GameDesk,
+    startup: StartupDesk,
     /// Un seul `sync` du mode jeu à la fois, dans l'ordre d'arrivée.
     sync_lock: Mutex<()>,
+    /// Pour les tests : fait attendre le prochain changement du mode jeu entre
+    /// son enregistrement et sa mise en accord de l'agent.
+    #[cfg(test)]
+    hold_before_sync: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl Backend {
@@ -237,7 +252,13 @@ impl Backend {
             Arc::new(SystemAgent),
             GameStore::for_machine(environment.as_ref()),
         );
-        let backend = Self::new(environment, Arc::new(MemoryCache::new()), store).with_game(game);
+        let startup = StartupDesk::new(
+            platform::startup_host(),
+            StartupStore::for_machine(environment.as_ref()),
+        );
+        let backend = Self::new(environment, Arc::new(MemoryCache::new()), store)
+            .with_game(game)
+            .with_startup(startup);
         match journal {
             Some(journal) => backend.with_journal(journal),
             None => backend,
@@ -263,15 +284,22 @@ impl Backend {
             Arc::new(InertAgent),
             GameStore::for_machine(environment.as_ref()),
         );
+        let startup = StartupDesk::new(
+            Arc::new(InertStartupHost),
+            StartupStore::for_machine(environment.as_ref()),
+        );
         Self {
             session: Session::new(Arc::clone(&environment), cache),
             game,
+            startup,
             environment,
             store,
             journal: None,
             desk: Mutex::new(Desk { settings, issue, interrupted: None }),
             scan_defaults: ScanOptions::new(Trigger::Button),
             sync_lock: Mutex::new(()),
+            #[cfg(test)]
+            hold_before_sync: Mutex::new(None),
         }
     }
 
@@ -292,6 +320,24 @@ impl Backend {
     ) -> Self {
         let game = GameDesk::new(Arc::clone(&self.environment), host, control, store);
         self.with_game(game)
+    }
+
+    /// Branche le module Démarrage : la machine vue par le module et
+    /// `startup.json`.
+    pub fn with_startup(mut self, startup: StartupDesk) -> Self {
+        self.startup = startup;
+        self
+    }
+
+    /// Comme [`Backend::with_startup`], pour des tests : la machine fabriquée,
+    /// le fichier donné, et la commande qu'on prend pour celle de Shinku.
+    pub fn with_startup_parts(
+        self,
+        host: Arc<dyn StartupHost>,
+        store: Option<StartupStore>,
+        own_command: Option<String>,
+    ) -> Self {
+        self.with_startup(StartupDesk::new(host, store).with_own_command(own_command))
     }
 
     /// Branche le journal des grands vides.
@@ -351,7 +397,11 @@ impl Backend {
             if desk.issue.as_ref().is_some_and(blocks_scan) {
                 return Err(BackendError::SettingsUnchecked);
             }
-            let options = self.scan_defaults.clone().with_settings(&desk.settings);
+            let options = self
+                .scan_defaults
+                .clone()
+                .with_settings(&desk.settings)
+                .with_startup(self.startup.probe());
             self.session.start_scan(options).map_err(|error| match error {
                 SessionError::CleanRunning => BackendError::CleanRunning,
                 SessionError::Thread(error) => {
@@ -530,6 +580,22 @@ impl Backend {
         Ok(settings)
     }
 
+    // --- Démarrage ---
+
+    /// Tout ce que la page « Démarrage » affiche : les apps inscrites au
+    /// démarrage de Windows, pour le compte et pour le PC. Met `startup.json`
+    /// à jour.
+    pub fn startup_view(&self) -> StartupView {
+        self.startup.view()
+    }
+
+    /// Coupe ou remet une entrée du compte, désignée par son identifiant, puis
+    /// rend la vue d'après. Un seul changement à la fois : un second appel
+    /// simultané est refusé (`busy`).
+    pub fn set_startup_entry(&self, id: &str, enabled: bool) -> Result<StartupView, BackendError> {
+        self.startup.set(id, enabled).map_err(|reason| BackendError::StartupRefused { reason })
+    }
+
     // --- Mode jeu ---
 
     /// Tout ce que la page « Mode jeu » affiche.
@@ -632,6 +698,13 @@ impl Backend {
             edit(&mut next).map_err(game_refused)?;
             self.save_settings(&mut desk, |settings| *settings = next)?
         };
+        #[cfg(test)]
+        {
+            let held = self.hold_before_sync.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(release) = held {
+                let _ = release.recv();
+            }
+        }
         self.sync();
         Ok(self.game.view(&settings))
     }
@@ -705,6 +778,7 @@ mod tests {
     use crate::clean::report::{CleanOutcome, CleanReport, StepState};
     use crate::model::{ModuleId, Timestamp};
     use crate::platform::{KnownFolder, StaticEnvironment};
+    use crate::scan::report::CategoryState;
     use crate::session::SessionState;
     use crate::testing::SlowBin;
 
@@ -830,6 +904,113 @@ mod tests {
     fn items(view: &SessionView, module: ModuleId) -> u64 {
         let summary = view.summary.as_ref().expect("un bilan");
         summary.categories.iter().find(|category| category.module == module).unwrap().items
+    }
+
+    fn startup_category(view: &SessionView) -> &crate::scan::report::CategorySummary {
+        let summary = view.summary.as_ref().expect("un bilan");
+        summary.categories.iter().find(|category| category.module == ModuleId::Startup).unwrap()
+    }
+
+    #[test]
+    fn the_scan_counts_the_apps_registered_at_startup() {
+        use crate::startup::Place;
+        use crate::startup::approval::cut_bytes;
+        use crate::startup::host::FakeStartupHost;
+        const OWN: &str = r#""C:\Shinku\shinku-agent.exe" --demarrage"#;
+
+        let pc = pc();
+        let host = Arc::new(FakeStartupHost::new());
+        host.add(Place::UserRun, "A", r"C:\a.exe");
+        host.add(Place::UserRun, "Shinku", OWN);
+        host.add(Place::UserFolder, "B.lnk", r"C:\b.exe");
+        host.add(Place::MachineRun, "C", r"C:\c.exe");
+        host.add(Place::MachineRun32, "D", r"C:\d.exe");
+        host.set_bytes(Place::MachineRun32, "D", &cut_bytes(host.file_time_now()));
+        let backend = backend(&pc).with_startup_parts(host.clone(), None, Some(OWN.to_owned()));
+
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        let startup = startup_category(&view);
+        // A, B et C : l'entrée de Shinku et la coupée ne comptent pas.
+        assert_eq!((startup.state, startup.items, startup.bytes), (CategoryState::Ready, 3, 0));
+
+        // Une place illisible : le chiffre ne serait pas le bon, il n'est pas donné.
+        host.make_unreadable(Place::MachineFolder);
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        let startup = startup_category(&view);
+        assert_eq!((startup.state, startup.items), (CategoryState::Unavailable, 0));
+    }
+
+    #[test]
+    fn a_startup_list_read_in_part_is_not_counted_in_the_scan_summary() {
+        use crate::startup::Place;
+        use crate::startup::host::FakeStartupHost;
+
+        let pc = pc();
+        let host = Arc::new(FakeStartupHost::new());
+        host.add(Place::UserRun, "A", r"C:\a.exe");
+        let backend = backend(&pc).with_startup_parts(host.clone(), None, None);
+        backend.start_scan().unwrap();
+        let startup = startup_category(&wait_for_results(&backend)).items;
+        assert_eq!(startup, 1);
+
+        // Une borne atteinte : le chiffre ne serait pas le bon, il n'est pas donné,
+        // et la page dit que la portée est lue en partie.
+        host.make_incomplete(Place::UserRun);
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        assert_eq!(startup_category(&view).state, CategoryState::Unavailable);
+        assert_eq!(backend.startup_view().unreadable, [crate::startup::Scope::User]);
+    }
+
+    #[test]
+    fn the_startup_page_goes_through_the_desk_and_refuses_with_a_reason() {
+        use crate::startup::Place;
+        use crate::startup::host::FakeStartupHost;
+        use crate::startup::view::StartupRefusal;
+
+        let pc = pc();
+        let host = Arc::new(FakeStartupHost::new());
+        host.add(Place::UserRun, "A", r"C:\a.exe");
+        host.add(Place::MachineRun, "PC", r"C:\pc.exe");
+        let backend = backend(&pc).with_startup_parts(host.clone(), None, None);
+        let view = backend.startup_view();
+        let id = view.entries.iter().find(|entry| entry.name == "A").unwrap().id.to_string();
+        let machine = view.entries.iter().find(|entry| entry.name == "PC").unwrap().id.to_string();
+
+        let view = backend.set_startup_entry(&id, false).unwrap();
+        assert!(view.entries.iter().find(|entry| entry.name == "A").unwrap().disabled_at.is_some());
+        let refused = |result: Result<StartupView, BackendError>| match result {
+            Err(BackendError::StartupRefused { reason }) => reason,
+            other => panic!("un refus était attendu : {other:?}"),
+        };
+        assert_eq!(
+            refused(backend.set_startup_entry("pas un id", true)),
+            StartupRefusal::UnknownEntry
+        );
+        assert_eq!(
+            refused(backend.set_startup_entry(&machine, false)),
+            StartupRefusal::NotAdjustable
+        );
+        host.refuse_writes();
+        assert_eq!(refused(backend.set_startup_entry(&id, true)), StartupRefusal::Failed);
+        assert_eq!(
+            BackendError::StartupRefused { reason: StartupRefusal::Busy }.to_string(),
+            "démarrage : un autre changement est en cours"
+        );
+    }
+
+    #[test]
+    fn without_a_startup_host_the_page_is_empty_and_the_scan_says_not_measured() {
+        let pc = pc();
+        let backend = backend(&pc);
+        assert!(backend.startup_view().entries.is_empty());
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        let startup = startup_category(&view);
+        // Un « 0 » serait un chiffre inventé : la machine inerte ne mesure rien.
+        assert_eq!(startup.state, CategoryState::Unavailable);
     }
 
     #[test]
@@ -1490,6 +1671,7 @@ mod tests {
         file.session = Some(GameSession {
             game: GameRef { path: FOO.to_owned(), name: "Foo".to_owned(), source: Source::Added },
             opened: 5,
+            opened_uptime: None,
             since: 5,
             released: false,
             power: PowerRecord::applied(PowerPlan::BALANCED),
@@ -1635,6 +1817,7 @@ mod tests {
                     source: Source::Added,
                 },
                 opened: 5,
+                opened_uptime: None,
                 since: 5,
                 released: false,
                 power: PowerRecord::of(PowerOutcome::Custom),
@@ -1676,6 +1859,7 @@ mod tests {
                     source: Source::Added,
                 },
                 opened: 5,
+                opened_uptime: None,
                 since: 5,
                 released: false,
                 power: PowerRecord::of(PowerOutcome::Custom),
@@ -1811,6 +1995,38 @@ mod tests {
             arcade.agent.autostart_calls().last(),
             Some(&false),
             "le plus récent des deux changements a le dernier mot : {:?}",
+            arcade.agent.autostart_calls()
+        );
+    }
+
+    #[test]
+    fn a_change_that_waits_for_the_agent_sync_applies_the_settings_of_the_moment() {
+        let pc = pc();
+        pc.store.save(&Settings { game_mode_auto: true, ..Settings::default() }).unwrap();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let backend = Arc::new(backend);
+        // Le premier changement (éteindre) s'arrête entre son enregistrement et
+        // la mise en accord de l'agent.
+        let (release, hold) = std::sync::mpsc::channel();
+        *backend.hold_before_sync.lock().unwrap() = Some(hold);
+        let first = {
+            let backend = Arc::clone(&backend);
+            std::thread::spawn(move || backend.set_game_option(GameOption::Auto, false).unwrap())
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while saved(&pc).game_mode_auto && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!saved(&pc).game_mode_auto, "le premier changement est enregistré");
+        // Le second (rallumer) passe tout entier pendant ce temps.
+        backend.set_game_option(GameOption::Auto, true).unwrap();
+        release.send(()).unwrap();
+        first.join().unwrap();
+        assert!(saved(&pc).game_mode_auto);
+        assert_eq!(
+            arcade.agent.autostart_calls().last(),
+            Some(&true),
+            "la mise en accord du premier lit les réglages d'à présent : {:?}",
             arcade.agent.autostart_calls()
         );
     }

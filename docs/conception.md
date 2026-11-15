@@ -46,7 +46,7 @@ un message.
 
 ## Entre la page et le cœur : le guichet
 
-La page ne parle qu'à `shinku_core::backend::Backend`, au travers de vingt-quatre
+La page ne parle qu'à `shinku_core::backend::Backend`, au travers de vingt-six
 commandes Tauri (`apps/shinku/src-tauri/src/commands.rs`). Chaque commande est
 une demande précise et bornée : lancer une analyse, lire une page de résultats,
 changer un réglage, faire le vide.
@@ -63,14 +63,16 @@ changer un réglage, faire le vide.
   ce numéro dans *sa* dernière liste, sinon la liste a changé et la demande est
   refusée (`unknownApp`). Le chemin n'est jamais utilisé, seulement comparé. Le grand vide
   lui-même ne reçoit que trois cases cochées et la date de l'analyse
-  affichée.
+  affichée. Le module Démarrage ne reçoit qu'un **identifiant** que le cœur a
+  donné (deux lettres de place, un tiret et seize chiffres hexadécimaux) et une case : ni chemin, ni nom de valeur
+  de registre, ni commande ne viennent de la page.
 - Les pages de résultats sont plafonnées côté cœur (`PAGE_LIMIT`), quelle que
   soit la taille demandée.
 
 ### Ce que la page a le droit de faire
 
 - **Permissions Tauri au plus juste.** `capabilities/default.json` donne à la
-  fenêtre ses vingt-quatre commandes et les cinq gestes de sa barre de titre. Rien
+  fenêtre ses vingt-six commandes et les cinq gestes de sa barre de titre. Rien
   d'autre : ni fichiers, ni réseau, ni lancement de programmes, ni événements.
   Les commandes de l'application passent elles aussi par les permissions
   (`AppManifest::commands` dans `build.rs`) : une commande absente de la liste
@@ -148,14 +150,19 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | `%APPDATA%\Shinku\settings.json` | Les réglages. |
 | `%APPDATA%\Shinku\journal.json` | Les grands vides : dates et totaux, aucun chemin. |
 | `%LOCALAPPDATA%\Shinku\game.json` | Le journal du mode jeu : la partie en cours, le bilan de la dernière, les jeux reconnus. Écrit par l'agent seulement. |
-| `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, valeur `Shinku` | Lance l'agent avec Windows. La seule écriture de registre de Shinku. Présente seulement quand le mode jeu automatique est allumé. |
+| `%LOCALAPPDATA%\Shinku\startup.json` | Ce que le module Démarrage a coupé (au plus 200 lignes : identifiant, nom, dates, `FILETIME` écrit). Écrit par la fenêtre seulement. |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, valeur `Shinku` | Lance l'agent avec Windows. La seule écriture que Shinku fasse dans une clé `Run`. Présente seulement quand le mode jeu automatique est allumé. |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | Une valeur de douze octets par entrée de démarrage du compte que la personne coupe ou remet (voir « Démarrage »). Le même réglage que le Gestionnaire des tâches. Jamais sous `HKLM`. |
 | `%LOCALAPPDATA%\fr.shinku.app\` | Le cache de WebView2 pour la fenêtre. |
 
-Rien d'autre, et rien hors du PC. L'analyse ne modifie aucun fichier. Seul le
+Rien d'autre, et rien hors du PC. Shinku n'écrit jamais sous `HKLM` (le lot du
+module Démarrage qui réglera les entrées du PC passera par l'assistant élevé,
+voir plus bas). L'analyse ne modifie aucun fichier. Seul le
 grand vide supprime, et seulement ce que décrit la section qui lui est
 consacrée. Le mode jeu change des réglages en cours de partie (priorité de
 processus, mode d'alimentation), jamais un fichier de la personne ; il remet
-tout en place.
+tout en place. Le module Démarrage ne change que des approbations de démarrage
+du compte, et ne supprime aucune entrée.
 
 Un fichier de réglages illisible n'est jamais écrasé en silence : Shinku repart
 des valeurs par défaut, le dit, et bloque l'analyse tant que l'utilisateur n'a
@@ -448,6 +455,312 @@ rien ne le reprendrait. La valeur `Run` est effacée dans tous les cas.
   faux jeu, et les effets de la veilleuse sur un jeu précis ne sont pas
   mesurés.
 
+## Démarrage
+
+« Démarrage : gérer les programmes qui se lancent avec Windows. » La page liste
+les apps **inscrites** au démarrage et permet d'en couper une d'un interrupteur,
+**au même endroit que le Gestionnaire des tâches** : l'app reste installée,
+rien n'est supprimé, et elle se remet d'un clic, dans Shinku ou dans Windows.
+Tout est dans `crates/shinku-core/src/startup/` (`mod.rs`, `command.rs`,
+`approval.rs`, `host.rs`, `store.rs`, `view.rs`, `desk.rs`) et, pour Windows,
+`platform/windows/startup.rs`.
+
+Les règles du produit :
+
+- rien n'est modifié sans un geste de la personne, et tout changement se défait ;
+- **pas de chiffre inventé** : aucun « impact », aucune durée de démarrage ;
+- **aucune phrase ne promet plus que ce que Shinku lit**. Shinku ne voit ni les
+  apps du Microsoft Store, ni les tâches planifiées, ni les services : on dit
+  « apps inscrites au démarrage », jamais « rien ne se lance » ni « plus rien » ;
+- Shinku ne supprime aucune entrée : il ne fait que l'approuver ou la
+  désapprouver, là où Windows le fait ;
+- aucune écriture sous `HKLM`.
+
+### Les six places
+
+| Place | Lettres | Où sont les entrées | Clé d'approbation (valeur du même nom) | Portée |
+| --- | --- | --- | --- | --- |
+| `UserRun` | `ur` | valeurs de `HKCU\…\CurrentVersion\Run` | `HKCU\…\Explorer\StartupApproved\Run` | compte |
+| `UserRun32` | `uw` | valeurs de `HKCU\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run` (chemin littéral : `HKCU\Software` n'est pas redirigé) | `…\StartupApproved\Run32` | compte |
+| `UserFolder` | `uf` | fichiers du dossier Démarrage du compte (`FOLDERID_Startup`) | `…\StartupApproved\StartupFolder` (nom = nom du fichier, extension comprise) | compte |
+| `MachineRun` | `mr` | valeurs de `HKLM\…\Run`, vue 64 bits | `HKLM\…\StartupApproved\Run` | PC |
+| `MachineRun32` | `mw` | la même clé, vue 32 bits (`KEY_WOW64_32KEY`) | `HKLM\…\StartupApproved\Run32` | PC |
+| `MachineFolder` | `mf` | fichiers du dossier Démarrage commun (`FOLDERID_CommonStartup`) | `HKLM\…\StartupApproved\StartupFolder` | PC |
+
+Les clés d'approbation s'ouvrent en vue 64 bits. Une place dont la clé n'existe
+pas est une place vide, pas une erreur ; une place qu'on ne peut pas lire est
+signalée à la page (« Windows n'a pas laissé lire toute cette liste »). Seules
+les valeurs `REG_SZ` et `REG_EXPAND_SZ` de `Run` sont des entrées ; dans les
+dossiers, tous les fichiers sont des entrées sauf `desktop.ini`, **cachés
+compris** (ne pas cacher ce qui se cache), sans les sous-dossiers. Un **lien**
+du dossier Démarrage est listé sous son nom (l'Explorateur le lance), réglable,
+de cible inconnue, et **jamais suivi** : ni sa cible lue, ni ses métadonnées
+demandées. Un lien vers un **dossier** (jonction, lien symbolique de dossier) n'est
+pas une app : il est écarté comme un sous-dossier. La boucle du dossier est
+bornée comme celle du registre : 4 096 éléments examinés, gardés ou non, puis la
+place est dite incomplète.
+
+**Les bornes se disent, elles ne se taisent pas.** Il y a des bornes : 300
+entrées par place, 255 caractères pour un nom, 4 096 valeurs examinées dans une
+clé `Run`, 1 Mio pour une valeur, 2 048 caractères pour une commande. Quand l'une
+d'elles écarte quelque chose (la 301e entrée, un nom trop long, une valeur
+démesurée, plus de 4 096 valeurs), la place est dite **incomplète** : la page
+reçoit la portée dans « illisible » (« Windows n'a pas laissé lire toute cette
+liste »), et le résumé de l'analyse reste « Non mesuré » au lieu d'un chiffre
+qu'un programme du compte aurait pu fausser en ajoutant des leurres. Une
+**commande trop longue** n'écarte pas l'entrée : elle est gardée, sans commande,
+donc de cible inconnue (les commandes très longues sont celles des maliciels
+« sans fichier »). Un **texte qui n'est pas de l'UTF-16 valide** (commande d'une
+valeur `Run`, cible d'un raccourci, chemin d'un fichier du dossier) ne devient
+jamais un chemin qu'on cherche sur le disque : la commande est vide, la cible
+inconnue (une conversion approximative ferait dire « semble désinstallée » d'un
+programme bien présent). Un nom qui n'est pas de l'UTF-16 valide, ou qui contient un
+zéro, est gardé comme **approximatif** : montré, jamais réglé, et son
+approbation n'est pas lue (la chercher sous un nom approximatif ne trouverait
+rien et le ferait passer pour « actif »). Le cœur applique lui-même la borne de
+300 entrées : un hôte qui en rendrait davantage est tronqué et dit incomplet.
+
+### Le format d'approbation, et pourquoi la lecture est stricte
+
+La valeur d'approbation est un `REG_BINARY` de **12 octets** : un état sur
+quatre octets, puis un `FILETIME` de huit octets (petit-boutiste).
+**Ce format n'est pas documenté par Microsoft.** C'est celui que le
+Gestionnaire des tâches écrit, observé par des tiers, et les sources se
+contredisent sur tout ce qui n'est pas `02` et `03` (on voit aussi `06` et `07`
+dans la nature, sans explication sûre ; la règle « impair = coupé » qui circule
+n'est confirmée nulle part). Shinku lit donc **strictement** (`approval.rs`) :
+
+| Ce que Shinku lit | État |
+| --- | --- |
+| valeur absente | active |
+| `REG_BINARY`, 12 octets, les quatre premiers `02 00 00 00` | active |
+| `REG_BINARY`, 12 octets, les quatre premiers `03 00 00 00` | coupée ; la date est le `FILETIME` s'il tombe entre 2012 et maintenant, sinon pas de date |
+| **tout le reste** : `06`, `07`, une autre longueur, un autre type, une lecture refusée | **illisible** |
+
+Une entrée illisible est montrée **sans interrupteur** (« Shinku ne sait pas lire
+son réglage »), avec un bouton qui ouvre Windows, et Shinku n'y écrit **jamais**.
+Mieux vaut ne pas toucher à un réglage qu'on ne comprend pas que d'en écraser
+un que Windows lisait autrement.
+
+Shinku n'écrit que deux formes, et seulement pour une entrée **du compte** lue
+active ou coupée :
+
+- couper : `03 00 00 00` et le `FILETIME` de maintenant ;
+- remettre : `02 00 00 00` et huit zéros.
+
+Après chaque écriture, la valeur est **relue** : si elle ne se lit pas comme
+l'état voulu, le changement est un échec (`failed`) et la page le dit.
+
+### Ce qui n'est pas listé, et pourquoi
+
+- **Les apps du Microsoft Store** (MSIX, `windows.startupTask`) : leur état est
+  gardé ailleurs et aucune API publique ne permet de régler l'app d'un autre.
+- **Les tâches planifiées** et **les services** : ce ne sont pas des entrées
+  de démarrage au sens du Gestionnaire des tâches, et les régler est une autre
+  décision, plus lourde.
+- Les clés `RunOnce`, les `Winlogon\Shell` et autres recoins : le Gestionnaire
+  des tâches ne les règle pas non plus.
+
+La page le dit en toutes lettres, pour qu'une liste courte ne soit pas lue
+comme « c'est tout ce qui démarre ».
+
+### Lire une ligne de commande
+
+`command.rs` répond à une question : de quel programme parle cette commande ?
+Ce sont des fonctions pures, qui ne parlent à la machine que par `StartupHost`.
+
+1. les variables `%…%` sont développées, les blancs de tête retirés ;
+2. un chemin réseau (`\\…`, `//…`) est **inconnu avant tout accès au disque**, et
+   un chemin dont le lecteur n'est pas **fixe** (`GetDriveTypeW`, `DRIVE_FIXED`
+   seulement : ni lecteur réseau, ni amovible, ni absent) l'est aussi : Shinku ne
+   cherche rien et ne lit aucune ressource de version hors d'un lecteur fixe, si
+   bien que lire une entrée ne déclenche ni connexion ni attente du redirecteur
+   réseau (limite : une jonction ou un lien placé *dans* un chemin d'un lecteur
+   fixe, qui mènerait ailleurs, n'est pas détecté ; le fichier final lui-même
+   n'est jamais suivi s'il est un lien) ;
+3. une commande qui commence par `"` désigne le programme jusqu'au guillemet
+   fermant (non fermé : jusqu'à la fin) ;
+4. sinon, comme `CreateProcess` : les préfixes coupés aux espaces, du plus court
+   au plus long, avec et sans `.exe` ajouté ; le premier qui est un fichier
+   gagne, sinon le programme est le premier mot. Au plus 64 préfixes sont
+   essayés : si d'autres ont été laissés de côté et qu'aucun n'est un fichier, la
+   cible est **inconnue**, jamais manquante ;
+5. un programme sans dossier est cherché dans `System32` puis dans le dossier de
+   Windows (`GetSystemWindowsDirectoryW`, jamais l'environnement) ; introuvable,
+   il est **inconnu**, jamais « introuvable » (on ne connaît pas le `PATH`) ;
+6. un chemin absolu n'est **manquant** (« semble désinstallée ») que si la machine
+   répond « introuvable » avec certitude. La machine répond en réalité par
+   trois mots : *fichier*, *absent* (seulement « introuvable »), *incertain*
+   (accès refusé, nom invalide, lien, lecteur qui ne répond pas). Un **dossier**
+   (un raccourci vers un dossier est courant) et tout *incertain* donnent
+   **inconnu** : jamais une affirmation fausse. Un dossier qui n'est qu'un
+   préfixe de la commande (`C:\Program Files` dans `C:\Program Files (x86)\…`)
+   n'arrête pas la recherche, comme pour `CreateProcess`. Un chemin relatif
+   n'est jamais cherché (il dépendrait du dossier courant) ;
+7. un programme **hôte** (`rundll32`, `cmd`, `powershell`, `java`, `python`,
+   `node`…) n'est que le porteur : on n'en tire ni nom ni éditeur, la page dit
+   « Lancée par rundll32.exe ».
+
+Un raccourci se lit avec `IShellLink` en `SLGP_RAWPATH`, **sans le résoudre ni
+le réparer** ; s'il n'a pas de cible lisible, l'entrée est le fichier lui-même.
+Une cible qui remplirait le tampon (32 768 caractères) n'est jamais gardée
+tronquée : la cible reste inconnue. Un dossier Démarrage **redirigé hors d'un
+lecteur fixe** (partage réseau d'un profil d'entreprise) n'est pas lu : la place
+est dite illisible.
+
+### Noms, éditeurs, identifiants
+
+- Le nom affiché est la description des ressources de version du fichier, sauf
+  si elle est vide ou **générique** (`Update`, `Launcher`, `Setup`, `Helper`,
+  `Electron`, `App`, `Service`, `Agent`, `Tray`, `Startup`…) ; sinon le nom
+  inscrit, sans `.lnk`. Le nom inscrit devient un « alias » s'il diffère.
+- L'éditeur est **ce que le fichier déclare** : ce n'est pas une identité
+  vérifiée, et la page le dit.
+- Tout texte montré est nettoyé : caractères de contrôle et de format retirés
+  (dont U+202E, qui renverse le sens d'un texte), blancs réduits, 80 caractères.
+- L'**identifiant** d'une entrée est fait des deux lettres de sa place (`ur`,
+  `uw`, `uf`, `mr`, `mw` ou `mf`), d'un tiret, puis du FNV-1a 64 bits des unités UTF-16 du nom brut (deux octets par
+  unité, poids faible d'abord), **sans changer la casse**, en 16 chiffres
+  hexadécimaux minuscules. La page ne connaît que lui. Deux entrées d'une
+  même énumération qui tombent sur le même identifiant deviennent toutes deux
+  non réglables.
+- L'entrée de Shinku lui-même (sa valeur `Run`, pour le mode jeu automatique) se
+  reconnaît à son nom **et** à la commande exacte que le mode jeu écrit pour
+  cette installation (`platform::agent::run_command`). Elle ne se règle pas ici :
+  la page renvoie au Mode jeu.
+
+### Les apps qui se réinscrivent, et `startup.json`
+
+Windows ne dit pas **qui** a coupé une entrée. `startup.json` (dans
+`%LOCALAPPDATA%\Shinku\`, à côté de `game.json`) garde, pour chaque entrée que
+Shinku a coupée, son identifiant, son nom, la date, et le `FILETIME` écrit.
+À chaque vue :
+
+- l'entrée est coupée **avec le même `FILETIME`** : « coupée par Shinku » ;
+- coupée avec un autre : elle a été recoupée ailleurs, la ligne est retirée ;
+- active **sans valeur d'approbation** : elle s'est remise sans Shinku. Certaines
+  apps, celles bâties sur Electron notamment, **effacent l'approbation quand
+  elles se réinscrivent**. Shinku note la première observation, dit « s'est
+  remise toute seule » pendant 14 jours, puis retire la ligne : la page invite à
+  régler aussi dans les options de l'app. La date de première observation est
+  bornée par maintenant (un fichier trafiqué ne garde pas la marque pour
+  toujours) ;
+- active **avec** une valeur `02 00 00 00` : quelqu'un l'a rallumée dans Windows
+  (le Gestionnaire des tâches écrit cette forme). Shinku ne peut pas dire
+  qu'elle s'est remise « toute seule » : la coupure notée est **oubliée, sans
+  marque** ;
+- l'entrée n'existe plus : la ligne est retirée ;
+- une place illisible **ou lue en partie**, un réglage illisible ou un
+  identifiant ambigu : la ligne est **gardée telle quelle** (on ne conclut rien
+  de ce qu'on ne voit pas).
+
+La lecture du fichier est méfiante : absent, illisible ou de plus de 1 Mo, il
+vaut un fichier vide (jamais d'erreur montrée) ; une ligne mal formée est
+ignorée ; 200 lignes au plus (les plus anciennes sortent) ; il n'est réécrit que
+si quelque chose a changé, par remplacement (jamais un fichier à moitié écrit).
+Rien de ce qu'il dit ne sert à écrire dans le registre.
+
+### Le guichet
+
+Deux commandes : `startup_view` (sans argument) et `set_startup_entry`
+(`id`, `enabled`), qui rendent chacune la vue entière. Un seul changement à la
+fois : un second appel simultané est refusé (`busy`). Les refus ont une raison
+(`unknownEntry`, `notAdjustable`, `busy`, `failed`). La page d'ouverture des
+réglages de Windows (`open_windows_settings`) gagne la page `startupApps`
+(`ms-settings:startupapps`).
+
+Le résumé de l'analyse compte les entrées **actives** hors celle de Shinku,
+toutes portées : « {n} apps inscrites au démarrage de Windows ». Il est lu une
+fois, à la fin du parcours des disques, par l'hôte du guichet ; si une place
+est illisible **ou lue en partie** (une borne atteinte), ou si la machine ne sait
+pas compter (l'hôte inerte des plateformes sans démarrage de Windows), la
+catégorie reste « Non mesuré » plutôt que d'afficher un chiffre faux. Une
+entrée au nom approximatif n'est pas comptée active.
+
+Après un échec (`failed`), Shinku ne remet pas l'ancien état : la page recharge
+la vue (`startup_view`), qui relit la machine et montre l'état réel, quel qu'il
+soit. L'erreur est rendue seule, jamais accompagnée d'une vue qui pourrait
+mentir.
+
+### Limites connues
+
+- **Ni les apps du Store, ni les tâches planifiées, ni les services** ne sont
+  listés (voir plus haut).
+- **Les entrées du PC sont en lecture seule** dans ce lot : il faut l'accord
+  d'un administrateur. La page ouvre la page de Windows.
+- **Pas d'icônes** : aucune icône n'est affichée dans ce lot, la page montre
+  l'initiale du nom. Shinku lit pourtant les **ressources de version** du fichier
+  (description et éditeur, `GetFileVersionInfoW`, qui charge le fichier), et
+  seulement sur un lecteur fixe. Un fichier « en ligne seulement » d'un service de
+  stockage (attributs `OFFLINE`, `RECALL_ON_OPEN`, `RECALL_ON_DATA_ACCESS`) n'est
+  jamais lu : il existe, mais sans description, car le lire le ferait télécharger.
+  Lire la liste du démarrage ne télécharge rien.
+- **« Absent » ne vient que des erreurs Windows 2 et 3** (fichier ou chemin
+  introuvable, lues par le code brut) : un lecteur absent, un partage éteint ou
+  un nom invalide sont des incertitudes.
+- **Le format d'approbation n'est pas documenté** : une version future de
+  Windows peut changer ce que `02` et `03` veulent dire. La lecture stricte
+  limite les dégâts à un affichage « illisible », jamais à une écriture.
+- **Les bornes** (300 entrées par place, noms de 255 caractères, valeurs de
+  1 Mio) écartent ce qui les dépasse, **en le disant** : la place est incomplète,
+  la page le signale, le résumé reste « Non mesuré ». Dans une place incomplète,
+  ce qui est montré reste réglable.
+- **Le mode jeu lit sa propre approbation comme le module** :
+  `platform::windows::agent::autostart` passe par la même lecture stricte
+  (`startup::approval`). Seul `03 00 00 00` + date est « coupé dans Windows » ;
+  `06`, `07` ou toute autre forme illisible ne le fait pas dire.
+- **Un chemin d'un lecteur fixe qui passe par une jonction ou un lien** menant à
+  un partage n'est pas détecté (seul le fichier final n'est jamais suivi).
+- **La course entre la relecture et l'écriture** (une valeur `Run` supprimée
+  pendant les quelques microsecondes qui séparent les deux) peut laisser une
+  approbation orpheline, sans effet : le Gestionnaire des tâches en laisse
+  aussi.
+- **Une coupure ne ferme pas l'app.** Si elle est ouverte, elle le reste : elle
+  ne se lance plus toute seule à la prochaine ouverture de session.
+
+### Ce que les essais ne prouvent pas : la recette à la main
+
+Les tests du cœur (machine fabriquée), ceux de l'hôte Windows (sur un vrai
+registre, sous une clé d'essai de `HKCU`, y compris sous Wine) et l'essai sur un
+vrai Windows prévu dans l'intégration continue prouvent que Shinku lit et écrit
+les bonnes valeurs aux bons endroits. Ils **ne prouvent pas que Windows respecte
+ces valeurs à l'ouverture de la session** : aucune session ne s'ouvre sur la
+machine d'essai.
+
+Cette preuve est une **recette à la main sur un vrai Windows 11**, et une
+**condition de sortie publique** : pour une entrée de chaque place du compte
+(`Run`, `Run32`, dossier Démarrage), couper dans Shinku puis lire « Désactivé »
+dans le Gestionnaire des tâches, fermer et rouvrir la session, constater que
+l'app ne s'est pas lancée ; et l'inverse : couper dans Windows, lire « Coupée »
+dans Shinku.
+
+L'essai de la fenêtre sur le vrai Windows de l'intégration continue
+(`essai-demarrage.ps1` et `checkStartup`, voir « Essayé avant d'être publié »)
+**prouve** que, sur un vrai registre et un vrai dossier Démarrage, la page lit
+les entrées de chaque place du compte et celle du PC, que couper ou remettre
+dans la page écrit la valeur d'approbation attendue (douze octets, `03000000…`
+pour coupée, `020000000000000000000000` pour remise) aux bons endroits, relue par
+`reg query /reg:64`, et que la zone de retour et « Annuler » disent la vérité.
+Il **ne prouve pas** que Windows respecte ces valeurs à l'ouverture de la
+session : aucune session ne s'ouvre sur la machine d'essai. Cette preuve reste
+la recette à la main ci-dessus.
+
+### Le lot suivant : régler les entrées du PC
+
+Régler une entrée de `HKLM` demande un administrateur : ce sera le travail de
+l'assistant élevé `shinku-helper.exe`, relu à part. Ses exigences sont déjà
+arrêtées :
+
+- **il ne lit que des noms** : ni variables, ni fichiers, ni ressources de
+  version dans le processus élevé. Tout ce qui demande d'ouvrir un fichier ou de
+  développer une variable se fait dans `shinku.exe`, sans élévation ;
+- **il ne se lance que depuis un dossier inscriptible par les seuls
+  administrateurs** (un assistant élevé qu'un programme du compte pourrait
+  remplacer serait une porte ouverte) ;
+- **il dit lui-même, une fois élevé, quelle entrée il va changer** : ce que la
+  personne approuve dans la fenêtre de Windows est ce que l'assistant affiche,
+  pas ce que la page prétend.
+
 ## L'agent
 
 `shinku-agent.exe` (`crates/shinku-agent`) n'a ni console ni fenêtre visible. Sa
@@ -567,6 +880,26 @@ journal d'origine. Si Windows refuse le premier plan à la fenêtre du faux jeu,
 l'essai le dit (« premier plan refusé par la machine d'essai ») et échoue : pas
 de faux succès.
 
+Un troisième essai, `apps/shinku/scripts/essai-demarrage.ps1`, prépare la page
+Démarrage avant celui de la fenêtre (`-Preparer`) et la remet en place après,
+quoi qu'il arrive (`-Nettoyer`). Il crée cinq entrées d'essai aux noms
+`Essai Shinku …` : trois valeurs `Run` (dont une avec une commande portée par
+`powershell.exe`, une vers `notepad.exe`, qui a une description, et une sous
+`Wow6432Node`, c'est-à-dire `Run32`), un raccourci dans le dossier Démarrage du
+compte et une valeur `Run` de `HKLM` pour la ligne du PC. Il affiche aussi, pour
+le compte rendu, les groupes du jeton, les valeurs du contrôle de compte
+d'utilisateur et le contenu des clés `StartupApproved` : de quoi préparer le lot
+suivant. `-Nettoyer` ne retire que ces cinq entrées et leurs approbations, par
+leurs noms exacts. L'essai de la fenêtre (`checkStartup`) vérifie ensuite les
+quatre lignes du compte et la ligne du PC (sans interrupteur), que la description
+du fichier a été lue (« inscrite sous »), puis, pour chacune des quatre lignes du
+compte, éteint l'interrupteur (la zone de retour dit « est coupée » et
+`reg query /reg:64` montre douze octets commençant par `03000000`), puis remet
+l'entrée par « Annuler » ou par l'interrupteur (valeur
+`020000000000000000000000`). Les entrées appartiennent au compte de la machine
+d'essai ; Shinku y tourne avec un jeton filtré du même compte, `HKCU` est donc le
+même.
+
 Les machines de GitHub font tout tourner en administrateur. Shinku y est donc
 lancé avec un jeton filtré, comme celui que donne le contrôle de compte
 d'utilisateur (`apps/shinku/scripts/lancer-en-utilisateur.ps1`) : ce sont les
@@ -589,6 +922,9 @@ d'environnement que dans un programme sans droits d'administrateur.
   peut ainsi faire supprimer ce que Shinku juge inutile, ce qu'il pouvait
   déjà faire lui-même avec les mêmes droits ; il n'y gagne aucune élévation.
   À réexaminer avec le helper.
+- **Recette Démarrage à la main.** Couper puis rouvrir une session, sur un vrai
+  Windows 11, pour une entrée de chaque place du compte, dans les deux sens
+  (voir « Démarrage »). Aucun essai automatique ne l'a faite.
 - **Signer l'agent.** L'installeur embarque `shinku-agent.exe` par un crochet
   NSIS, pas comme une ressource ou un binaire externe de Tauri : rien ne dit que
   Tauri le signera avec `shinku.exe` (à vérifier), il faudra donc le signer

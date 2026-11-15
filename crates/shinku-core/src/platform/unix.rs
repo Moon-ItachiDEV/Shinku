@@ -11,6 +11,7 @@ use super::{Desktop, Environment, KnownFolder, RecycleBin, Rights, Volume};
 use crate::fs::to_internal_path;
 use crate::game::host::{GameHost, InertHost};
 use crate::model::Timestamp;
+use crate::startup::host::{InertStartupHost, StartupHost};
 
 #[derive(Debug)]
 pub(super) struct SystemEnvironment {
@@ -93,6 +94,11 @@ pub(super) fn desktop_rights() -> Desktop {
 /// mode d'alimentation.
 pub(super) fn game_host() -> Arc<dyn GameHost> {
     Arc::new(InertHost)
+}
+
+/// Hors de Windows, le module « Démarrage » ne voit rien : aucune entrée.
+pub(super) fn startup_host() -> Arc<dyn StartupHost> {
+    Arc::new(InertStartupHost)
 }
 
 /// L'agent hors de Windows : il n'existe pas.

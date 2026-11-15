@@ -388,10 +388,13 @@ impl GameHost for SystemHost {
                 )
             };
             if let Err(error) = result {
-                // Rien ne doit rester à moitié fait : la priorité, déjà changée,
-                // est remise avant de rendre l'erreur (sinon ce processus serait
-                // ralenti sans que personne ne le sache).
-                if current.priority != state.priority {
+                // Rien ne doit rester à moitié fait : une priorité baissée par
+                // ce geste est remise avant de rendre l'erreur (sinon ce
+                // processus serait ralenti sans que personne ne le sache). Une
+                // remise, elle, garde la priorité rendue : la défaire laisserait
+                // le processus ralenti pour de bon, et l'erreur suffit pour que
+                // la suite retente le reste.
+                if priority::lowers(current.priority, state.priority) {
                     // SAFETY: le handle vit autant que `handle` et porte le
                     // droit de modifier ce processus ; la classe est celle que
                     // Windows vient de lire.
@@ -431,6 +434,12 @@ fn read_processor_name() -> String {
 
 /// La description du fichier (`FileDescription`) dans ses ressources de version.
 fn description_of(exe: &str) -> Option<String> {
+    version_string(exe, "FileDescription")
+}
+
+/// Une chaîne des ressources de version d'un fichier (`FileDescription`,
+/// `CompanyName`…), dans la langue du fichier si elle y est, sinon en anglais.
+pub(super) fn version_string(exe: &str, field: &str) -> Option<String> {
     let path = HSTRING::from(exe);
     // SAFETY: `path` est une chaîne terminée par zéro, valide pendant l'appel.
     let size = unsafe { GetFileVersionInfoSizeW(&path, None) };
@@ -463,7 +472,7 @@ fn description_of(exe: &str) -> Option<String> {
     languages.push((0x0409, 0x04b0));
     languages.push((0x0409, 0x04e4));
     for (language, page) in languages {
-        let name = format!(r"\StringFileInfo\{language:04x}{page:04x}\FileDescription");
+        let name = format!(r"\StringFileInfo\{language:04x}{page:04x}\{field}");
         let Some((pointer, length)) = query(&block, &name) else { continue };
         let address = pointer as usize;
         // `length` compte des caractères, terminateur compris.
@@ -633,6 +642,57 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(back, Some(before));
+    }
+
+    #[test]
+    fn a_failed_second_step_keeps_a_restored_priority() {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/c", "pause"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("un processus fils");
+        let host = SystemHost::new();
+        let process = host
+            .processes()
+            .into_iter()
+            .find(|entry| entry.process.pid == child.id())
+            .map(|entry| entry.process);
+        let Some(process) = process else {
+            let _ = child.kill();
+            panic!("le fils n'est pas listé");
+        };
+        let Some(before) = host.inspect(process) else {
+            let _ = child.kill();
+            panic!("le fils ne s'inspecte pas");
+        };
+        // Un état de départ « sous la normale » sans mode efficacité : un seul geste.
+        let lowered = ProcessState {
+            priority: priority::BELOW_NORMAL,
+            throttle_control: before.throttle_control,
+            throttle_state: before.throttle_state,
+        };
+        host.apply(process, lowered).expect("priorité baissée");
+        // Une remise à « normale » avec le mode efficacité imposé : sous Wine le
+        // second geste échoue, et la priorité rendue ne doit pas être défaite.
+        let wanted =
+            ProcessState { priority: priority::NORMAL, throttle_control: 1, throttle_state: 1 };
+        let applied = host.apply(process, wanted);
+        let after = host.inspect(process);
+        let _ = host.apply(process, before);
+        let _ = child.kill();
+        let _ = child.wait();
+        match applied {
+            Ok(()) => assert_eq!(after, Some(wanted)),
+            Err(_) => assert_eq!(
+                after.map(|state| state.priority),
+                Some(priority::NORMAL),
+                "une remise qui échoue à moitié garde la priorité rendue"
+            ),
+        }
     }
 
     #[test]

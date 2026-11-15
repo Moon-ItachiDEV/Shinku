@@ -14,6 +14,7 @@ import type {
   Overview,
   SessionView,
   Settings,
+  StartupView,
   Theme,
 } from './types.ts';
 
@@ -48,6 +49,8 @@ export function tauriBackend(): Backend {
     addQuietApp: (id, path) => invoke<GameView>('add_quiet_app', { id, path }),
     setGameStatus: (path, status) => invoke<GameView>('set_game_status', { path, status }),
     releaseGame: () => invoke<GameView>('release_game'),
+    startupView: () => invoke<StartupView>('startup_view'),
+    setStartupEntry: (id, enabled) => invoke<StartupView>('set_startup_entry', { id, enabled }),
     openWindowsSettings: (page) => invoke<void>('open_windows_settings', { page }),
     minimizeWindow: () => appWindow.minimize(),
     toggleMaximizeWindow: () => appWindow.toggleMaximize(),

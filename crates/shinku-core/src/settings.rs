@@ -876,4 +876,19 @@ mod tests {
         assert_eq!(settings.game_mode_quiet_added, ["itch.exe"]);
         assert!(fixed.contains(&"gameModeQuietAdded"));
     }
+
+    #[test]
+    fn a_valid_settings_file_over_one_mebibyte_is_not_read_at_all() {
+        let (_temp, store) = store();
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        // Un objet valide, qui se lirait normalement sans la borne de taille.
+        let valid = r#"{"theme":"dark"}"#;
+        fs::write(store.path(), valid).unwrap();
+        assert_eq!(store.load().settings.theme, Theme::Dark, "avant : il se lit");
+        let padding = " ".repeat(usize::try_from(MAX_FILE_BYTES).unwrap() + 10);
+        fs::write(store.path(), format!("{valid}{padding}")).unwrap();
+        let loaded = store.load();
+        assert!(matches!(loaded.issue, Some(LoadIssue::Unreadable { .. })));
+        assert_eq!(loaded.settings.theme, Theme::default());
+    }
 }

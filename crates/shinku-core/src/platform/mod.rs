@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::game::host::GameHost;
 use crate::model::Timestamp;
+use crate::startup::host::StartupHost;
 
 pub mod agent;
 
@@ -241,6 +242,12 @@ pub fn system() -> impl Environment {
 /// rien ailleurs.
 pub fn game_host() -> Arc<dyn GameHost> {
     imp::game_host()
+}
+
+/// La machine du module « Démarrage » : la vraie sous Windows, une machine qui
+/// ne voit rien ailleurs.
+pub fn startup_host() -> Arc<dyn StartupHost> {
+    imp::startup_host()
 }
 
 /// Vrai si ce processus a reçu les droits d'un administrateur par une

@@ -18,6 +18,7 @@ import type {
   KeepChoice,
   SessionView,
   Settings,
+  StartupView,
   Theme,
   WindowsPage,
 } from './backend/types.ts';
@@ -40,6 +41,20 @@ import {
   withReleased,
 } from './model/game.ts';
 import { reportKey, toggled } from './model/scan.ts';
+import {
+  entryById,
+  SAY_DELAY,
+  STARTUP_RELOAD_GAP,
+  TITLE_KEY,
+  focusTarget,
+  sayStale,
+  type Say,
+  sayDone,
+  sayRefused,
+  startupFocus,
+  withEntry,
+  withEntryEnabled,
+} from './model/startup.ts';
 import { type Actions, type AppState, initialState, type Route } from './state.ts';
 import { applyTheme } from './theme.ts';
 import { appView } from './views/shell.ts';
@@ -109,6 +124,10 @@ const NO_ACTIONS: Actions = {
   openPicker: () => {},
   closePicker: () => {},
   pickOpenApp: () => {},
+  setStartupEntry: () => {},
+  undoStartup: () => {},
+  holdStartupSay: () => {},
+  retryStartup: () => {},
   openWindowsSettings: () => {},
   minimize: () => {},
   toggleMaximize: () => {},
@@ -158,6 +177,24 @@ export class App {
   private releasing: Releasing | null = null;
   /** Change à chaque ouverture ou fermeture du sélecteur : une liste arrivée trop tard est ignorée. */
   private pickerEpoch = 0;
+  /** La page Démarrage est affichée : sa vue se charge à l'arrivée et au retour du focus, jamais en boucle. */
+  private startupVisit = 0;
+  private startupWatching = false;
+  /** Change au départ et à la réponse de chaque changement : une vue demandée avant lui et arrivée après est ignorée. */
+  private startupAction = 0;
+  /** Le numéro de la dernière demande de vue : seule sa réponse compte. */
+  private startupAsk = 0;
+  /** Les changements en vol : tant qu'il y en a un, aucune vue demandée n'est adoptée. */
+  private startupPending = 0;
+  private startupSayTimer: number | undefined;
+  /** « Réessayer » vient d'être pressé : le focus suivra la vue qui arrive. */
+  private startupRetried = false;
+  /** La zone de retour a le focus ou le pointeur : son délai de 12 secondes est suspendu. */
+  private sayFocus = false;
+  private sayHover = false;
+  /** Une vue est demandée, ou vient d'arriver : le retour de la fenêtre n'en relance pas une deuxième. */
+  private startupLoading = false;
+  private startupLoadedAt = 0;
 
   constructor(backend: Backend, root: HTMLElement, draw: Draw = render) {
     this.backend = backend;
@@ -207,9 +244,13 @@ export class App {
     window.addEventListener('focus', () => {
       void this.refreshOverview(5000);
       void this.refreshGame();
+      void this.refreshStartup();
     });
     // Une fenêtre réduite ou cachée ne demande rien ; elle relit la vue dès qu'on la regarde de nouveau.
-    document.addEventListener('visibilitychange', () => void this.refreshGame());
+    document.addEventListener('visibilitychange', () => {
+      void this.refreshGame();
+      void this.refreshStartup();
+    });
   }
 
   /** Relit le disque, la corbeille et les réglages. Rend `false` si rien n'a été relu. */
@@ -917,6 +958,256 @@ export class App {
     }
   }
 
+  // ── Démarrage ────────────────────────────────────────────────────────────
+
+  /**
+   * À l'arrivée sur la page Démarrage, la vue est demandée une fois ; elle l'est
+   * de nouveau quand la fenêtre retrouve le focus (la personne a pu régler
+   * quelque chose dans Windows). Aucun sondage. Hors de la page, rien n'est
+   * demandé ni gardé : la vue d'une visite ne sert pas à la suivante.
+   */
+  private watchStartup(): void {
+    if (this.state.route !== 'startup') {
+      this.stopWatchingStartup();
+      return;
+    }
+    if (this.startupWatching) {
+      // Déjà sur la page : on relit seulement la vue.
+      void this.refreshStartup(true);
+      return;
+    }
+    this.startupWatching = true;
+    this.startupVisit += 1;
+    this.startupLoading = false;
+    this.startupLoadedAt = 0;
+    this.startupRetried = false;
+    this.clearSay();
+    this.set({ startup: null, startupFailed: false, startupBusy: null });
+    void this.refreshStartup(true);
+  }
+
+  private stopWatchingStartup(): void {
+    if (!this.startupWatching) {
+      return;
+    }
+    this.startupWatching = false;
+    this.startupVisit += 1;
+    this.startupLoading = false;
+    this.startupRetried = false;
+    this.clearSay();
+    this.set({ startup: null, startupFailed: false, startupBusy: null });
+  }
+
+  /** « Réessayer » sous le message d'erreur de la première vue. */
+  private retryStartup(): void {
+    this.set({ startupFailed: false });
+    // Le bouton disparaît le temps du chargement : le focus ira au titre, ou reviendra au bouton si la panne dure.
+    this.startupRetried = true;
+    void this.refreshStartup(true);
+  }
+
+  /**
+   * Demande la vue. Au retour de la fenêtre (`force` faux), une demande déjà en
+   * vol, ou finie depuis moins d'une demi-seconde, n'est pas relancée : le focus
+   * et la visibilité arrivent ensemble.
+   */
+  private async refreshStartup(force = false): Promise<void> {
+    // Pas de demande pour une fenêtre cachée, ni pendant un changement : sa réponse est plus récente que toute vue.
+    if (this.startupPending > 0 || document.hidden || this.state.route !== 'startup') {
+      return;
+    }
+    if (!force && (this.startupLoading || Date.now() - this.startupLoadedAt < STARTUP_RELOAD_GAP)) {
+      return;
+    }
+    this.startupAsk += 1;
+    const ask = this.startupAsk;
+    const action = this.startupAction;
+    const visit = this.startupVisit;
+    this.startupLoading = true;
+    const current = (): boolean =>
+      ask === this.startupAsk && action === this.startupAction && visit === this.startupVisit;
+    const finish = (): void => {
+      if (ask === this.startupAsk) {
+        this.startupLoading = false;
+        this.startupLoadedAt = Date.now();
+      }
+    };
+    try {
+      const view = await this.backend.startupView();
+      finish();
+      if (current()) {
+        this.adoptStartup(view);
+      }
+    } catch {
+      finish();
+      // La page garde sa dernière vue ; sans vue, elle le dit et propose « Réessayer ».
+      if (current() && this.state.startup === null) {
+        this.set({ startupFailed: true });
+        if (this.startupRetried) {
+          this.focusKey(startupFocus.retry);
+        }
+      }
+    }
+  }
+
+  /**
+   * Adopte une vue. Ce qui avait le focus est suivi : si sa ligne a disparu, le
+   * focus passe à la ligne voisine, sinon au titre. Une phrase du retour que la
+   * vue démentirait est effacée.
+   */
+  private adoptStartup(view: StartupView): void {
+    const before = this.state.startup;
+    // La clé du contrôle de ligne qui a le focus (interrupteur ou bouton de fin de ligne).
+    const key = (document.activeElement as { dataset?: Record<string, string | undefined> } | null)?.dataset?.['fk'];
+    const say = this.state.startupSay;
+    const retried = this.startupRetried && before === null;
+    this.set({ startup: view, startupFailed: false, now: Date.now() });
+    if (retried) {
+      this.startupRetried = false;
+      this.focusKey(TITLE_KEY);
+    }
+    if (say !== null && sayStale(say, view)) {
+      // Si le focus était dans la barre, il va à la ligne de la phrase, ou à sa voisine.
+      const wanted = say.undo === null ? null : focusTarget(before, view, startupFocus.entry(say.undo.id));
+      this.clearSay(wanted ?? TITLE_KEY);
+    }
+    const target = key === undefined ? null : focusTarget(before, view, key);
+    if (target !== null) {
+      this.focusKey(target);
+    }
+  }
+
+  /** Écrit dans la zone de retour ; elle s'efface seule au bout de 12 secondes, sauf tant qu'on la lit. */
+  private say(say: Say | null): void {
+    if (say === null) {
+      this.clearSay();
+      return;
+    }
+    this.set({ startupSay: say });
+    this.armSay();
+  }
+
+  private armSay(): void {
+    window.clearTimeout(this.startupSayTimer);
+    if (!this.sayFocus && !this.sayHover && this.state.startupSay !== null) {
+      this.startupSayTimer = window.setTimeout(() => this.clearSay(), SAY_DELAY);
+    }
+  }
+
+  /**
+   * Efface la phrase. Si la zone avait le focus, il retourne à `refocus` : par défaut l'interrupteur
+   * de la ligne de la phrase, sinon sa voisine ou le titre.
+   */
+  private clearSay(refocus?: string): void {
+    window.clearTimeout(this.startupSayTimer);
+    const say = this.state.startupSay;
+    const hadFocus = this.sayFocus;
+    this.sayFocus = false;
+    this.sayHover = false;
+    if (say === null) {
+      return;
+    }
+    this.set({ startupSay: null });
+    if (hadFocus && say.undo !== null) {
+      const view = this.state.startup;
+      this.focusKey(
+        refocus ?? (view === null ? TITLE_KEY : (focusTarget(view, view, startupFocus.entry(say.undo.id)) ?? TITLE_KEY)),
+      );
+    }
+  }
+
+  private holdStartupSay(by: 'focus' | 'hover', on: boolean): void {
+    if (by === 'focus') {
+      // Une fenêtre qui perd le focus système fait partir le focus de la barre sans que la personne l'ait
+      // quittée : le focus « logique » y reste, et la minuterie reste suspendue jusqu'à sa vraie sortie.
+      if (!on && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+        return;
+      }
+      this.sayFocus = on;
+    } else {
+      this.sayHover = on;
+    }
+    this.armSay();
+  }
+
+  /** Montre la ligne du geste : la zone de retour flotte au bas de la page et ne doit pas la cacher. */
+  private revealStartupRow(id: string): void {
+    queueMicrotask(() => {
+      for (const element of this.root.querySelectorAll<HTMLElement>('[data-fk]')) {
+        if (element.dataset['fk'] === startupFocus.entry(id)) {
+          const row = element.closest('li') ?? element;
+          if (typeof row.scrollIntoView === 'function') {
+            row.scrollIntoView({ block: 'nearest' });
+          }
+          return;
+        }
+      }
+    });
+  }
+
+  /**
+   * Coupe ou remet une entrée du compte. Un seul changement à la fois : le
+   * cœur en refuse un second. L'interrupteur bouge tout de suite ; si le cœur
+   * refuse, il revient et la zone de retour le dit.
+   */
+  private async setStartupEntry(id: string, enabled: boolean): Promise<void> {
+    const view = this.state.startup;
+    const before = view === null ? undefined : entryById(view, id);
+    if (view === null || before === undefined || !before.adjustable || this.startupPending > 0) {
+      return;
+    }
+    if ((before.state === 'enabled') === enabled) {
+      return;
+    }
+    const visit = this.startupVisit;
+    this.startupPending += 1;
+    this.startupAction += 1;
+    // Une vue en vol est périmée par ce geste.
+    this.startupLoading = false;
+    // Le geste suivant efface la phrase du précédent.
+    this.say(null);
+    this.set({ startup: withEntryEnabled(view, id, enabled, Date.now()), startupBusy: id });
+    const answered = (): boolean => {
+      this.startupPending -= 1;
+      this.startupAction += 1;
+      this.startupLoadedAt = 0;
+      if (visit !== this.startupVisit || this.state.route !== 'startup') {
+        // La personne a quitté la page entre-temps : la page suivante repart de zéro.
+        void this.refreshStartup(true);
+        return false;
+      }
+      return true;
+    };
+    try {
+      const answer: StartupView = await this.backend.setStartupEntry(id, enabled);
+      if (answered()) {
+        this.set({ startupBusy: null });
+        this.adoptStartup(answer);
+        // Le cœur a accepté, mais la vue montre l'entrée dans l'autre état : on ne dit pas ce qui n'est pas.
+        const said = sayDone(before, enabled);
+        this.say(sayStale(said, answer) ? { text: fr.startup.say.failed, undo: null } : said);
+        this.focusKey(startupFocus.entry(id));
+        this.revealStartupRow(id);
+      }
+    } catch (error) {
+      if (answered()) {
+        const current = this.state.startup;
+        this.set({ startup: current === null ? null : withEntry(current, before), startupBusy: null });
+        this.say(sayRefused(error));
+        this.focusKey(startupFocus.entry(id));
+        this.revealStartupRow(id);
+        void this.refreshStartup(true);
+      }
+    }
+  }
+
+  private undoStartup(): void {
+    const undo = this.state.startupSay?.undo;
+    if (undo !== null && undo !== undefined) {
+      void this.setStartupEntry(undo.id, undo.enabled);
+    }
+  }
+
   private async openWindowsSettings(page: WindowsPage): Promise<void> {
     try {
       await this.backend.openWindowsSettings(page);
@@ -930,6 +1221,7 @@ export class App {
   private navigate(route: Route): void {
     this.set({ route });
     this.watchGame();
+    this.watchStartup();
     this.ensureData();
     if (route === 'bin') {
       void this.refreshOverview(2000);
@@ -967,6 +1259,10 @@ export class App {
     openPicker: (kind) => void this.openPicker(kind),
     closePicker: () => this.closePicker(),
     pickOpenApp: (id) => void this.pickOpenApp(id),
+    setStartupEntry: (id, enabled) => void this.setStartupEntry(id, enabled),
+    undoStartup: () => this.undoStartup(),
+    holdStartupSay: (by, on) => this.holdStartupSay(by, on),
+    retryStartup: () => this.retryStartup(),
     openWindowsSettings: (page) => void this.openWindowsSettings(page),
     minimize: () => void this.backend.minimizeWindow(),
     toggleMaximize: () => void this.backend.toggleMaximizeWindow(),

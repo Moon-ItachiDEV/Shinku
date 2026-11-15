@@ -11,6 +11,7 @@ import {
   formatAgo,
   formatBytes,
   formatCount,
+  formatDay,
   formatDuration,
   formatLimit,
   formatSince,
@@ -153,6 +154,22 @@ test('le début d’une partie dit le jour quand ce n’est pas aujourd’hui', 
   assert.equal(formatSince(at(2025, 12, 31, 22, 15), now), `le 31${NBSP}déc. 2025, 22:15`);
   // Une date dans le futur (horloge qui recule) ne fait pas dire n'importe quoi.
   assert.equal(formatSince(now + 3_600_000, now), '10:05');
+});
+
+test('un jour se lit « le 15 nov. », avec l’année si ce n’est pas l’année en cours', () => {
+  const at = (year: number, month: number, day: number, hour = 12) => new Date(year, month - 1, day, hour).getTime();
+  const now = at(2026, 11, 15, 9);
+  assert.equal(formatDay(at(2026, 11, 15), now), `le 15${NBSP}nov.`);
+  assert.equal(formatDay(at(2026, 11, 2), now), `le 2${NBSP}nov.`);
+  assert.equal(formatDay(at(2026, 1, 1), now), `le 1er${NBSP}janv.`);
+  assert.equal(formatDay(at(2026, 5, 4), now), `le 4${NBSP}mai`);
+  assert.equal(formatDay(at(2026, 8, 31), now), `le 31${NBSP}août`);
+  // Une autre année la porte, l'an dernier comme l'an prochain.
+  assert.equal(formatDay(at(2025, 11, 2), now), `le 2${NBSP}nov. 2025`);
+  assert.equal(formatDay(at(2024, 12, 31, 23), now), `le 31${NBSP}déc. 2024`);
+  assert.equal(formatDay(at(2027, 1, 3), now), `le 3${NBSP}janv. 2027`);
+  // Le 1er janvier de l'année en cours n'a pas d'année, la veille de l'an dernier en a une.
+  assert.equal(formatDay(at(2025, 12, 31, 23), at(2026, 1, 1, 0)), `le 31${NBSP}déc. 2025`);
 });
 
 test('la phrase de la partie en cours porte ce début', async () => {

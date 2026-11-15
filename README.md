@@ -24,6 +24,16 @@ Ce qui fonctionne :
   choisies, puis remet tout en place à la fin de la partie, y compris après un
   plantage ou une coupure de courant. Éteint par défaut ; Shinku ne lance
   jamais un jeu ;
+- le module Démarrage : la liste des apps inscrites au démarrage de Windows
+  (six places : les valeurs `Run` du compte et du PC, en vues 64 et 32 bits, et
+  les dossiers Démarrage du compte et commun), et un interrupteur par app du
+  **compte** qui la coupe ou la remet **au même endroit que le Gestionnaire des
+  tâches** : l'app reste installée, rien n'est supprimé. Les entrées du PC sont
+  montrées en lecture seule, avec un bouton qui ouvre la page « Apps de
+  démarrage » de Windows. Rien n'y est lu hors d'un lecteur fixe (ni réseau, ni
+  amovible), et une liste que Windows n'a pas laissé lire en entier est dite
+  incomplète au lieu de passer pour complète. Voir `docs/conception.md`, section
+  « Démarrage » ;
 - l'interface complète, en deux modes d'affichage (Crépuscule et Brume),
   branchée sur le moteur ;
 - la fenêtre de l'application (`shinku.exe`) et son installeur pour Windows,
@@ -33,15 +43,20 @@ Ce qui n'existe pas encore :
 
 - les actions des modules (supprimer un seul doublon, un gros fichier…).
   Leurs boutons sont visibles mais inactifs, et l'interface le dit ;
-- l'assistant élevé (`shinku-helper.exe`), dont il n'existe que le squelette ;
+- l'assistant élevé (`shinku-helper.exe`), dont il n'existe que le squelette :
+  c'est lui qui réglera les entrées de démarrage du PC (tous les comptes), qui
+  demandent un administrateur ;
 - l'analyse planifiée par l'agent : pour l'instant, il ne fait que le mode jeu ;
-- les modules Démarrage, Désinstallation et Confidentialité.
+- les modules Désinstallation et Confidentialité ;
+- la preuve que Windows respecte, à l'ouverture d'une session, ce que le module
+  Démarrage écrit : elle ne se fait qu'à la main, sur un vrai Windows 11 (voir
+  `docs/conception.md`).
 
 ## Plan du dépôt
 
 | Dossier | Contenu |
 | --- | --- |
-| `crates/shinku-core` | Le cœur : règles, liste d'interdits, moteur d'analyse, mode jeu (`game/`), réglages, et le « guichet » que la fenêtre appelle. Tout ce qui décide est ici, et se teste sans fenêtre. |
+| `crates/shinku-core` | Le cœur : règles, liste d'interdits, moteur d'analyse, mode jeu (`game/`), module Démarrage (`startup/`), réglages, et le « guichet » que la fenêtre appelle. Tout ce qui décide est ici, et se teste sans fenêtre. |
 | `crates/shinku-helper` | L'assistant élevé. Il n'accepte que des verbes fixes, jamais un chemin. Squelette. |
 | `crates/shinku-agent` | L'agent du mode jeu : sans fenêtre, lancé par Shinku ou avec Windows. Il ne décide rien : il appelle le cœur toutes les deux secondes. |
 | `apps/shinku` | L'interface : TypeScript, lit-html, Vite. |
@@ -120,6 +135,11 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   SHINKU_UPDATE_CONTRACT=1 cargo test -p shinku-core --test ui_contract
   ```
 
+- Le module Démarrage se teste sur une machine fabriquée (`FakeStartupHost`),
+  et son hôte Windows sur un vrai registre : ses tests écrivent sous une clé
+  d'essai de `HKCU` (`Software\Shinku-Essai-<aléa>`, supprimée à la fin), jamais
+  sous les vraies clés `Run` ni `StartupApproved`, et n'ouvrent jamais `HKLM`
+  en écriture.
 - Le câblage de la fenêtre (commandes, permissions, politique de sécurité) est
   vérifié à la lecture des fichiers par `apps/shinku/tests/wiring.test.ts` :
   une commande oubliée se voit sans Windows.

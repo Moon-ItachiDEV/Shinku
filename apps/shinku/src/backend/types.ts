@@ -335,7 +335,7 @@ export type PowerOutcome =
   | 'off';
 export type PowerSupport = 'available' | 'unavailable' | 'unsuited';
 export type GameSource = 'added' | 'library';
-export type WindowsPage = 'gameMode' | 'power';
+export type WindowsPage = 'gameMode' | 'power' | 'startupApps';
 export type GameStatus = 'notGame' | 'forgotten';
 
 /** La partie en cours, telle que l'agent l'a notée. */
@@ -413,7 +413,54 @@ export type BackendError =
   | { kind: 'cleanRunning' }
   | { kind: 'cleanRefused'; reason: CleanRefusal }
   | { kind: 'cleanNotStarted'; reason: string }
-  | { kind: 'gameRefused'; reason: GameRefusal };
+  | { kind: 'gameRefused'; reason: GameRefusal }
+  | { kind: 'startupRefused'; reason: StartupRefusal };
+
+// ── Le démarrage ───────────────────────────────────────────────────────────
+
+/** Le compte (réglable ici), ou tout le PC (en lecture seule dans ce lot). */
+export type StartupScope = 'user' | 'machine';
+/** `unknown` : Shinku ne sait pas lire le réglage de Windows, la ligne n'a pas d'interrupteur. */
+export type StartupState = 'enabled' | 'disabled' | 'unknown';
+export type StartupTarget = 'found' | 'missing' | 'hosted' | 'unknown';
+export type StartupOrigin = 'registry' | 'folder';
+export type StartupMark =
+  /** Coupée par Shinku, à cette date. */
+  | { kind: 'cutByShinku'; at: number }
+  /** Coupée par Shinku, puis remise par l'app elle-même ; `cut` : la date de la coupure. */
+  | { kind: 'cameBack'; cut: number };
+
+export interface StartupEntry {
+  /** L'identifiant que le cœur a donné : c'est tout ce que la page lui renvoie. */
+  id: string;
+  name: string;
+  /** Le nom sous lequel l'app est inscrite, s'il diffère de `name`. */
+  alias: string | null;
+  /** Ce que le fichier déclare, pas une identité vérifiée. */
+  publisher: string | null;
+  scope: StartupScope;
+  origin: StartupOrigin;
+  state: StartupState;
+  /** La date de la coupure, lue dans Windows, si elle est plausible. */
+  disabledAt: number | null;
+  mark: StartupMark | null;
+  target: StartupTarget;
+  /** Le programme qui porte la commande, si `target` vaut `hosted`. */
+  host: string | null;
+  hint: 'sync' | null;
+  /** L'entrée de Shinku lui-même (mode jeu automatique). */
+  own: boolean;
+  adjustable: boolean;
+}
+
+export interface StartupView {
+  /** Le compte d'abord, puis le PC ; triées. */
+  entries: StartupEntry[];
+  /** Les portées dont une place n'a pas pu être lue. */
+  unreadable: StartupScope[];
+}
+
+export type StartupRefusal = 'unknownEntry' | 'notAdjustable' | 'busy' | 'failed';
 
 /** Ce que l'interface peut demander. Deux réalisations : Tauri, et la démo. */
 export interface Backend {
@@ -450,6 +497,10 @@ export interface Backend {
   setGameStatus(path: string, status: GameStatus): Promise<GameView>;
   /** « Tout remettre maintenant ». */
   releaseGame(): Promise<GameView>;
+  /** Le démarrage : les apps inscrites, du compte et du PC. */
+  startupView(): Promise<StartupView>;
+  /** `id` n'est que comparé aux entrées que le cœur connaît ; il rend la vue entière. */
+  setStartupEntry(id: string, enabled: boolean): Promise<StartupView>;
   openWindowsSettings(page: WindowsPage): Promise<void>;
   minimizeWindow(): Promise<void>;
   toggleMaximizeWindow(): Promise<void>;

@@ -25,6 +25,7 @@ use crate::model::Trigger;
 use crate::platform::Environment;
 use crate::rules::JunkCategory;
 use crate::settings::Settings;
+use crate::startup::Probe;
 use crate::walk::{Root, WalkOptions, walk};
 
 mod duplicates;
@@ -80,6 +81,9 @@ pub struct ScanOptions {
     pub modules: Modules,
     /// Lire en priorité basse : pour les analyses lancées sans l'utilisateur.
     pub background: bool,
+    /// De quoi compter les apps inscrites au démarrage, à la fin de
+    /// l'analyse. Sans elle, ce chiffre n'est pas mesuré.
+    pub startup: Option<Probe>,
 }
 
 impl ScanOptions {
@@ -93,7 +97,14 @@ impl ScanOptions {
             duplicate_min_size: DEFAULT_DUPLICATE_MIN_SIZE,
             modules: Modules::ALL,
             background: trigger == Trigger::Automatic,
+            startup: None,
         }
+    }
+
+    /// Mesure aussi les apps inscrites au démarrage de Windows.
+    pub fn with_startup(mut self, probe: Probe) -> Self {
+        self.startup = Some(probe);
+        self
     }
 
     /// Applique les réglages de l'utilisateur : ses « dossiers jamais touchés ».
@@ -308,6 +319,9 @@ fn analyse(
             DuplicatesState::Off
         }),
         recycle_bin,
+        // Lu une fois, avec le reste du rapport : un chiffre qui ne se lit pas
+        // (une place illisible) reste « non mesuré ».
+        startup: options.startup.as_ref().and_then(Probe::count),
         skipped: Skipped {
             denied_folders: indexed.denied,
             denied_examples: std::mem::take(&mut indexed.denied_examples),

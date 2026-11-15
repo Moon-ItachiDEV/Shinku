@@ -172,6 +172,15 @@ jobs:
           $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "L'installeur s'arrête avec le code $($install.ExitCode)." }
 
+      # Le Démarrage : cinq entrées d'essai (quatre dans le compte, une dans le
+      # PC) sont créées avant la fenêtre, qui les coupe et les remet pour de
+      # bon. Le script tourne en administrateur, et crée seul l'entrée du PC ;
+      # la fenêtre tourne avec les droits ordinaires du même compte : HKCU est
+      # le même.
+      - name: Préparer l'essai du Démarrage
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Preparer
+
       - name: Essai de la fenêtre
         working-directory: apps/shinku
         run: node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures" --grand-vide
@@ -192,6 +201,12 @@ jobs:
         if: always()
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-mode-jeu.ps1 -Restaurer
+
+      # Quoi qu'il arrive : les cinq entrées d'essai et leurs approbations sont retirées.
+      - name: Remettre la machine d'essai en place (démarrage)
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Nettoyer
 
       - name: Publier les captures de la fenêtre
         if: always()

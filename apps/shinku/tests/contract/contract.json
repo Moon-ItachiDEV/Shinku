@@ -18,7 +18,8 @@
       "gameRefused",
       "scanNotStarted",
       "settingsNotSaved",
-      "settingsUnchecked"
+      "settingsUnchecked",
+      "startupRefused"
     ],
     "categoryState": [
       "ready",
@@ -144,6 +145,38 @@
       "cleaning",
       "cleaned"
     ],
+    "startupHint": [
+      "sync"
+    ],
+    "startupMark": [
+      "cutByShinku",
+      "cameBack"
+    ],
+    "startupOrigin": [
+      "registry",
+      "folder"
+    ],
+    "startupRefusal": [
+      "unknownEntry",
+      "notAdjustable",
+      "busy",
+      "failed"
+    ],
+    "startupScope": [
+      "user",
+      "machine"
+    ],
+    "startupState": [
+      "enabled",
+      "disabled",
+      "unknown"
+    ],
+    "startupTarget": [
+      "found",
+      "missing",
+      "hosted",
+      "unknown"
+    ],
     "stepState": [
       "notRequested",
       "done",
@@ -161,7 +194,8 @@
     ],
     "windowsPage": [
       "gameMode",
-      "power"
+      "power",
+      "startupApps"
     ]
   },
   "shapes": {
@@ -254,6 +288,10 @@
     },
     "error.settingsUnchecked": {
       "kind": "string"
+    },
+    "error.startupRefused": {
+      "kind": "string",
+      "reason": "string"
     },
     "gameView.idle": {
       "agent": "string",
@@ -619,6 +657,33 @@
       "theme": "string",
       "useRecycleBin": "boolean",
       "version": "number"
+    },
+    "startupView": {
+      "entries": [
+        {
+          "adjustable": "boolean",
+          "alias": "string",
+          "disabledAt": "number",
+          "hint": "string",
+          "host": "string",
+          "id": "string",
+          "mark": {
+            "at": "number",
+            "cut": "number",
+            "kind": "string"
+          },
+          "name": "string",
+          "origin": "string",
+          "own": "boolean",
+          "publisher": "string",
+          "scope": "string",
+          "state": "string",
+          "target": "string"
+        }
+      ],
+      "unreadable": [
+        "string"
+      ]
     }
   }
 }

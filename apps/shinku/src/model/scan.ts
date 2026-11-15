@@ -42,9 +42,7 @@ export type ScanRow =
   /** Terminé. Seul le lot `auto` compte dans le grand chiffre de l'écran. */
   | { id: ScanRowId; status: 'done'; bytes: number; items: number; lot: Lot }
   /** Non mesuré dans cette analyse. */
-  | { id: ScanRowId; status: 'unavailable' }
-  /** Module à venir. */
-  | { id: ScanRowId; status: 'soon' };
+  | { id: ScanRowId; status: 'unavailable' };
 
 export function category(summary: Summary | null, module: ModuleId): CategorySummary | undefined {
   return summary?.categories.find((entry) => entry.module === module);
@@ -62,10 +60,6 @@ export function duplicatesPercent(view: SessionView): number {
 export function scanRows(view: SessionView): ScanRow[] {
   const walking = view.state === 'scanning' && view.summary === null;
   return SCAN_ROWS.map((id): ScanRow => {
-    // Le module Démarrage n'existe pas encore.
-    if (id === 'startup') {
-      return { id, status: 'soon' };
-    }
     const entry = category(view.summary, id);
     if (entry === undefined) {
       if (!walking) {

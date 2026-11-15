@@ -24,6 +24,7 @@ pub mod scan;
 pub mod scope;
 pub mod session;
 pub mod settings;
+pub mod startup;
 #[cfg(test)]
 mod testing;
 pub mod walk;

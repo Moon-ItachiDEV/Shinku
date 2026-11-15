@@ -38,6 +38,10 @@ import type {
   RecycleBin,
   SessionView,
   Settings,
+  StartupEntry,
+  StartupRefusal,
+  StartupScope,
+  StartupView,
   StepState,
   Summary,
   Theme,
@@ -56,6 +60,20 @@ export interface GameDemo {
   agent: 'running' | 'stopped' | 'missing';
   power: 'available' | 'unavailable' | 'unsuited' | 'battery';
   startup: 'enabled' | 'disabled';
+}
+
+/** Ce que la démo montre du démarrage (`?boot=few|many|empty&bootfail=1&bootread=user|machine&bootload=fail&bootshinku=off`). */
+export interface BootDemo {
+  /** Les apps inscrites : quelques-unes, une quarantaine, ou aucune. */
+  data: 'few' | 'many' | 'empty';
+  /** Tout changement échoue. */
+  fail: boolean;
+  /** La portée dont une place n'a pas pu être lue, ou aucune. */
+  read: 'all' | 'user' | 'machine';
+  /** La première lecture de la vue échoue (`?bootload=fail`) ; « Réessayer » la réussit. */
+  load: 'ok' | 'fail';
+  /** Shinku est coupé dans Windows (`?bootshinku=off`). */
+  shinku: 'on' | 'off';
 }
 
 export interface MockOptions {
@@ -77,6 +95,8 @@ export interface MockOptions {
   interrupted: boolean;
   /** Ce que la démo montre du mode jeu. */
   game: GameDemo;
+  /** Ce que la démo montre du démarrage. */
+  boot: BootDemo;
 }
 
 /**
@@ -84,6 +104,7 @@ export interface MockOptions {
  * `?speed=4&theme=light&issue=unreadable&bin=empty&clean=rough&interrupted=1`.
  * Le mode jeu : `?game=off|idle|playing|released|pending`, `?agent=missing|stopped`,
  * `?power=unavailable|unsuited|battery`, `?startup=disabled`.
+ * Le démarrage : `?boot=few|many|empty`, `?bootfail=1`, `?bootread=user|machine`, `?bootload=fail`, `?bootshinku=off`.
  */
 export function demoOptions(search: string): MockOptions {
   const query = new URLSearchParams(search);
@@ -94,6 +115,8 @@ export function demoOptions(search: string): MockOptions {
   const game = query.get('game');
   const agent = query.get('agent');
   const power = query.get('power');
+  const boot = query.get('boot');
+  const read = query.get('bootread');
   return {
     speed: Number.isFinite(speed) && speed > 0 ? speed : 1,
     issue: issue === 'unreadable' || issue === 'partial' ? issue : 'none',
@@ -107,6 +130,13 @@ export function demoOptions(search: string): MockOptions {
       agent: agent === 'missing' || agent === 'stopped' ? agent : 'running',
       power: power === 'unavailable' || power === 'unsuited' || power === 'battery' ? power : 'available',
       startup: query.get('startup') === 'disabled' ? 'disabled' : 'enabled',
+    },
+    boot: {
+      data: boot === 'many' || boot === 'empty' ? boot : 'few',
+      fail: query.get('bootfail') === '1',
+      read: read === 'user' || read === 'machine' ? read : 'all',
+      load: query.get('bootload') === 'fail' ? 'fail' : 'ok',
+      shinku: query.get('bootshinku') === 'off' ? 'off' : 'on',
     },
   };
 }
@@ -167,7 +197,153 @@ const HOLLOW_PEAKS = 'D:\\SteamLibrary\\steamapps\\common\\Hollow Peaks\\hp.exe'
 const MINECRAFT = 'C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.9.9-hotspot\\bin\\javaw.exe';
 
 const samePath = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase();
+// ── Le démarrage de la démo ────────────────────────────────────────────────
+
+/**
+ * L'identifiant d'une entrée : les deux lettres de la place, un tiret, seize
+ * chiffres hexadécimaux. Il a la forme de celui du cœur (un FNV-1a 64 bits du
+ * nom) ; la démo n'a pas besoin de la même valeur.
+ */
+function startupId(place: 'ur' | 'uw' | 'uf' | 'mr' | 'mw' | 'mf', name: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let index = 0; index < name.length; index += 1) {
+    hash = ((hash ^ BigInt(name.charCodeAt(index))) * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return `${place}-${hash.toString(16).padStart(16, '0')}`;
+}
+
+/** Ce que la démo écrit d'une entrée ; le reste (identifiant, portée, réglable) s'en déduit. */
+interface BootSeed {
+  place: 'ur' | 'uw' | 'uf' | 'mr' | 'mw' | 'mf';
+  raw: string;
+  name: string;
+  alias?: string | undefined;
+  publisher?: string | undefined;
+  state?: StartupEntry['state'] | undefined;
+  /** Il y a combien de jours Windows a noté la coupure. */
+  cutDaysAgo?: number | undefined;
+  /** La coupure a eu lieu à cette date (mois à partir de 0, jour, années avant maintenant). */
+  cutOn?: { month: number; day: number; yearsAgo: number } | undefined;
+  mark?: 'cutByShinku' | 'cameBack' | undefined;
+  target?: StartupEntry['target'] | undefined;
+  host?: string | undefined;
+  sync?: boolean | undefined;
+  own?: boolean | undefined;
+}
+
+function bootEntry(seed: BootSeed, now: number): StartupEntry {
+  const machine = seed.place.startsWith('m');
+  const state = seed.state ?? 'enabled';
+  const cutAt =
+    seed.cutOn !== undefined
+      ? new Date(new Date(now).getFullYear() - seed.cutOn.yearsAgo, seed.cutOn.month, seed.cutOn.day, 9, 41).getTime()
+      : seed.cutDaysAgo === undefined
+        ? null
+        : now - seed.cutDaysAgo * DAY;
+  return {
+    id: startupId(seed.place, seed.raw),
+    name: seed.name,
+    alias: seed.alias ?? null,
+    // Le cœur ne lit l'éditeur que dans le fichier qu'il a trouvé.
+    publisher: (seed.target ?? 'found') === 'found' ? (seed.publisher ?? null) : null,
+    scope: machine ? 'machine' : 'user',
+    origin: seed.place.endsWith('f') ? 'folder' : 'registry',
+    state,
+    disabledAt: state === 'disabled' ? cutAt : null,
+    mark:
+      seed.mark === 'cutByShinku' && cutAt !== null
+        ? { kind: 'cutByShinku', at: cutAt }
+        : seed.mark === 'cameBack' && cutAt !== null
+          ? { kind: 'cameBack', cut: cutAt }
+          : null,
+    target: seed.target ?? 'found',
+    host: seed.host ?? null,
+    hint: seed.sync === true && (seed.target ?? 'found') === 'found' ? 'sync' : null,
+    own: seed.own === true,
+    adjustable: !machine && state !== 'unknown' && seed.own !== true,
+  };
+}
+
+const FEW_BOOT: readonly BootSeed[] = [
+  { place: 'ur', raw: 'Discord', name: 'Discord', publisher: 'Discord Inc.' },
+  { place: 'ur', raw: 'Steam', name: 'Steam', publisher: 'Valve Corporation', state: 'disabled', mark: 'cutByShinku', cutDaysAgo: 3 },
+  { place: 'ur', raw: 'OneDrive', name: 'Microsoft OneDrive', alias: 'OneDrive', publisher: 'Microsoft Corporation', sync: true },
+  { place: 'ur', raw: 'Spotify', name: 'Spotify', publisher: 'Spotify AB', mark: 'cameBack', cutDaysAgo: 5 },
+  { place: 'uf', raw: 'Adobe Updater Startup Utility.lnk', name: 'Mise à jour Adobe', target: 'missing' },
+  { place: 'ur', raw: 'Lancement rapide', name: 'Lancement rapide', target: 'hosted', host: 'rundll32.exe' },
+  { place: 'ur', raw: 'Shinku', name: 'Shinku', publisher: 'Shinku', own: true },
+  { place: 'ur', raw: 'Ancien outil', name: 'Ancien outil', state: 'unknown' },
+  { place: 'mr', raw: 'SecurityHealth', name: 'Sécurité Windows', alias: 'SecurityHealth', publisher: 'Microsoft Corporation' },
+  { place: 'mr', raw: 'RtkAudUService', name: 'Realtek HD Audio Universal Service', publisher: 'Realtek Semiconductor' },
+  { place: 'mr', raw: 'LGHUB', name: 'Logitech G HUB', publisher: 'Logitech, Inc.', state: 'disabled', cutOn: { month: 10, day: 2, yearsAgo: 1 } },
+  { place: 'mw', raw: 'SunJavaUpdateSched', name: 'Java Update Scheduler', publisher: 'Oracle Corporation' },
+];
+
+const MANY_NAMES: readonly string[] = [
+  'Adobe Creative Cloud', 'Battle.net', 'Brave', 'Dropbox', 'EA app', 'Epic Games Launcher', 'Figma', 'GeForce Experience',
+  'Google Drive', 'iCloud', 'Logi Options+', 'Malwarebytes', 'Microsoft Teams', 'NordVPN', 'Notion', 'Opera GX',
+  'Overwolf', 'Razer Synapse', 'Signal', 'Slack', 'Spotify', 'Steam', 'TeamViewer', 'Telegram', 'Ubisoft Connect',
+  'Zoom', 'Corsair iCUE', 'Wacom Tablet', '7-Zip', '1Password', 'AMD Software', 'Bluetooth', 'Intel Driver Assistant',
+  'Lenovo Vantage', 'OneNote', 'qBittorrent', 'Skype', 'VLC', 'Zotero', 'Visual Studio Code',
+];
+
+const MANY_PUBLISHERS: readonly string[] = [
+  'Microsoft Corporation',
+  'Adobe Inc.',
+  'Google LLC',
+  'Valve Corporation',
+  'Razer Inc.',
+  'Mozilla Foundation',
+  'Logitech, Inc.',
+];
+
+function manyBoot(): BootSeed[] {
+  return MANY_NAMES.map((name, index): BootSeed => {
+    const machine = index % 4 === 3;
+    const place = machine ? (index % 8 === 3 ? 'mr' : 'mf') : index % 7 === 0 ? 'uf' : index % 5 === 0 ? 'uw' : 'ur';
+    const kind = index % 9;
+    return {
+      place,
+      raw: `${name}${place === 'mf' || place === 'uf' ? '.lnk' : ''}`,
+      name,
+      publisher: kind === 5 ? undefined : MANY_PUBLISHERS[index % MANY_PUBLISHERS.length],
+      state: kind === 1 || kind === 2 ? 'disabled' : kind === 7 && !machine ? 'unknown' : 'enabled',
+      cutDaysAgo: kind === 1 ? index : kind === 2 ? 40 + index : kind === 6 ? 2 + (index % 9) : undefined,
+      mark: kind === 1 ? 'cutByShinku' : kind === 6 ? 'cameBack' : undefined,
+      target: kind === 3 ? 'missing' : kind === 4 ? 'hosted' : kind === 8 ? 'unknown' : 'found',
+      host: kind === 4 ? 'javaw.exe' : undefined,
+      alias: kind === 0 ? `${name.toLowerCase().replaceAll(' ', '')}.exe` : undefined,
+      sync: index % 6 === 0,
+    };
+  });
+}
+
 const gameRefused = (reason: GameRefusal): Promise<never> => Promise.reject({ kind: 'gameRefused', reason });
+const startupRefused = (reason: StartupRefusal): Promise<never> =>
+  Promise.reject({ kind: 'startupRefused', reason });
+
+/**
+ * Comme le cœur (`startup/mod.rs`) : le compte d'abord, puis le PC ; dans chaque portée, par nom en
+ * minuscules, puis nom d'inscription en minuscules (l'absence d'abord), puis identifiant. La
+ * comparaison est celle des points de code, pas celle d'une langue.
+ */
+function sortedBoot(entries: readonly StartupEntry[]): StartupEntry[] {
+  const rank = (scope: StartupScope): number => (scope === 'user' ? 0 : 1);
+  const text = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
+  return entries.toSorted(
+    (left, right) =>
+      rank(left.scope) - rank(right.scope) ||
+      text(left.name.toLowerCase(), right.name.toLowerCase()) ||
+      (left.alias === null
+        ? right.alias === null
+          ? 0
+          : -1
+        : right.alias === null
+          ? 1
+          : text(left.alias.toLowerCase(), right.alias.toLowerCase())) ||
+      text(left.id, right.id),
+  );
+}
 
 const JUNK: JunkReport = {
   bytes: 3.7 * GB,
@@ -345,6 +521,20 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
     gameModeGames: [...(seed.games ?? [MINECRAFT])],
     gameModeNotGames: [],
   };
+  let bootEntries: StartupEntry[] = sortedBoot(
+    (options.boot.data === 'few' ? FEW_BOOT : options.boot.data === 'many' ? manyBoot() : []).map((seed) =>
+      bootEntry(
+        seed.own === true && options.boot.shinku === 'off'
+          ? { ...seed, state: 'disabled', cutDaysAgo: 2 }
+          : seed,
+        Date.now(),
+      ),
+    ),
+  );
+  const bootView = (): StartupView => ({
+    entries: structuredClone(bootEntries),
+    unreadable: options.boot.read === 'all' ? [] : [options.boot.read],
+  });
   let issue: LoadIssue | null =
     options.issue === 'unreadable'
       ? { kind: 'unreadable', reason: 'EOF while parsing a value at line 4 column 0' }
@@ -366,6 +556,9 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
   // Ce qu'un grand vide a emporté : l'analyse suivante ne le retrouve pas.
   let junkGone = false;
   let duplicatesGone = false;
+  /** Le nombre d'apps actives, lu à la fin de la dernière analyse. */
+  let startupCount: number | null = null;
+  let bootLoadFails = options.boot.load === 'fail';
   let cleaning: Cleaning | null = null;
 
   /** L'app que le scénario `rough` laisse ouverte : ses fichiers ne partent pas. */
@@ -620,7 +813,16 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
         items: large.length,
         state: 'ready',
       },
-      { module: 'startup', lot: 'review', risk: 'C', bytes: 0, items: 0, state: 'unavailable' },
+      {
+        module: 'startup',
+        lot: 'review',
+        risk: 'C',
+        bytes: 0,
+        // Lu une fois, à la fin de l'analyse : couper une app ensuite ne change pas ce compte.
+        items: complete ? (startupCount ??= bootEntries.filter((entry) => entry.state === 'enabled' && !entry.own).length) : 0,
+        // Une place illisible : le cœur ne mesure pas le démarrage.
+        state: options.boot.read !== 'all' ? 'unavailable' : complete ? 'ready' : 'pending',
+      },
     ];
     const autoBytes = categories
       .filter((entry) => entry.lot === 'auto')
@@ -838,6 +1040,7 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
       cleaning = null;
       interrupted = null;
       found = null;
+      startupCount = null;
       started = Date.now();
       return view();
     },
@@ -1135,6 +1338,38 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
         releaseAsked = true;
       }
       return gameView();
+    },
+    startupView: async () => {
+      if (bootLoadFails) {
+        bootLoadFails = false;
+        throw new Error('démo : la première lecture échoue');
+      }
+      return bootView();
+    },
+    setStartupEntry: async (id, enabled) => {
+      // L'ordre du cœur : l'entrée inconnue, puis celle qu'on ne règle pas, puis l'échec.
+      const entry = bootEntries.find((other) => other.id === id);
+      if (entry === undefined) {
+        return startupRefused('unknownEntry');
+      }
+      if (!entry.adjustable) {
+        return startupRefused('notAdjustable');
+      }
+      if (options.boot.fail) {
+        return startupRefused('failed');
+      }
+      if ((entry.state === 'enabled') !== enabled) {
+        const now = Date.now();
+        bootEntries = bootEntries.map(
+          (other): StartupEntry =>
+            other.id !== id
+              ? other
+              : enabled
+                ? { ...other, state: 'enabled', disabledAt: null, mark: null }
+                : { ...other, state: 'disabled', disabledAt: now, mark: { kind: 'cutByShinku', at: now } },
+        );
+      }
+      return bootView();
     },
     openWindowsSettings: async () => {},
     minimizeWindow: async () => {},

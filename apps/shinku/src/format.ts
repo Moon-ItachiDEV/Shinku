@@ -150,9 +150,18 @@ export function formatSince(then: number, now: number): string {
   if (days === 1) {
     return `hier, ${clock}`;
   }
+  return `${formatDay(then, now)}, ${clock}`;
+}
+
+/**
+ * Un jour, pour finir une phrase : « le 15 nov. », avec l'année si ce n'est pas
+ * l'année en cours (« le 2 nov. 2024 »). Les jours sont ceux de la machine.
+ */
+export function formatDay(then: number, now: number): string {
+  const date = new Date(then);
   const day = date.getDate() === 1 ? '1er' : String(date.getDate());
-  const year = date.getFullYear() === today.getFullYear() ? '' : ` ${date.getFullYear()}`;
-  return `le ${day}${NBSP}${MONTHS[date.getMonth()] ?? ''}${year}, ${clock}`;
+  const year = date.getFullYear() === new Date(now).getFullYear() ? '' : ` ${date.getFullYear()}`;
+  return `le ${day}${NBSP}${MONTHS[date.getMonth()] ?? ''}${year}`;
 }
 
 /** Sépare un chemin en nom et dossier parent : pour Windows (`\`) et pour le développement (`/`). */

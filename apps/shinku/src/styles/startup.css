@@ -1,0 +1,180 @@
+/*
+ * La page Démarrage. Elle reprend le squelette de page.css, les cartes et les
+ * lignes de « Tes jeux » ; ce fichier n'ajoute que ce qui lui est propre.
+ * Aucune couleur nouvelle : tout vient de tokens.css, clair et sombre.
+ */
+
+/* Une phrase discrète et son bouton, sur la même ligne tant qu'il y a la place. */
+.pline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: 10px;
+}
+
+.pline .d {
+  max-width: 620px;
+  text-wrap: pretty;
+}
+
+.pline .ghost.small {
+  flex-shrink: 0;
+}
+
+.pmach {
+  margin: 0 4px 12px;
+}
+
+/*
+ * La barre de retour flotte en bas de la zone qui défile : vide, elle n'a ni
+ * hauteur ni fond ; pleine, elle ne déplace rien au-dessus d'elle.
+ */
+.pzone {
+  position: sticky;
+  bottom: 18px;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.psay {
+  display: flex;
+  align-items: center;
+  gap: 8px 14px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 640px;
+  margin: 12px 0 0;
+  padding: 10px 12px 10px 18px;
+  border: 1px solid rgb(var(--ov) / calc(0.1 * var(--ov-k)));
+  border-radius: 16px;
+  background: var(--surface-solid);
+  box-shadow: 0 14px 36px -14px var(--orb-shade);
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1.5;
+  letter-spacing: 0.025em;
+  color: var(--text);
+  text-wrap: pretty;
+  pointer-events: auto;
+}
+
+.psay > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.psay .ghost.small {
+  flex-shrink: 0;
+}
+
+/* ── Cartes et lignes ───────────────────────────────────────────────────── */
+
+.plist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plist > li + li {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+/* L'avertissement ouvre la carte : pas de filet au-dessus, un filet entre lui et la liste. */
+.card > .pwarn:first-child {
+  border-top: 0;
+}
+
+.pwarn + .plist {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+/* La pastille ronde de l'initiale du nom. */
+.av {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: rgb(var(--ov) / calc(0.07 * var(--ov-k)));
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-2);
+  user-select: none;
+}
+
+/* Le nom garde au moins 160 px : ce sont les pastilles qui se raccourcissent, avec des points de suspension. */
+.startup .row > .tx {
+  min-width: 160px;
+}
+
+.startup .row .tag {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.startup .row .ghost.small {
+  flex-shrink: 0;
+}
+
+/* Ce qui tient la place de l'interrupteur : une raison, et un bouton. */
+.pend {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 1;
+  min-width: 0;
+  gap: 10px;
+}
+
+.startup .row .pend > .tag {
+  flex-shrink: 0;
+}
+
+/* Ce qui ne tient pas passe à la ligne plutôt que de pousser le nom. */
+.startup .row > .d,
+.pend > .d {
+  min-width: 0;
+  text-align: right;
+}
+
+/* La raison d'une absence d'interrupteur est une information, pas un détail : elle garde un contraste confortable. */
+.pend > .d,
+.row > .d {
+  color: var(--text-2);
+}
+
+/* Tant que la barre flotte, la liste qui défile lui laisse la place : un interrupteur atteint au clavier ne passe pas dessous. */
+.scroll.sayon {
+  scroll-padding-bottom: 120px;
+}
+
+.startup .plist > li {
+  scroll-margin-bottom: 12px;
+}
+
+/* Le titre reçoit le focus quand la ligne qui l'avait a disparu : sans contour, ce n'est pas un contrôle. */
+.startup h1[tabindex='-1']:focus {
+  outline: none;
+}
+
+.pretry {
+  margin-top: 12px;
+}
+
+/* Pendant un geste, les contrôles restent focalisables (aria-disabled) : on ne le voit que par le curseur. */
+.startup [aria-disabled='true'] {
+  cursor: default;
+}
+
+/* La seconde ligne (12 px, graisse 300) demande plus que le troisième gris : 4,5:1 au moins, clair et sombre. */
+.startup .row .t2 {
+  color: var(--text-2);
+}

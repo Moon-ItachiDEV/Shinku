@@ -52,7 +52,9 @@ use crate::game::agent::{AgentEvent, Flow};
 use crate::game::{STEP, apps};
 use crate::platform::agent::{
     AgentState, Autostart, OpenProgram, Order, RUN_VALUE, WindowsPage, agent_file,
+    autostart_from_approval, run_command,
 };
+use crate::startup::host::RawApproval;
 
 /// Le mutex qui garantit un seul agent par session.
 const MUTEX_NAME: &str = r"Local\Shinku.Agent";
@@ -390,8 +392,7 @@ impl Drop for Key {
 
 /// La valeur `Run` que Shinku écrit : l'agent, entre guillemets, avec son argument.
 fn wanted_run_value() -> Option<String> {
-    let file = agent_file()?;
-    Some(format!("\"{}\" --demarrage", file.display()))
+    run_command()
 }
 
 /// Vrai si la valeur `Run` existe, quel que soit son type et sa taille.
@@ -471,8 +472,8 @@ pub(in crate::platform) fn autostart() -> Autostart {
     if !run_value_exists(&key) {
         return Autostart::Absent;
     }
-    // `StartupApproved` : douze octets ; un premier octet impair veut dire
-    // que la personne a désactivé ce démarrage dans les réglages de Windows.
+    // `StartupApproved` : douze octets. Lus comme le fait le module
+    // « Démarrage » (lecture stricte) : seul `03 00 00 00` + date est « coupé ».
     let Some(approved) = Key::open(APPROVED_KEY, KEY_READ) else { return Autostart::Enabled };
     let mut data = [0u8; 64];
     let mut size = data.len() as u32;
@@ -489,11 +490,18 @@ pub(in crate::platform) fn autostart() -> Autostart {
             Some(&raw mut size),
         )
     };
-    if result == ERROR_SUCCESS && size >= 1 && data[0] & 1 == 1 {
-        Autostart::DisabledInWindows
+    let raw = if result == ERROR_SUCCESS {
+        Ok(Some(RawApproval {
+            is_binary: true,
+            bytes: data[..(size as usize).min(data.len())].to_vec(),
+        }))
+    } else if result == ERROR_FILE_NOT_FOUND {
+        Ok(None)
     } else {
-        Autostart::Enabled
-    }
+        // Un autre type, une valeur plus longue que le tampon, un refus : illisible.
+        Err(io::Error::from_raw_os_error(result.0 as i32))
+    };
+    autostart_from_approval(&raw)
 }
 
 /// Ce que l'énumération des fenêtres ramasse.
@@ -588,7 +596,7 @@ fn shell_open(uri: &'static str) -> io::Result<()> {
     // l'appartement est libéré plus bas, une fois, si l'initialisation a réussi.
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     // SAFETY: les trois chaînes sont terminées par zéro et valides pendant
-    // l'appel ; l'adresse est l'une des deux constantes de `WindowsPage`.
+    // l'appel ; l'adresse est l'une des trois constantes de `WindowsPage`.
     let result = unsafe {
         ShellExecuteW(
             None,

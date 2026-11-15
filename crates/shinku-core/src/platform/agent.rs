@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use super::imp;
 use crate::game::agent::{AgentEvent, Flow};
+use crate::startup::State;
+use crate::startup::approval;
+use crate::startup::host::RawApproval;
 
 /// Nom du fichier de l'agent, à côté de `shinku.exe`.
 #[cfg(windows)]
@@ -60,7 +63,7 @@ pub enum Autostart {
     DisabledInWindows,
 }
 
-/// Une page des réglages de Windows. Deux seulement, à adresses fixes.
+/// Une page des réglages de Windows. Trois seulement, à adresses fixes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WindowsPage {
@@ -68,6 +71,8 @@ pub enum WindowsPage {
     GameMode,
     /// Alimentation et mise en veille.
     Power,
+    /// Apps de démarrage.
+    StartupApps,
 }
 
 impl WindowsPage {
@@ -76,6 +81,7 @@ impl WindowsPage {
         match self {
             Self::GameMode => "ms-settings:gaming-gamemode",
             Self::Power => "ms-settings:powersleep",
+            Self::StartupApps => "ms-settings:startupapps",
         }
     }
 }
@@ -87,6 +93,15 @@ pub struct OpenProgram {
     pub name: String,
     /// Le chemin complet de son exécutable.
     pub path: String,
+}
+
+/// La valeur que la clé `Run` « Shinku » doit porter : l'agent entre
+/// guillemets, avec son argument. Le module Démarrage s'en sert pour
+/// reconnaître l'entrée de Shinku lui-même : seule une valeur qui porte
+/// exactement cette commande en est une.
+pub fn run_command() -> Option<String> {
+    let file = agent_file()?;
+    Some(format!("\"{}\" --demarrage", file.display()))
 }
 
 /// Le fichier de l'agent, à côté de l'exécutable courant.
@@ -169,6 +184,20 @@ pub fn forget_autostart() {
     let _ = set_autostart(false);
 }
 
+/// Ce que dit la valeur d'approbation de la valeur `Run` de Shinku.
+///
+/// C'est la **même lecture stricte** que celle du module « Démarrage »
+/// ([`crate::startup::approval`]) : seule la forme `03 00 00 00` + date est
+/// « coupée dans Windows ». Une valeur absente, `02…`, ou un réglage que Shinku
+/// ne sait pas lire (`06`, `07`, une autre longueur, un autre type, une lecture
+/// refusée) ne le fait **pas** dire « coupé » : on ne prétend pas savoir.
+pub fn autostart_from_approval(raw: &io::Result<Option<RawApproval>>) -> Autostart {
+    match approval::read(raw, u64::MAX).state {
+        State::Disabled => Autostart::DisabledInWindows,
+        State::Enabled | State::Unknown => Autostart::Enabled,
+    }
+}
+
 /// Où en est la valeur `Run`.
 pub fn autostart() -> Autostart {
     imp::agent::autostart()
@@ -192,9 +221,48 @@ mod tests {
     fn windows_pages_have_fixed_addresses() {
         assert_eq!(WindowsPage::GameMode.uri(), "ms-settings:gaming-gamemode");
         assert_eq!(WindowsPage::Power.uri(), "ms-settings:powersleep");
+        assert_eq!(WindowsPage::StartupApps.uri(), "ms-settings:startupapps");
         assert_eq!(serde_json::to_value(WindowsPage::GameMode).unwrap(), "gameMode");
         assert_eq!(serde_json::to_value(WindowsPage::Power).unwrap(), "power");
+        assert_eq!(serde_json::to_value(WindowsPage::StartupApps).unwrap(), "startupApps");
         assert_eq!(serde_json::to_value(AgentState::Missing).unwrap(), "missing");
+    }
+
+    #[test]
+    fn the_run_command_is_the_quoted_agent_with_its_argument() {
+        let command = run_command().expect("un dossier courant");
+        let file = agent_file().expect("un dossier courant");
+        assert_eq!(command, format!("\"{}\" --demarrage", file.display()));
+        assert!(command.starts_with('"') && command.ends_with("\" --demarrage"), "{command}");
+    }
+
+    #[test]
+    fn the_autostart_reads_the_approval_as_strictly_as_the_startup_module() {
+        use crate::startup::approval::{cut_bytes, restore_bytes};
+        let binary =
+            |bytes: &[u8]| Ok(Some(RawApproval { is_binary: true, bytes: bytes.to_vec() }));
+        let cut = cut_bytes(133_760_000_000_000_000);
+        // Les deux seules formes comprises.
+        assert_eq!(autostart_from_approval(&binary(&cut)), Autostart::DisabledInWindows);
+        assert_eq!(autostart_from_approval(&binary(&restore_bytes())), Autostart::Enabled);
+        assert_eq!(autostart_from_approval(&Ok(None)), Autostart::Enabled);
+        // Ce que Windows écrit parfois (`06`, `07`) : un premier octet impair ne veut
+        // pas dire « coupé », et un pair non plus « actif » : on ne dit pas « coupé ».
+        for first in [1u8, 5, 6, 7, 9, 0x0b, 0xff] {
+            let mut bytes = [0u8; 12];
+            bytes[0] = first;
+            assert_eq!(
+                autostart_from_approval(&binary(&bytes)),
+                Autostart::Enabled,
+                "{first:#x} n'est pas « coupé »"
+            );
+        }
+        // Une autre longueur, un autre type, une lecture refusée.
+        assert_eq!(autostart_from_approval(&binary(&cut[..4])), Autostart::Enabled);
+        let text = RawApproval { is_binary: false, bytes: cut.to_vec() };
+        assert_eq!(autostart_from_approval(&Ok(Some(text))), Autostart::Enabled);
+        let refused = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_eq!(autostart_from_approval(&refused), Autostart::Enabled);
     }
 
     #[test]

@@ -16,10 +16,12 @@ import type {
   OpenApp,
   Overview,
   SessionView,
+  StartupView,
   Theme,
   WindowsPage,
 } from './backend/types.ts';
 import { type CleanRowId, type Selection, UNTOUCHED } from './model/scan.ts';
+import type { Say } from './model/startup.ts';
 
 /** Les entrées du menu latéral. */
 export type Route =
@@ -93,6 +95,14 @@ export interface AppState {
   gameBusy: readonly string[];
   /** Le sélecteur de jeu ou d'app, tant qu'il est ouvert. */
   picker: Picker | null;
+  /** La dernière vue de la page Démarrage ; `null` tant que le cœur n'a pas répondu. */
+  startup: StartupView | null;
+  /** La vue du démarrage n'a pas pu être lue : la page le dit au lieu de « Chargement… ». */
+  startupFailed: boolean;
+  /** L'entrée dont le changement est en vol : tous les interrupteurs attendent sa réponse, `null` si aucun. */
+  startupBusy: string | null;
+  /** La zone de retour : ce que le dernier geste a donné, ou `null`. */
+  startupSay: Say | null;
   /** L'heure qu'il est, rafraîchie de temps en temps : pour « il y a 8 mois ». */
   now: number;
 }
@@ -131,6 +141,10 @@ export function initialState(now: number): AppState {
     gameFailed: false,
     gameBusy: [],
     picker: null,
+    startup: null,
+    startupFailed: false,
+    startupBusy: null,
+    startupSay: null,
     now,
   };
 }
@@ -168,6 +182,14 @@ export interface Actions {
   closePicker(): void;
   /** La personne a choisi une app ouverte dans le sélecteur. */
   pickOpenApp(id: number): void;
+  /** Coupe ou remet une entrée du compte. */
+  setStartupEntry(id: string, enabled: boolean): void;
+  /** « Annuler » dans la zone de retour : le geste inverse du dernier. */
+  undoStartup(): void;
+  /** La barre de retour a (ou n'a plus) le focus ou le survol : tant que oui, elle ne s'efface pas. */
+  holdStartupSay(by: 'focus' | 'hover', on: boolean): void;
+  /** « Réessayer » : la première vue du démarrage n'est pas venue. */
+  retryStartup(): void;
   openWindowsSettings(page: WindowsPage): void;
   minimize(): void;
   toggleMaximize(): void;

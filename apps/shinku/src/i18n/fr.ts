@@ -138,6 +138,8 @@ export const fr = typeset({
     working: 'Analyse…',
     comparing: (done: number) => `Comparaison… ${done}${NBSP}%`,
     notMeasured: 'Non mesurée',
+    startupNotMeasured: 'Non mesuré',
+    startupCount: (count: number) => (count === 0 ? 'Aucune app active' : countOf(count, 'app active', 'apps actives')),
     notSearched: 'Non recherchés',
     none: 'Rien',
     optional: (bytes: number) => `${formatBytes(bytes)} au choix`,
@@ -161,6 +163,11 @@ export const fr = typeset({
     binEmpty: 'Vide',
     binUnknown: 'Non mesurée',
     review: 'À vérifier toi-même',
+    startupHint: (count: number) =>
+      count === 0
+        ? 'Aucune app active au démarrage'
+        : `${countOf(count, 'app active', 'apps actives')} au démarrage de Windows`,
+    startupNotMeasured: 'Non mesuré',
     largeHint: (count: number, threshold: number) =>
       count === 0
         ? `Aucun fichier de plus de ${formatLimit(threshold)}`
@@ -330,7 +337,6 @@ export const fr = typeset({
 
   soon: {
     cap: 'Ce module arrive dans une prochaine version.',
-    startup: 'Les apps qui se lancent avec Windows, et le temps qu’elles te coûtent à chaque allumage.',
     uninstall:
       'Supprime une app avec ce qu’elle laisse derrière elle : dossiers, raccourcis et entrées du registre.',
     privacy:
@@ -439,6 +445,69 @@ export const fr = typeset({
       notAGame: 'Shinku ne traite jamais cette app comme un jeu.',
       protectedApp: 'Cette app ne peut pas être mise en veilleuse.',
       listFull: 'La liste est pleine.',
+    },
+  },
+
+  startup: {
+    eyebrow: 'Démarrage',
+    // Les apps de la liste, coupées comprises. Aucune : la page le dit, sans compter.
+    title: (count: number) =>
+      count === 0 ? 'Aucune app inscrite ici' : `${countOf(count, 'app inscrite', 'apps inscrites')} au démarrage`,
+    // `running` : lues actives ; `cut` : lues coupées. Les entrées que Shinku ne sait pas lire ne sont dans aucun des deux.
+    summary: (running: number, cut: number) =>
+      `${
+        running === 0
+          ? 'Aucune ne se lance'
+          : `${formatCount(running)}${NBSP}${plural(running, 'se lance', 'se lancent')}`
+      } à l’ouverture de ta session, ${
+        cut === 0 ? 'aucune n’est coupée' : `${formatCount(cut)}${NBSP}${plural(cut, 'est coupée', 'sont coupées')}`
+      }.`,
+    scope:
+      'Shinku liste ce que règle le Gestionnaire des tâches, sauf les apps du Microsoft Store. Les tâches planifiées et les services ne sont pas ici.',
+    openWindows: 'Apps de démarrage de Windows',
+    user: 'Pour ton compte',
+    machine: 'Pour tous les comptes de ce PC',
+    machineHint: 'Ces apps se règlent dans Windows pour l’instant : il faut l’accord d’un administrateur.',
+    unreadable: 'Shinku n’a pas pu lire toute cette liste.',
+    note: 'Couper une app ne la désinstalle pas et ne supprime rien : elle ne se lance plus toute seule, et tu peux toujours l’ouvrir toi-même. Certaines apps se réinscrivent d’elles-mêmes : règle-le aussi dans leurs options. L’éditeur affiché est celui que le fichier déclare.',
+    unknownPublisher: 'Éditeur inconnu',
+    hostedBy: (host: string) => `Lancée par ${host}`,
+    alias: (alias: string) => `inscrite sous «${NBSP}${alias}${NBSP}»`,
+    folder: 'raccourci du dossier Démarrage',
+    // `date` : « le 15 nov. » (voir formatDay).
+    missing: 'Semble désinstallée',
+    cameBack: (date: string) => `S’est remise toute seule depuis ${date}`,
+    cutByShinku: (date: string) => `Coupée par Shinku ${date}`,
+    cutOn: (date: string) => `Coupée ${date}`,
+    cut: 'Coupée',
+    active: 'Active',
+    sync: 'Synchronise tes fichiers',
+    // `rank` : 2 pour la deuxième ligne de même nom et de même alias dans une carte, et ainsi de suite.
+    switchLabel: (name: string, alias: string | null, rank = 1) =>
+      `Lancer ${name} à l’ouverture de session${alias === null ? '' : ` (${alias})`}${rank > 1 ? ` (${rank})` : ''}`,
+    own: 'Réglé par le Mode jeu',
+    ownCut: 'Coupée dans Windows',
+    seeGameMode: 'Voir le Mode jeu',
+    unreadableEntry: 'Shinku ne sait pas lire son réglage',
+    notAdjustableHere: 'Shinku ne peut pas la régler ici',
+    openInWindows: 'Ouvrir dans Windows',
+    // Le nom accessible du bouton d'une ligne : il cite l'app, et contient le texte visible.
+    openInWindowsFor: (name: string) => `Ouvrir dans Windows, pour ${name}`,
+    undo: 'Annuler',
+    retry: 'Réessayer',
+    // Entre l'éditeur, le programme porteur, le nom d'inscription et le raccourci.
+    separator: ' · ',
+    // L'initiale d'un nom qui ne commence pas par une lettre.
+    initialFallback: '#',
+    say: {
+      cut: (name: string, sync: boolean) =>
+        `${name} est coupée. Si elle est ouverte, elle le reste : elle ne se lancera plus toute seule à ta prochaine ouverture de session.${
+          sync ? ' Tes fichiers ne se synchroniseront plus tant que tu ne l’ouvres pas.' : ''
+        }`,
+      restored: (name: string) => `${name} se lancera de nouveau à l’ouverture de ta session.`,
+      failed: 'Le changement n’a pas pu être fait.',
+      unknownEntry: 'Cette entrée n’existe plus.',
+      notAdjustable: 'Cette entrée ne se règle pas ici.',
     },
   },
 

@@ -20,7 +20,9 @@ pub struct BuiltInApp {
     pub exe: &'static str,
     /// Nom affiché.
     pub label: &'static str,
-    /// Cochée d'office.
+    /// Cochée d'office. Le module Démarrage s'en sert aussi (`is_sync_app`) :
+    /// n'y mettre d'office qu'une app qui synchronise des fichiers, ou ajouter
+    /// un champ `sync` distinct.
     pub default_on: bool,
 }
 
@@ -54,6 +56,20 @@ const SYSTEM_PROGRAMS: [&str; 10] = [
 /// L'app intégrée de ce nom d'exécutable, s'il y en a une.
 pub fn built_in(exe: &str) -> Option<&'static BuiltInApp> {
     BUILT_IN.iter().find(|app| app.exe.eq_ignore_ascii_case(exe))
+}
+
+/// Vrai si cet exécutable est une app de synchronisation de fichiers : celles
+/// que le mode jeu met en veilleuse d'office (OneDrive, Dropbox, Google Drive).
+/// Le module Démarrage s'en sert pour prévenir qu'une couper arrête la
+/// synchronisation.
+///
+/// Attention, couplage : cette fonction lit `default_on`, parce que les trois
+/// apps mises en veilleuse d'office sont aujourd'hui exactement celles qui
+/// synchronisent. Une app mise en veilleuse d'office qui ne synchronise rien
+/// recevrait à tort « Synchronise tes fichiers » : il faudrait alors un champ
+/// `sync` propre dans [`BuiltInApp`].
+pub fn is_sync_app(exe: &str) -> bool {
+    BUILT_IN.iter().any(|app| app.default_on && app.exe.eq_ignore_ascii_case(exe))
 }
 
 /// Vrai si cet exécutable n'est jamais mis en veilleuse, quelle que soit la
@@ -106,6 +122,17 @@ mod tests {
         );
         assert_eq!(built_in("OneDrive.EXE").map(|a| a.label), Some("OneDrive"));
         assert_eq!(built_in("notepad.exe"), None);
+    }
+
+    #[test]
+    fn only_the_sync_apps_are_sync_apps() {
+        for exe in ["onedrive.exe", "Dropbox.EXE", "googledrivefs.exe"] {
+            assert!(is_sync_app(exe), "{exe}");
+        }
+        // Un navigateur est proposé, mais ne synchronise pas des fichiers.
+        for exe in ["chrome.exe", "msedge.exe", "notepad.exe", "onedrive", ""] {
+            assert!(!is_sync_app(exe), "{exe}");
+        }
     }
 
     #[test]

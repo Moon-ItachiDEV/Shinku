@@ -105,15 +105,15 @@ function lastGame(view: GameView): Content {
 function header(state: AppState, view: GameView, actions: Actions): TemplateResult {
   const head = headerState(view);
   const session = view.session;
-  return html`<header class="ghead">
-    <div class="gart">${moduleArt('gameMode')}</div>
-    <div class="gtx">
+  return html`<header class="phead">
+    <div class="part">${moduleArt('gameMode')}</div>
+    <div class="ptx">
       <p class="eb">${fr.game.eyebrow}</p>
       <h1>${headerTitle(head, session)}</h1>
-      <p class="gtext" role="status">${headerText(head, session, state.now)}</p>
+      <p class="ptext" role="status">${headerText(head, session, state.now)}</p>
       ${session !== null && showsChips(head) ? chips(session) : nothing}
       ${session !== null && showsButtons(head)
-        ? html`<div class="gbtns">
+        ? html`<div class="pbtns">
             ${canRelease(session)
               ? html`<button
                   type="button"
@@ -200,7 +200,7 @@ function mainCard(state: AppState, view: GameView, actions: Actions): TemplateRe
     <div role="status">
       ${warning === null
         ? nothing
-        : html`<p class="gwarn"><i aria-hidden="true"></i><span>${WARNING_TEXT[warning]}</span></p>`}
+        : html`<p class="pwarn"><i aria-hidden="true"></i><span>${WARNING_TEXT[warning]}</span></p>`}
     </div>
   </div>`;
 }
@@ -297,7 +297,7 @@ function quietBlock(state: AppState, view: GameView, actions: Actions): Content 
 }
 
 function duringSection(state: AppState, view: GameView, actions: Actions): TemplateResult {
-  return html`<section class="gsec">
+  return html`<section class="psec">
     <h2 class="sub flat">${fr.game.during}</h2>
     <div class="card ${view.auto ? '' : 'dim'}">
       ${powerSection(view, actions)}
@@ -363,7 +363,7 @@ function notGameRow(state: AppState, entry: { path: string; name: string }, acti
 }
 
 function gamesSection(state: AppState, view: GameView, actions: Actions): TemplateResult {
-  return html`<section class="gsec">
+  return html`<section class="psec">
     <h2 class="sub flat">${fr.game.games}</h2>
     <div class="card">
       <div class="sblock">
@@ -391,7 +391,7 @@ function gamesSection(state: AppState, view: GameView, actions: Actions): Templa
 // ── Windows s'en occupe déjà ───────────────────────────────────────────────
 
 function windowsSection(actions: Actions): TemplateResult {
-  return html`<section class="gsec">
+  return html`<section class="psec">
     <h2 class="sub flat">${fr.game.windows}</h2>
     <div class="card">
       <div class="srow">
@@ -424,7 +424,7 @@ export function gameView(state: AppState, actions: Actions): TemplateResult {
           ? html`<p class="note" role="status">${state.gameFailed ? fr.toast.unexpected : fr.common.loading}</p>`
           : html`${header(state, view, actions)} ${mainCard(state, view, actions)} ${duringSection(state, view, actions)}
             ${gamesSection(state, view, actions)} ${windowsSection(actions)}
-            <p class="note gpromise">${fr.game.promise}</p>`}
+            <p class="note pnote">${fr.game.promise}</p>`}
       </div>
     </div>`,
   });

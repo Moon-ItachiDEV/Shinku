@@ -9,6 +9,7 @@
 pub(super) mod agent;
 mod game;
 mod shell;
+mod startup;
 
 use std::ffi::{OsString, c_void};
 use std::fs::OpenOptions;
@@ -55,6 +56,7 @@ use super::{Desktop, Environment, KnownFolder, RecycleBin, RecycleError, Rights,
 use crate::fs::{fold_path, to_internal_path};
 use crate::game::host::GameHost;
 use crate::model::Timestamp;
+use crate::startup::host::StartupHost;
 
 /// Valeur de `GetDriveTypeW` pour un disque interne.
 const DRIVE_FIXED: u32 = 3;
@@ -308,6 +310,11 @@ impl Environment for SystemEnvironment {
 /// Le mode jeu sur cette machine.
 pub(super) fn game_host() -> Arc<dyn GameHost> {
     Arc::new(game::SystemHost::new())
+}
+
+/// Le module « Démarrage » sur cette machine.
+pub(super) fn startup_host() -> Arc<dyn StartupHost> {
+    Arc::new(startup::SystemStartupHost::new())
 }
 
 pub(super) fn set_background_priority(on: bool) -> bool {

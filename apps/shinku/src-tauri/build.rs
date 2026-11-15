@@ -30,6 +30,8 @@ const COMMANDS: &[&str] = &[
     "add_quiet_app",
     "set_game_status",
     "release_game",
+    "startup_view",
+    "set_startup_entry",
     "open_windows_settings",
 ];
 

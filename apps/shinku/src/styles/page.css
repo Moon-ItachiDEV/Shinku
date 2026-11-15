@@ -1,0 +1,127 @@
+/*
+ * Le squelette commun des pages de réglages (Mode jeu, Démarrage) : l'en-tête
+ * avec son illustration, les sections, l'avertissement d'une carte, la note
+ * finale. Les cartes, les lignes et les boutons viennent de forms.css et
+ * app.css. Aucune couleur nouvelle : tout vient de tokens.css.
+ */
+
+.game,
+.startup {
+  padding-top: 4px;
+}
+
+/* ── En-tête ────────────────────────────────────────────────────────────── */
+
+.phead {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 2px 0 4px;
+}
+
+.part {
+  flex-shrink: 0;
+  width: 96px;
+}
+
+.part .ill {
+  width: 96px;
+}
+
+.ptx {
+  flex: 1;
+  min-width: 0;
+}
+
+.phead .eb {
+  margin: 0;
+}
+
+.phead h1 {
+  margin: 6px 0 0;
+  font-size: 24px;
+}
+
+.ptext {
+  max-width: 620px;
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 300;
+  line-height: 1.65;
+  letter-spacing: 0.025em;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.pbtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.game .d,
+.startup .d {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 300;
+  line-height: 1.55;
+  letter-spacing: 0.025em;
+  color: var(--text-3);
+}
+
+/* ── Sections ───────────────────────────────────────────────────────────── */
+
+.psec {
+  display: flex;
+  flex-direction: column;
+  margin-top: 22px;
+}
+
+/* L'avertissement : un point orange et une phrase, sous la ligne qui la précède. */
+.pwarn {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 18px 14px;
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1.55;
+  letter-spacing: 0.025em;
+  color: var(--text-soft);
+}
+
+.pwarn i {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--badge-dot);
+}
+
+.pnote {
+  margin: 22px 4px 0;
+  max-width: 620px;
+}
+
+/* ── Fenêtre basse : tout se resserre ───────────────────────────────────── */
+
+@media (max-height: 760px) {
+  .psec {
+    margin-top: 18px;
+  }
+
+  .phead {
+    gap: 18px;
+  }
+}
+
+@media (max-width: 900px) {
+  .part,
+  .part .ill {
+    width: 72px;
+  }
+}

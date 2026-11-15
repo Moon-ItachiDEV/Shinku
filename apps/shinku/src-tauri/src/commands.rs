@@ -24,6 +24,7 @@ use shinku_core::platform::agent::WindowsPage;
 use shinku_core::scan::report::{JunkReport, KeepChoice};
 use shinku_core::session::SessionView;
 use shinku_core::settings::{Settings, Theme};
+use shinku_core::startup::view::StartupView;
 use tauri::{State, WebviewWindow};
 
 use crate::app::paint_background;
@@ -234,7 +235,26 @@ pub fn release_game(backend: State<'_, Backend>) -> GameView {
     backend.release_game()
 }
 
-/// Ouvre l'une des deux pages des réglages de Windows que la page propose.
+/// Tout ce que la page « Démarrage » affiche : les apps inscrites au démarrage
+/// de Windows, pour le compte et pour le PC.
+#[tauri::command(async)]
+pub fn startup_view(backend: State<'_, Backend>) -> StartupView {
+    backend.startup_view()
+}
+
+/// Coupe ou remet une app inscrite au démarrage du compte. `id` est celui que
+/// la page a reçu dans [`startup_view`] : le cœur ne s'en sert que pour
+/// retrouver l'entrée, la page n'envoie jamais un chemin ni un nom de valeur.
+#[tauri::command(async)]
+pub fn set_startup_entry(
+    backend: State<'_, Backend>,
+    id: String,
+    enabled: bool,
+) -> Result<StartupView, BackendError> {
+    backend.set_startup_entry(&id, enabled)
+}
+
+/// Ouvre l'une des trois pages des réglages de Windows que la page propose.
 #[tauri::command(async)]
 pub fn open_windows_settings(backend: State<'_, Backend>, page: WindowsPage) {
     backend.open_windows_settings(page);

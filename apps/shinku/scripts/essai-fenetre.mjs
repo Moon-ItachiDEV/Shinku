@@ -452,9 +452,78 @@ function readGame() {
   const main = document.querySelector('#game-auto');
   return {
     on: main === null ? null : main.getAttribute('aria-checked') === 'true',
-    title: text(document.querySelector('.ghead h1')),
-    warning: text(document.querySelector('.gwarn')),
+    title: text(document.querySelector('.phead h1')),
+    warning: text(document.querySelector('.pwarn')),
   };
+}
+
+/**
+ * La page Démarrage : son titre, ses lignes (avec la carte où elles sont), et la
+ * zone de retour. Une ligne se reconnaît à ce qu'elle dit de son nom : le nom
+ * lui-même, ou le nom d'inscription (« inscrite sous « … » »).
+ */
+function readStartup() {
+  const text = (element) => (element?.innerText ?? '').replace(/[ \u00a0\u202f]+/g, ' ').trim();
+  const say = document.querySelector('.pzone .psay');
+  return {
+    title: text(document.querySelector('.main h1')),
+    loading: document.querySelector('.page.startup .note') !== null,
+    rows: [...document.querySelectorAll('.page.startup .plist > li.row')].map((row) => {
+      const control = row.querySelector('button[role=switch]');
+      return {
+        name: text(row.querySelector('.t1')),
+        detail: text(row.querySelector('.t2')),
+        card: text(row.closest('section.psec')?.querySelector('h2')),
+        hasSwitch: control !== null,
+        checked: control?.getAttribute('aria-checked') === 'true',
+        disabled: control?.disabled === true || control?.getAttribute('aria-disabled') === 'true',
+        label: control?.getAttribute('aria-label') ?? '',
+        tags: [...row.querySelectorAll('.tag')].map((tag) => text(tag)),
+        text: text(row),
+      };
+    }),
+    say: say === null ? null : { text: text(say.querySelector('span')), undo: say.querySelector('button') !== null },
+  };
+}
+
+/** Où se trouve l'interrupteur de la ligne qui porte ce nom, et ce qu'un clic à cet endroit toucherait. */
+function locateSwitch(name) {
+  const wanted = name.toLowerCase();
+  const row = [...document.querySelectorAll('.page.startup .plist > li.row')].find((candidate) =>
+    `${candidate.querySelector('.t1')?.textContent ?? ''} ${candidate.querySelector('.t2')?.textContent ?? ''}`
+      .toLowerCase()
+      .includes(wanted),
+  );
+  const element = row?.querySelector('button[role=switch]');
+  if (element === null || element === undefined) {
+    return null;
+  }
+  element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  const box = element.getBoundingClientRect();
+  const x = box.left + box.width / 2;
+  const y = box.top + box.height / 2;
+  const hit = document.elementFromPoint(x, y);
+  return {
+    x,
+    y,
+    // Les interrupteurs du Démarrage restent focalisables pendant un geste : `aria-disabled`, pas `disabled`.
+    disabled: element.disabled === true || element.getAttribute('aria-disabled') === 'true',
+    reached: hit !== null && element.contains(hit),
+    cover: hit === null ? 'rien (hors de la fenêtre)' : `<${hit.tagName.toLowerCase()} class="${hit.className}">`,
+  };
+}
+
+/** Clique sur l'interrupteur de cette ligne, sans passer par la souris. */
+function clickSwitchInPage(name) {
+  const wanted = name.toLowerCase();
+  const row = [...document.querySelectorAll('.page.startup .plist > li.row')].find((candidate) =>
+    `${candidate.querySelector('.t1')?.textContent ?? ''} ${candidate.querySelector('.t2')?.textContent ?? ''}`
+      .toLowerCase()
+      .includes(wanted),
+  );
+  const element = row?.querySelector('button[role=switch]');
+  element?.click();
+  return element !== null && element !== undefined;
 }
 
 /** Où se trouve un bouton, et ce qu'un clic à cet endroit toucherait. */
@@ -474,7 +543,8 @@ function locate(selector, label) {
   return {
     x,
     y,
-    disabled: element.disabled === true,
+    // Les interrupteurs du Démarrage restent focalisables pendant un geste : `aria-disabled`, pas `disabled`.
+    disabled: element.disabled === true || element.getAttribute('aria-disabled') === 'true',
     reached: hit !== null && element.contains(hit),
     cover: hit === null ? 'rien (hors de la fenêtre)' : `<${hit.tagName.toLowerCase()} class="${hit.className}">`,
   };
@@ -635,10 +705,20 @@ class Window {
   }
 
   /** Clique sur un bouton comme le ferait la souris, une fois qu'il ne bouge plus. */
-  async click(what, selector, label = null) {
+  click(what, selector, label = null) {
+    return this.press(`le bouton « ${what} »`, locate, clickInPage, [selector, label]);
+  }
+
+  /** Clique sur l'interrupteur de la ligne du Démarrage qui porte ce nom. */
+  clickSwitch(name) {
+    return this.press(`l’interrupteur de la ligne « ${name} »`, locateSwitch, clickSwitchInPage, [name]);
+  }
+
+  /** `find` (dans la page) dit où est la cible ; `inPage` la clique quand la souris ne répond pas. */
+  async press(what, find, inPage, parameters) {
     let before = null;
-    const target = await until(`le bouton « ${what} » est prêt`, 20_000, async () => {
-      const found = await this.session.run(locate, selector, label);
+    const target = await until(`${what} est prêt`, 20_000, async () => {
+      const found = await this.session.run(find, ...parameters);
       if (found === null || found.disabled) {
         before = null;
         return null;
@@ -648,10 +728,10 @@ class Window {
       return still ? found : null;
     });
     if (!target.reached) {
-      fail(`le bouton « ${what} » est recouvert par ${target.cover} : un clic ne l’atteindrait pas`);
+      fail(`${what} est recouvert par ${target.cover} : un clic ne l’atteindrait pas`);
     }
     if (!this.mouse) {
-      await this.session.run(clickInPage, selector, label);
+      await this.session.run(inPage, ...parameters);
       return;
     }
     const point = { x: target.x, y: target.y };
@@ -758,6 +838,14 @@ async function checkScan(window) {
   }, 500);
   done(`l’analyse se termine en ${Math.round((Date.now() - begun) / 1000)} s : ${end.walked}`);
   quote(end.rows.join('\n'));
+  // La ligne « Démarrage » compte les apps actives, ou dit « Non mesuré » : plus « Bientôt ».
+  const startupRow = end.rows.find((row) => row.startsWith('Démarrage'));
+  if (startupRow === undefined) {
+    fail(`l’écran d’analyse n’a pas de ligne « Démarrage » :\n${end.rows.join('\n')}`);
+  }
+  if (!/(app active|apps actives|Aucune app active|Non mesuré)/.test(startupRow)) {
+    fail(`la ligne « Démarrage » de l’analyse ne compte pas d’apps actives : « ${startupRow} »`);
+  }
   await window.healthy('après l’analyse');
 
   await window.click('Voir les résultats', '.dock .orb', 'Voir les résultats');
@@ -767,6 +855,9 @@ async function checkScan(window) {
   });
   done('« Voir les résultats » affiche les résultats');
   quote(results.main);
+  if (!/(apps? actives? au démarrage de Windows|Aucune app active au démarrage|Démarrage Non mesuré)/.test(results.main)) {
+    fail(`les résultats ne disent pas combien d’apps sont actives au démarrage :\n${results.main}`);
+  }
   await window.healthy('sur les résultats');
   await checkChoices(window);
   await checkConfirmation(window);
@@ -1040,7 +1131,7 @@ async function checkModules(window) {
     ['Doublons', 'Coche Doublons dans le grand vide', 'Aucune copie à retirer'],
     ['Gros fichiers', 'de plus de'],
     ['Corbeille', 'la corbeille se vide avec le grand vide', 'Rien à vider'],
-    ['Démarrage', 'Ce module arrive dans une prochaine version'],
+    ['Démarrage', 'inscrite'],
     ['Mode jeu', 'Pendant que tu joues'],
     ['Désinstallation', 'Ce module arrive dans une prochaine version'],
     ['Confidentialité', 'Ce module arrive dans une prochaine version'],
@@ -1053,6 +1144,158 @@ async function checkModules(window) {
     done(`écran « ${label} »`);
     quote(screen.main, 14);
     await window.capture(slug(label));
+  }
+}
+
+// ── Le Démarrage ───────────────────────────────────────────────────────────
+
+/**
+ * Les entrées que `essai-demarrage.ps1 -Preparer` crée. `name` est le nom de la
+ * valeur de registre (ou du raccourci) : la page le montre comme nom, ou comme
+ * nom d'inscription quand le fichier a une description.
+ */
+const STARTUP_ENTRIES = [
+  // `approved` : la sous-clé de StartupApproved (HKCU) et le nom de la valeur que Windows y note.
+  { name: 'Essai Shinku Compte', approved: ['Run', 'Essai Shinku Compte'], undo: 'Annuler' },
+  { name: 'Essai Shinku Cible', approved: ['Run', 'Essai Shinku Cible'], undo: 'Annuler' },
+  { name: 'Essai Shinku 32', approved: ['Run32', 'Essai Shinku 32'], undo: 'interrupteur' },
+  { name: 'Essai Shinku Dossier', approved: ['StartupFolder', 'Essai Shinku Dossier.lnk'], undo: 'interrupteur' },
+];
+const STARTUP_MACHINE = 'Essai Shinku PC';
+const STARTUP_APPROVED = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved';
+const APPROVED_ON = '020000000000000000000000';
+
+/** La valeur d'approbation, en hexadécimal, lue par `reg query /reg:64` ; `null` si elle n'existe pas. */
+function readApproval([key, name]) {
+  const result = spawnSync('reg', ['query', `${STARTUP_APPROVED}\\${key}`, '/v', name, '/reg:64'], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const found = /REG_BINARY\s+([0-9A-Fa-f]+)/.exec(result.stdout ?? '');
+  return found === null ? null : found[1].toLowerCase();
+}
+
+/** Attend que l'approbation prenne la forme voulue ; dit ce qu'elle valait en dernier sinon. */
+async function expectApproval(entry, what, accepts) {
+  let last = null;
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    last = readApproval(entry.approved);
+    if (last !== null && accepts(last)) {
+      return last;
+    }
+    if (Date.now() >= deadline) {
+      fail(
+        `${entry.name} : ${what} dans StartupApproved\\${entry.approved[0]}\\${entry.approved[1]} (reg query /reg:64), ` +
+          `dernière valeur lue : ${last === null ? 'aucune' : last}`,
+      );
+    }
+    await sleep(250);
+  }
+}
+
+async function checkStartup(window) {
+  if (options.adresse !== undefined) {
+    note('essai du Démarrage sauté : la démo n’a pas les entrées de la machine d’essai');
+    return;
+  }
+  const read = () => window.session.run(readStartup);
+  const rowOf = (screen, name) => screen.rows.find((row) => `${row.name} ${row.detail}`.toLowerCase().includes(name.toLowerCase()));
+  await window.open('Démarrage');
+  const loaded = await until('la liste du Démarrage est affichée', 30_000, async () => {
+    const now = await read();
+    return !now.loading && now.rows.length > 0 ? now : null;
+  });
+  if (!shows(loaded.title, 'inscrite')) {
+    fail(`le titre de la page Démarrage ne compte pas d’apps inscrites : « ${loaded.title} »`);
+  }
+  const mine = [...STARTUP_ENTRIES.map((entry) => entry.name), STARTUP_MACHINE];
+  for (const row of loaded.rows.filter((one) => mine.some((name) => rowOf({ rows: [one] }, name) !== undefined))) {
+    say(`  ${row.card} : ${row.name}${row.detail === '' ? '' : ` (${row.detail})`}${row.hasSwitch ? ` [${row.checked ? 'actif' : 'coupé'}]` : ` ${row.tags.join(' ')}`}`);
+  }
+
+  // Les quatre lignes du compte sont là, avec un interrupteur, allumé.
+  for (const entry of STARTUP_ENTRIES) {
+    const row = rowOf(loaded, entry.name);
+    if (row === undefined) {
+      fail(`la page Démarrage n’a pas de ligne « ${entry.name} » :\n${loaded.rows.map((one) => `${one.card} | ${one.name} | ${one.detail}`).join('\n')}`);
+    }
+    if (!shows(row.card, 'Pour ton compte')) {
+      fail(`la ligne « ${entry.name} » est dans la carte « ${row.card} » au lieu de « Pour ton compte »`);
+    }
+    if (!row.hasSwitch || !row.checked) {
+      fail(`la ligne « ${entry.name} » devrait avoir un interrupteur allumé : ${JSON.stringify(row)}`);
+    }
+  }
+  // La ligne du PC : là, sans interrupteur, avec sa pastille d'état.
+  const machine = rowOf(loaded, STARTUP_MACHINE);
+  if (machine === undefined) {
+    fail(`la page Démarrage n’a pas la ligne du PC « ${STARTUP_MACHINE} »`);
+  }
+  if (!shows(machine.card, 'Pour tous les comptes')) {
+    fail(`la ligne « ${STARTUP_MACHINE} » est dans la carte « ${machine.card} »`);
+  }
+  if (machine.hasSwitch) {
+    fail(`la ligne du PC « ${STARTUP_MACHINE} » a un interrupteur : Shinku ne règle pas le PC`);
+  }
+  if (!machine.tags.includes('Active')) {
+    fail(`la ligne du PC devrait porter la pastille « Active » : ${JSON.stringify(machine.tags)}`);
+  }
+  // La description du fichier a été lue : la ligne Cible a le nom de notepad.exe, et l'inscription en second nom.
+  const target = rowOf(loaded, 'Essai Shinku Cible');
+  if (!shows(target.detail, 'inscrite sous') || !shows(target.detail, 'Essai Shinku Cible')) {
+    fail(`la ligne « Essai Shinku Cible » ne dit pas « inscrite sous » son nom d’inscription : « ${target.name} » / « ${target.detail} »`);
+  }
+  done('les quatre lignes du compte et la ligne du PC sont là ; la ligne du PC n’a pas d’interrupteur ; la description du fichier est lue');
+  await window.capture('demarrage');
+
+  const controlled = onWindows;
+  for (const entry of STARTUP_ENTRIES) {
+    const isOn = async (on) => {
+      const row = rowOf(await read(), entry.name);
+      return row !== undefined && row.hasSwitch && row.checked === on ? row : null;
+    };
+    // Couper : l'interrupteur bouge, la zone de retour le dit, et Windows en garde la trace.
+    await window.clickSwitch(entry.name);
+    await until(`« ${entry.name} » : l’interrupteur s’éteint`, 10_000, () => isOn(false));
+    const cutSay = await until(`« ${entry.name} » : la zone de retour dit « est coupée »`, 15_000, async () => {
+      const now = await read();
+      return now.say !== null && shows(now.say.text, 'est coupée') ? now.say : null;
+    });
+    if (!cutSay.undo) {
+      fail(`« ${entry.name} » : la zone de retour n’a pas de bouton « Annuler » : « ${cutSay.text} »`);
+    }
+    if (controlled) {
+      const value = await expectApproval(entry, 'attendu 12 octets commençant par 03000000', (hex) => hex.length === 24 && hex.startsWith('03000000'));
+      done(`« ${entry.name} » coupée : « ${cutSay.text} » ; ${entry.approved[0]}\\${entry.approved[1]} = ${value}`);
+    } else {
+      done(`« ${entry.name} » coupée : « ${cutSay.text} »`);
+    }
+    await window.healthy(`après avoir coupé « ${entry.name} »`);
+    await window.capture(`demarrage-${slug(entry.name)}-coupee`);
+
+    // Remettre : par « Annuler » ou par l'interrupteur, selon la ligne.
+    if (entry.undo === 'Annuler') {
+      await window.click('Annuler', '.pzone .psay button', 'Annuler');
+    } else {
+      await window.clickSwitch(entry.name);
+    }
+    await until(`« ${entry.name} » : l’interrupteur se rallume`, 10_000, () => isOn(true));
+    await until(`« ${entry.name} » : la zone de retour dit que l’app se lancera de nouveau`, 15_000, async () => {
+      const now = await read();
+      return now.say !== null && shows(now.say.text, 'se lancera de nouveau') ? now.say : null;
+    });
+    if (controlled) {
+      await expectApproval(entry, `attendu ${APPROVED_ON}`, (hex) => hex === APPROVED_ON);
+      done(`« ${entry.name} » remise (${entry.undo === 'Annuler' ? '« Annuler »' : 'interrupteur'}) : ${entry.approved[0]}\\${entry.approved[1]} = ${APPROVED_ON}`);
+    } else {
+      done(`« ${entry.name} » remise`);
+    }
+    await window.healthy(`après avoir remis « ${entry.name} »`);
+    await window.capture(`demarrage-${slug(entry.name)}-remise`);
   }
 }
 
@@ -1291,6 +1534,7 @@ async function main() {
     }
     await checkScan(window);
     await checkModules(window);
+    await checkStartup(window);
     await checkGameMode(window);
     await checkSettings(window);
     if (options['grand-vide']) {

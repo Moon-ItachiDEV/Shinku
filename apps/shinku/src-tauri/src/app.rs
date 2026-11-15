@@ -99,6 +99,8 @@ pub fn run() -> ExitCode {
             commands::add_quiet_app,
             commands::set_game_status,
             commands::release_game,
+            commands::startup_view,
+            commands::set_startup_entry,
             commands::open_windows_settings,
         ])
         .setup(|app| {
