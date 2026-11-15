@@ -228,6 +228,7 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     file.session = Some(Session {
         game: GameRef { path: open[1].path.clone(), name: "Foo".to_owned(), source: Source::Added },
         opened: 1_700_000_150_000,
+        opened_uptime: None,
         since: 1_700_000_200_000,
         released: false,
         power: PowerRecord::applied(PowerPlan::BALANCED),

@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use crate::game::STEP;
 use crate::game::host::GameHost;
 use crate::game::store::GameStore;
-use crate::game::watch::Watcher;
+use crate::game::watch::{RETRY_EVERY, Watcher};
 use crate::settings::{LoadIssue, Settings, SettingsStore};
 
 /// Temps pendant lequel un agent lancé par Windows ne détecte rien : Windows
@@ -106,7 +106,16 @@ pub struct Agent {
     forget_autostart: Box<dyn Fn() + Send>,
     /// Pause entre les essais d'une remise inachevée à l'ordre « retirer ».
     remove_pause: Duration,
+    /// Le dernier fichier de réglages illisible (sa date) et l'instant avant
+    /// lequel on ne le relit pas, à moins que sa date change.
+    unreadable: Option<(Option<Stamp>, u64)>,
+    /// Pas où l'agent a attendu pour écrire un journal en retard avant de s'arrêter.
+    waited: u32,
 }
+
+/// Pas qu'un agent qui voudrait s'arrêter attend, au plus, pour écrire un
+/// journal en retard sur le disque.
+const LATE_JOURNAL_STEPS: u32 = 5;
 
 impl fmt::Debug for Agent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -149,6 +158,8 @@ impl Agent {
             away: false,
             forget_autostart: Box::new(crate::platform::agent::forget_autostart),
             remove_pause: REMOVE_PAUSE,
+            unreadable: None,
+            waited: 0,
         };
         agent.reload_settings(true);
         let flow = agent.flow();
@@ -200,6 +211,7 @@ impl Agent {
             // dans tous les cas (il serait resté sourd, sans `Reconnected`).
             AgentEvent::SessionEnding => {
                 self.watcher.suspend();
+                self.watcher.flush();
                 self.away = true;
                 Flow::Stop
             }
@@ -209,11 +221,13 @@ impl Agent {
             }
             AgentEvent::Quit => {
                 self.watcher.suspend();
+                self.watcher.flush();
                 Flow::Stop
             }
             AgentEvent::Remove => {
                 self.watcher.suspend();
                 settle_patiently(&mut self.watcher, self.remove_pause);
+                self.watcher.flush();
                 (self.forget_autostart)();
                 Flow::Stop
             }
@@ -229,13 +243,21 @@ impl Agent {
         self.quiet_until.is_some_and(|until| self.host.uptime_ms() < until)
     }
 
-    /// Continuer tant que le mode automatique est allumé ou qu'une partie est ouverte.
-    fn flow(&self) -> Flow {
+    /// Continuer tant que le mode automatique est allumé ou qu'une partie est
+    /// ouverte. Un agent qui s'arrête tente d'abord d'écrire un journal en
+    /// retard ; s'il n'y arrive pas, il attend quelques pas (le disque était
+    /// plein, un antivirus tenait le fichier) avant de s'arrêter quand même.
+    fn flow(&mut self) -> Flow {
         if self.settings.game_mode_auto || self.watcher.has_session() {
-            Flow::Continue
-        } else {
-            Flow::Stop
+            self.waited = 0;
+            return Flow::Continue;
         }
+        self.watcher.flush();
+        if self.watcher.is_dirty() && self.waited < LATE_JOURNAL_STEPS {
+            self.waited += 1;
+            return Flow::Continue;
+        }
+        Flow::Stop
     }
 
     /// Relit `settings.json` si sa date de modification a changé. Un fichier
@@ -248,13 +270,28 @@ impl Agent {
         if !first && stamp == self.stamp {
             return;
         }
+        let uptime = self.host.uptime_ms();
+        // Un fichier qui reste illisible n'est pas relu à chaque pas : une fois
+        // tous les 30 secondes, ou dès que sa date change.
+        if !first
+            && let Some((failed, until)) = self.unreadable
+            && failed == stamp
+            && uptime < until
+        {
+            return;
+        }
         let loaded = self.settings_store.load();
         if matches!(loaded.issue, Some(LoadIssue::Unreadable { .. })) {
             // Une lecture ratée (fichier tenu par un antivirus, écriture en
             // cours) ne doit pas faire oublier le changement : la date n'est pas
-            // notée, le fichier sera relu au pas suivant.
+            // notée, le fichier sera relu plus tard.
+            self.unreadable = Some((
+                stamp,
+                uptime.saturating_add(u64::try_from(RETRY_EVERY.as_millis()).unwrap_or(0)),
+            ));
             return;
         }
+        self.unreadable = None;
         self.stamp = stamp;
         self.settings = loaded.settings;
     }
@@ -326,12 +363,13 @@ mod tests {
         }
 
         /// Lance le jeu au premier plan et laisse l'agent le reconnaître.
-        fn play(&self, agent: &mut Agent) {
+        fn play(&self, agent: &mut Agent) -> crate::game::host::ProcessRef {
             let game = self.host.spawn(100, 1, GAME);
             self.host.set_foreground(Some(game));
             for _ in 0..2 {
                 assert_eq!(self.tick(agent), Flow::Continue);
             }
+            game
         }
 
         fn session(&self) -> Option<crate::game::store::Session> {
@@ -549,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_read_is_not_noted_so_a_file_with_the_same_stamp_is_reloaded() {
+    fn an_unreadable_file_is_read_again_only_every_thirty_seconds_even_with_the_same_stamp() {
         let bench = Bench::new(true);
         let (mut agent, _) = bench.start(false, false);
         let path = bench.settings.path().to_path_buf();
@@ -569,7 +607,20 @@ mod tests {
         text.resize(usize::try_from(len).unwrap().max(text.len()), b' ');
         fs::write(&path, text).unwrap();
         fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(modified).unwrap();
-        assert_eq!(bench.tick(&mut agent), Flow::Stop, "le fichier est relu au pas suivant");
+        // Un fichier illisible n'est pas relu à chaque pas... (si la date et la
+        // taille diffèrent, comme sous Windows, il est relu tout de suite : on ne
+        // peut alors prouver que la relecture au bout de 30 secondes)
+        let new = fs::metadata(&path).unwrap();
+        if (new.modified().unwrap(), new.len()) == (modified, len) {
+            assert_eq!(bench.tick(&mut agent), Flow::Continue, "pas relu avant 30 secondes");
+        }
+        // ... mais il l'est ensuite, même s'il garde la même date.
+        bench.host.advance(Duration::from_secs(30));
+        assert_eq!(
+            bench.tick(&mut agent),
+            Flow::Stop,
+            "le fichier est relu au bout de 30 secondes"
+        );
     }
 
     #[test]
@@ -602,5 +653,60 @@ mod tests {
             bench.host.state_of(onedrive).unwrap().priority,
             crate::game::host::priority::NORMAL
         );
+    }
+
+    #[test]
+    fn restoring_without_an_agent_after_a_clock_jump_puts_the_apps_back() {
+        let bench = Bench::new(true);
+        let onedrive = bench.host.spawn(200, 1, ONEDRIVE);
+        {
+            let (mut agent, _) = bench.start(false, false);
+            bench.play(&mut agent);
+        }
+        assert_eq!(
+            bench.host.state_of(onedrive).unwrap().priority,
+            crate::game::host::priority::BELOW_NORMAL
+        );
+        // L'heure murale avance de deux heures : ce n'est pas un redémarrage.
+        bench.host.jump_clock(2 * 3_600_000);
+        restore_without_agent(Arc::new(bench.host.clone()), bench.game.clone(), false);
+        assert!(bench.session().is_none());
+        assert_eq!(
+            bench.host.state_of(onedrive).unwrap().priority,
+            crate::game::host::priority::NORMAL
+        );
+    }
+
+    #[test]
+    fn an_agent_that_wants_to_stop_waits_a_few_steps_for_a_late_journal() {
+        let bench = Bench::new(true);
+        let (mut agent, _) = bench.start(false, false);
+        let game = bench.play(&mut agent);
+        // La personne éteint le mode, et le journal ne peut pas s'écrire.
+        bench.write(false);
+        let tmp = bench.game.path().with_extension("json.tmp");
+        fs::create_dir(&tmp).unwrap();
+        bench.host.kill(game);
+        assert_eq!(bench.tick(&mut agent), Flow::Continue, "journal en retard : l'agent attend");
+        assert!(bench.session().is_some(), "le disque garde la partie");
+        fs::remove_dir(&tmp).unwrap();
+        assert_eq!(bench.tick(&mut agent), Flow::Stop, "le journal est écrit, l'agent s'arrête");
+        assert!(bench.session().is_none(), "le disque dit la vérité");
+    }
+
+    #[test]
+    fn an_agent_that_cannot_write_its_journal_stops_anyway_after_a_few_steps() {
+        let bench = Bench::new(true);
+        let (mut agent, _) = bench.start(false, false);
+        let game = bench.play(&mut agent);
+        bench.write(false);
+        let tmp = bench.game.path().with_extension("json.tmp");
+        fs::create_dir(&tmp).unwrap();
+        bench.host.kill(game);
+        let mut last = Flow::Continue;
+        for _ in 0..10 {
+            last = bench.tick(&mut agent);
+        }
+        assert_eq!(last, Flow::Stop);
     }
 }

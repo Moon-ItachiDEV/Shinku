@@ -221,6 +221,10 @@ pub struct Backend {
     game: GameDesk,
     /// Un seul `sync` du mode jeu à la fois, dans l'ordre d'arrivée.
     sync_lock: Mutex<()>,
+    /// Pour les tests : fait attendre le prochain changement du mode jeu entre
+    /// son enregistrement et sa mise en accord de l'agent.
+    #[cfg(test)]
+    hold_before_sync: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl Backend {
@@ -272,6 +276,8 @@ impl Backend {
             desk: Mutex::new(Desk { settings, issue, interrupted: None }),
             scan_defaults: ScanOptions::new(Trigger::Button),
             sync_lock: Mutex::new(()),
+            #[cfg(test)]
+            hold_before_sync: Mutex::new(None),
         }
     }
 
@@ -632,6 +638,13 @@ impl Backend {
             edit(&mut next).map_err(game_refused)?;
             self.save_settings(&mut desk, |settings| *settings = next)?
         };
+        #[cfg(test)]
+        {
+            let held = self.hold_before_sync.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(release) = held {
+                let _ = release.recv();
+            }
+        }
         self.sync();
         Ok(self.game.view(&settings))
     }
@@ -1490,6 +1503,7 @@ mod tests {
         file.session = Some(GameSession {
             game: GameRef { path: FOO.to_owned(), name: "Foo".to_owned(), source: Source::Added },
             opened: 5,
+            opened_uptime: None,
             since: 5,
             released: false,
             power: PowerRecord::applied(PowerPlan::BALANCED),
@@ -1635,6 +1649,7 @@ mod tests {
                     source: Source::Added,
                 },
                 opened: 5,
+                opened_uptime: None,
                 since: 5,
                 released: false,
                 power: PowerRecord::of(PowerOutcome::Custom),
@@ -1676,6 +1691,7 @@ mod tests {
                     source: Source::Added,
                 },
                 opened: 5,
+                opened_uptime: None,
                 since: 5,
                 released: false,
                 power: PowerRecord::of(PowerOutcome::Custom),
@@ -1811,6 +1827,38 @@ mod tests {
             arcade.agent.autostart_calls().last(),
             Some(&false),
             "le plus récent des deux changements a le dernier mot : {:?}",
+            arcade.agent.autostart_calls()
+        );
+    }
+
+    #[test]
+    fn a_change_that_waits_for_the_agent_sync_applies_the_settings_of_the_moment() {
+        let pc = pc();
+        pc.store.save(&Settings { game_mode_auto: true, ..Settings::default() }).unwrap();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let backend = Arc::new(backend);
+        // Le premier changement (éteindre) s'arrête entre son enregistrement et
+        // la mise en accord de l'agent.
+        let (release, hold) = std::sync::mpsc::channel();
+        *backend.hold_before_sync.lock().unwrap() = Some(hold);
+        let first = {
+            let backend = Arc::clone(&backend);
+            std::thread::spawn(move || backend.set_game_option(GameOption::Auto, false).unwrap())
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while saved(&pc).game_mode_auto && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!saved(&pc).game_mode_auto, "le premier changement est enregistré");
+        // Le second (rallumer) passe tout entier pendant ce temps.
+        backend.set_game_option(GameOption::Auto, true).unwrap();
+        release.send(()).unwrap();
+        first.join().unwrap();
+        assert!(saved(&pc).game_mode_auto);
+        assert_eq!(
+            arcade.agent.autostart_calls().last(),
+            Some(&true),
+            "la mise en accord du premier lit les réglages d'à présent : {:?}",
             arcade.agent.autostart_calls()
         );
     }

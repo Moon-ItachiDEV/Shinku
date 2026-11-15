@@ -43,7 +43,7 @@ pub const GAME_VERSION: u32 = 1;
 /// Nom du fichier.
 const FILE_NAME: &str = "game.json";
 /// Dossier de Shinku dans `AppData\Local`.
-const APP_DIR: &str = "Shinku";
+pub(crate) const APP_DIR: &str = "Shinku";
 /// Nombre de jeux de bibliothèque gardés dans « déjà joués ».
 pub const SEEN_KEPT: usize = 20;
 /// Nombre maximal de processus en veilleuse dans le journal.
@@ -133,6 +133,11 @@ pub struct Root {
     /// tant qu'il vit.
     #[serde(rename = "goneMs", skip_serializing_if = "Option::is_none")]
     pub gone: Option<i64>,
+    /// Le même instant sur l'horloge monotone de la machine (millisecondes
+    /// depuis le démarrage de Windows) : l'heure murale peut avoir sauté depuis.
+    /// Absent dans un journal d'avant ce champ.
+    #[serde(rename = "goneUptime", skip_serializing_if = "Option::is_none")]
+    pub gone_uptime: Option<u64>,
 }
 
 /// La partie en cours.
@@ -144,6 +149,12 @@ pub struct Session {
     /// Ouverture de la partie, en millisecondes depuis 1970. Ne change jamais
     /// pendant la partie : tout ce qui est né avant n'est pas d'elle.
     pub opened: i64,
+    /// L'horloge monotone de la machine (millisecondes depuis le démarrage de
+    /// Windows) à l'ouverture de la partie : si elle est plus grande que celle
+    /// d'à présent, Windows a redémarré. Absente dans un journal d'avant ce
+    /// champ : on suppose alors qu'il n'a pas redémarré.
+    #[serde(rename = "openedUptime", skip_serializing_if = "Option::is_none")]
+    pub opened_uptime: Option<u64>,
     /// Début du jeu en cours, en millisecondes depuis 1970 (c'est l'affichage).
     pub since: i64,
     /// La personne a demandé de tout remettre en place : rien n'est plus appliqué.
@@ -159,20 +170,25 @@ pub struct Session {
 }
 
 impl Session {
-    /// Note un processus comme racine. Si la liste est pleine, la plus ancienne
-    /// racine morte lui laisse la place ; s'il n'y en a pas, il n'est pas noté
-    /// (il reste dans `quieted`, qui sert aussi de racines).
+    /// Note un processus comme racine. Si la liste est pleine, la racine morte
+    /// depuis le plus longtemps lui laisse la place, jamais une racine vivante
+    /// tant qu'il reste une morte ; s'il n'y en a pas, il n'est pas noté (il
+    /// reste dans `quieted`, qui sert aussi de racines).
     pub fn add_root(&mut self, pid: u32, started: i64) {
         if self.roots.iter().any(|root| root.pid == pid && root.started == started) {
             return;
         }
         if self.roots.len() >= ROOTS_KEPT {
-            let Some(dead) = self.roots.iter().position(|root| root.gone.is_some()) else {
-                return;
-            };
+            let oldest = self
+                .roots
+                .iter()
+                .enumerate()
+                .filter_map(|(index, root)| root.gone.map(|gone| (gone, index)))
+                .min();
+            let Some((_, dead)) = oldest else { return };
             self.roots.remove(dead);
         }
-        self.roots.push(Root { pid, started, gone: None });
+        self.roots.push(Root { pid, started, gone: None, gone_uptime: None });
     }
 
     /// Les racines de la partie : celles qui sont notées, plus les processus
@@ -181,7 +197,12 @@ impl Session {
         let mut roots = self.roots.clone();
         for entry in &self.quieted {
             if !roots.iter().any(|root| root.pid == entry.pid && root.started == entry.started) {
-                roots.push(Root { pid: entry.pid, started: entry.started, gone: None });
+                roots.push(Root {
+                    pid: entry.pid,
+                    started: entry.started,
+                    gone: None,
+                    gone_uptime: None,
+                });
             }
         }
         roots
@@ -300,7 +321,7 @@ impl GameStore {
 
 /// Lit le fichier en entier, à condition qu'il tienne dans
 /// [`MAX_FILE_BYTES`] : un fichier plus gros n'est pas le nôtre.
-fn read_bounded(path: &Path) -> Option<String> {
+pub(crate) fn read_bounded(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let mut text = String::new();
     file.take(MAX_FILE_BYTES + 1).read_to_string(&mut text).ok()?;
@@ -385,6 +406,7 @@ fn parse_root(value: &Value) -> Option<Root> {
         pid: u32::try_from(integer(root.get("pid"))?).ok()?,
         started: integer(root.get("started"))?,
         gone: integer(root.get("goneMs")),
+        gone_uptime: integer(root.get("goneUptime")).and_then(|at| u64::try_from(at).ok()),
     })
 }
 
@@ -413,6 +435,7 @@ fn parse_session(value: &Value) -> Option<Session> {
         },
         // Un journal d'avant `opened` se relit avec `opened = since`.
         opened: integer(session.get("opened")).unwrap_or(since),
+        opened_uptime: integer(session.get("openedUptime")).and_then(|at| u64::try_from(at).ok()),
         since,
         released: session.get("released").and_then(Value::as_bool).unwrap_or(false),
         power: parse_power(session.get("power")),
@@ -499,16 +522,23 @@ mod tests {
                     source: Source::Library,
                 },
                 opened: 1_794_765_000_000,
+                opened_uptime: Some(3_600_000),
                 since: 1_794_765_291_613,
                 released: false,
                 power: PowerRecord::applied(PowerPlan::BALANCED),
                 quieted: vec![quieted(111), Quieted { priority: priority::HIGH, ..quieted(112) }],
                 roots: vec![
-                    Root { pid: 111, started: 133_800_000_000_000_000, gone: None },
+                    Root {
+                        pid: 111,
+                        started: 133_800_000_000_000_000,
+                        gone: None,
+                        gone_uptime: None,
+                    },
                     Root {
                         pid: 90,
                         started: 133_799_000_000_000_000,
                         gone: Some(1_794_765_200_000),
+                        gone_uptime: Some(3_700_000),
                     },
                 ],
                 restore_pending: false,
@@ -771,5 +801,86 @@ mod tests {
         let padding = " ".repeat(usize::try_from(MAX_FILE_BYTES).unwrap() + 10);
         write_raw(&store, &format!("{{\"seen\": []{padding}}}"));
         assert_eq!(store.load(), GameFile::default());
+    }
+
+    #[test]
+    fn the_opening_uptime_and_the_death_uptime_are_read_and_old_journals_have_none() {
+        let (_temp, store) = store();
+        write_raw(
+            &store,
+            &json!({"session": {"game": {"path": r"D:\x\hp.exe", "name": "x", "source": "library"},
+                "opened": 1, "openedUptime": 5000, "since": 2, "quieted": [],
+                "roots": [{"pid": 4, "started": 5, "goneMs": 7, "goneUptime": 6000},
+                          {"pid": 5, "started": 5, "goneMs": 7}]}})
+            .to_string(),
+        );
+        let session = store.load().session.expect("une partie");
+        assert_eq!(session.opened_uptime, Some(5000));
+        assert_eq!(session.roots[0].gone_uptime, Some(6000));
+        assert_eq!(session.roots[1].gone_uptime, None);
+        // Écrits tels quels, relus tels quels.
+        store.save(&store.load()).unwrap();
+        assert_eq!(store.load().session.expect("une partie"), session);
+        // Un champ négatif ou absurde ne se lit pas.
+        write_raw(
+            &store,
+            &json!({"session": {"game": {"path": "x", "name": "x", "source": "library"},
+                "since": 2, "openedUptime": -4}})
+            .to_string(),
+        );
+        assert_eq!(store.load().session.expect("une partie").opened_uptime, None);
+    }
+
+    #[test]
+    fn a_full_root_list_gives_up_the_dead_root_gone_for_longest_and_never_a_live_one() {
+        let mut session = full_file().session.expect("une partie");
+        session.quieted.clear();
+        session.roots = (0..u32::try_from(ROOTS_KEPT).unwrap())
+            .map(|n| Root {
+                pid: n,
+                started: 5,
+                gone: (n % 2 == 1).then_some(1000 - i64::from(n)),
+                gone_uptime: None,
+            })
+            .collect();
+        // Les racines mortes ont `goneMs` = 1000 - n : la plus ancienne est celle de n = 511.
+        session.add_root(9000, 7);
+        assert_eq!(session.roots.len(), ROOTS_KEPT);
+        assert!(session.roots.iter().any(|root| root.pid == 9000));
+        assert!(
+            session.roots.iter().all(|root| root.pid != 511),
+            "la plus anciennement morte part"
+        );
+        let live_before = (0..u32::try_from(ROOTS_KEPT).unwrap()).filter(|n| n % 2 == 0).count();
+        let live_after = session.roots.iter().filter(|root| root.gone.is_none()).count();
+        assert_eq!(
+            live_after,
+            live_before + 1,
+            "aucune racine vivante n'est évincée (+ la nouvelle)"
+        );
+        // Toutes vivantes : la nouvelle n'est pas notée, aucune n'est évincée.
+        for root in &mut session.roots {
+            root.gone = None;
+        }
+        session.add_root(9001, 7);
+        assert!(session.roots.iter().all(|root| root.pid != 9001));
+        assert_eq!(session.roots.len(), ROOTS_KEPT);
+    }
+
+    #[test]
+    fn a_valid_journal_over_one_mebibyte_is_not_read_at_all() {
+        let (_temp, store) = store();
+        // Un journal tout à fait sensé, qui se lirait normalement sans la borne.
+        let mut file = full_file();
+        file.seen = Vec::new();
+        store.save(&file).unwrap();
+        let mut text = fs::read_to_string(store.path()).unwrap();
+        assert!(store.load().session.is_some(), "avant : il se lit");
+        let padding = " ".repeat(usize::try_from(MAX_FILE_BYTES).unwrap() + 10);
+        text.push_str(&padding);
+        fs::write(store.path(), text).unwrap();
+        let loaded = store.load();
+        assert_eq!(loaded.session, None, "la borne de taille a joué");
+        assert_eq!(loaded, GameFile::default());
     }
 }
