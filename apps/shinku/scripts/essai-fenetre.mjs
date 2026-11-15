@@ -467,7 +467,8 @@ function readStartup() {
   const say = document.querySelector('.pzone .psay');
   return {
     title: text(document.querySelector('.main h1')),
-    loading: document.querySelector('.page.startup .note') !== null,
+    // La note de chargement (ou d'échec) seule : la note du bas de page porte aussi la classe `note`.
+    loading: document.querySelector('.page.startup .note[role="status"]') !== null,
     rows: [...document.querySelectorAll('.page.startup .plist > li.row')].map((row) => {
       const control = row.querySelector('button[role=switch]');
       return {
