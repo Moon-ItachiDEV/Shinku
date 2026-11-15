@@ -18,6 +18,7 @@ import { test } from 'node:test';
 
 import { mockBackend, type MockOptions } from '../src/backend/mock.ts';
 import type {
+  AgentState,
   BackendError,
   CategoryState,
   CategorySummary,
@@ -27,17 +28,24 @@ import type {
   CleanRequest,
   DuplicatesPage,
   FolderRefusal,
+  GameOption,
+  GameRefusal,
+  GameSource,
+  GameStatus,
   JunkCategory,
   LoadIssue,
   Lot,
   ModuleId,
   Phase,
+  PowerOutcome,
+  PowerSupport,
   RunState,
   SessionState,
   Settings,
   StepState,
   StopReason,
   Theme,
+  WindowsPage,
 } from '../src/backend/types.ts';
 
 type Shape = string | Shape[] | { [field: string]: Shape };
@@ -96,7 +104,25 @@ const enums: Record<string, readonly string[]> = {
     'cleanRunning',
     'cleanRefused',
     'cleanNotStarted',
+    'gameRefused',
   ]),
+  agentState: allOf<AgentState>()(['running', 'stopped', 'missing']),
+  powerOutcome: allOf<PowerOutcome>()([
+    'applied',
+    'alreadyFast',
+    'onBattery',
+    'unavailable',
+    'unsuited',
+    'custom',
+    'refused',
+    'off',
+  ]),
+  powerSupport: allOf<PowerSupport>()(['available', 'unavailable', 'unsuited']),
+  gameSource: allOf<GameSource>()(['added', 'library']),
+  windowsPage: allOf<WindowsPage>()(['gameMode', 'power']),
+  gameStatus: allOf<GameStatus>()(['notGame', 'forgotten']),
+  gameOption: allOf<GameOption>()(['auto', 'power', 'quietApps']),
+  gameRefusal: allOf<GameRefusal>()(['unknownApp', 'unknownGame', 'notAGame', 'protectedApp', 'listFull']),
   loadIssue: allOf<LoadIssue['kind']>()(['unreadable', 'partial']),
 };
 
@@ -186,6 +212,7 @@ const OPTIONS: MockOptions = {
   theme: 'system',
   clean: 'rough',
   interrupted: true,
+  game: { state: 'playing', agent: 'running', power: 'available', startup: 'enabled' },
 };
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -228,6 +255,17 @@ async function samples(): Promise<Record<string, unknown>> {
   const cleanStop = (await halting.sessionView()).clean?.report?.duplicates.stop;
   assert.ok(cleanStop != null);
 
+  // Le mode jeu : la page en veille, puis en partie ; la liste des apps ouvertes ; un refus.
+  const gameIdle = await mockBackend({ ...OPTIONS, game: { ...OPTIONS.game, state: 'idle' } }).gameView();
+  const gaming = mockBackend(OPTIONS);
+  const gamePlaying = await gaming.gameView();
+  assert.ok(gamePlaying.session !== null);
+  const openApps = await gaming.openApps();
+  const refusal: unknown = await gaming.setGameStatus('Z:\\inconnu.exe', 'notGame').then(
+    () => null,
+    (error: unknown) => error,
+  );
+
   const unreadable = (await mockBackend({ ...OPTIONS, issue: 'unreadable' }).overview()).settingsIssue;
   const partial = (await mockBackend({ ...OPTIONS, issue: 'partial' }).overview()).settingsIssue;
 
@@ -239,7 +277,9 @@ async function samples(): Promise<Record<string, unknown>> {
     cleanRunning: { kind: 'cleanRunning' },
     cleanRefused: { kind: 'cleanRefused', reason: 'staleResults' },
     cleanNotStarted: { kind: 'cleanNotStarted', reason: 'raison' },
+    gameRefused: { kind: 'gameRefused', reason: 'unknownGame' },
   };
+  assert.deepEqual(refusal, errors.gameRefused, 'le faux cœur refuse un jeu inconnu comme le cœur');
 
   return {
     overview,
@@ -251,6 +291,9 @@ async function samples(): Promise<Record<string, unknown>> {
     cleanPreview,
     cleanRequest,
     cleanStop,
+    'gameView.idle': gameIdle,
+    'gameView.playing': gamePlaying,
+    openApps,
     'loadIssue.unreadable': unreadable,
     'loadIssue.partial': partial,
     'error.settingsUnchecked': errors.settingsUnchecked,
@@ -260,6 +303,7 @@ async function samples(): Promise<Record<string, unknown>> {
     'error.cleanRunning': errors.cleanRunning,
     'error.cleanRefused': errors.cleanRefused,
     'error.cleanNotStarted': errors.cleanNotStarted,
+    'error.gameRefused': errors.gameRefused,
   };
 }
 

@@ -322,8 +322,6 @@ export const fr = typeset({
   soon: {
     cap: 'Ce module arrive dans une prochaine version.',
     startup: 'Les apps qui se lancent avec Windows, et le temps qu’elles te coûtent à chaque allumage.',
-    gameMode:
-      'Met en pause ce qui tourne en arrière-plan pendant que tu joues. Tout reprend quand tu quittes le jeu.',
     uninstall:
       'Supprime une app avec ce qu’elle laisse derrière elle : dossiers, raccourcis et entrées du registre.',
     privacy:
@@ -346,8 +344,88 @@ export const fr = typeset({
     foldersNote: 'Changer cette liste efface les résultats en cours : relance ensuite une analyse.',
     addFolder: 'Ajouter un dossier',
     removeFolder: (path: string) => `Retirer ${path}`,
-    later: 'Les autres réglages arriveront avec leurs modules : lancement avec Windows, analyse automatique, corbeille et mode jeu.',
+    later: 'Les autres réglages arriveront avec leurs modules : lancement avec Windows, analyse automatique et corbeille.',
     version: (version: string) => `Shinku version ${version}`,
+  },
+
+  game: {
+    eyebrow: 'Mode jeu',
+    titleOff: 'Le mode jeu est éteint',
+    titleIdle: 'Shinku veille sur tes parties',
+    titlePlaying: (name: string) => `En jeu : ${name}`,
+    textOff:
+      'Allume-le une fois. Ensuite, lance ton jeu comme d’habitude : Shinku le reconnaît tout seul et ne lance jamais rien à ta place.',
+    textIdle:
+      'Lance ton jeu comme d’habitude. Shinku applique tes réglages, puis remet tout en place quand tu le quittes.',
+    textPlaying: (clock: string) => `Mode jeu actif depuis ${clock}. Tout revient en place quand tu quittes le jeu.`,
+    textReleased: 'Remis en place pour cette partie. Le mode jeu reprendra à la prochaine.',
+    textPending: 'Shinku n’a pas encore pu tout remettre en place. Il réessaie tout seul.',
+    release: 'Tout remettre maintenant',
+    notAGame: 'Ce n’est pas un jeu',
+    lastOk: (name: string, duration: string) =>
+      `Dernière partie : ${name}, ${duration}. Tout a été remis en place.`,
+    lastIncomplete: (name: string, duration: string) =>
+      `Dernière partie : ${name}, ${duration}. Tout n’a pas pu être remis en place : vérifie le mode d’alimentation de Windows.`,
+    powerApplied: 'Alimentation en performances élevées',
+    powerAlreadyFast: 'Alimentation déjà en performances élevées',
+    powerOnBattery: 'Alimentation inchangée : tu es sur batterie',
+    powerCustom: 'Alimentation inchangée : ton PC a son propre mode',
+    powerRefused: 'Windows a refusé de changer l’alimentation',
+    quietCount: (count: number) => countOf(count, 'app en veilleuse', 'apps en veilleuse'),
+    auto: 'Mode jeu automatique',
+    autoHint:
+      'S’active quand un jeu passe au premier plan, sans rien lancer. Shinku démarre alors avec Windows, en arrière-plan et sans fenêtre.',
+    agentMissing: 'Cette installation de Shinku n’a pas son programme de veille. Réinstalle Shinku pour l’avoir.',
+    agentStopped: 'La veille de Shinku ne démarre pas. Ferme Shinku, puis rouvre-le.',
+    startupDisabled:
+      'Shinku est désactivé dans les apps de démarrage de Windows : le mode jeu ne veillera qu’après avoir ouvert Shinku.',
+    during: 'Pendant que tu joues',
+    power: 'Alimentation en performances élevées',
+    powerHint:
+      'Windows passe sur son mode « Performances élevées » le temps de la partie, puis reprend ton mode habituel. Jamais sur batterie. Dans ce mode, le PC ne se met pas en veille tout seul.',
+    powerUnavailable: 'Ce PC ne propose pas le mode « Performances élevées » : son alimentation se règle dans Windows.',
+    powerUnsuited:
+      'Sur ce processeur, AMD recommande de garder le mode normal de Windows : Shinku n’y touche pas.',
+    powerOpen: 'Réglages d’alimentation de Windows',
+    onBattery: 'Sur batterie',
+    quiet: 'Apps d’arrière-plan en veilleuse',
+    quietHint: 'Elles restent ouvertes, mais passent après ton jeu. Celle que tu regardes retrouve sa vitesse.',
+    open: 'Ouverte',
+    quietAlso: (list: string) => `Aussi mises en veilleuse si tu les ouvres : ${list}.`,
+    quietAdvice: 'Évite d’y mettre une app qui joue du son ou de la vidéo pendant ta partie.',
+    quietAdd: 'Ajouter une app ouverte',
+    games: 'Tes jeux',
+    gamesHint: 'Les jeux installés avec Steam, Epic, Xbox, GOG, Riot, Ubisoft ou EA sont reconnus tout seuls.',
+    gamesEmpty: 'Aucun jeu pour l’instant. Ils apparaîtront ici après ta première partie.',
+    added: 'Ajouté par toi',
+    recognised: 'Reconnu tout seul',
+    lastPlayed: (ago: string) => `joué ${ago}`,
+    remove: (name: string) => `Retirer ${name}`,
+    addGame: 'Ajouter un jeu ouvert',
+    addGameHint: 'Un jeu n’est pas reconnu (Battle.net, Minecraft, Roblox…) ? Ouvre-le, puis ajoute-le ici.',
+    never: 'Jamais traités comme des jeux',
+    restore: 'Rétablir',
+    pickGame: 'Choisis ton jeu',
+    pickApp: 'Choisis une app',
+    pickHint: 'Seules les apps ouvertes en ce moment sont listées.',
+    pickEmpty: 'Aucune app ouverte à ajouter. Ouvre-la, puis reviens ici.',
+    cancel: 'Annuler',
+    windows: 'Windows s’en occupe déjà',
+    winMode: 'Mode Jeu de Windows',
+    winModeHint:
+      'Il donne la priorité au jeu et retient les mises à jour pendant la partie. Shinku ne le refait pas.',
+    winOpen: 'Réglages de Windows',
+    winNotif: 'Notifications',
+    winNotifHint: 'Windows 11 les coupe tout seul pendant un jeu en plein écran.',
+    promise:
+      'Shinku ne promet pas d’images par seconde en plus : il écarte ce qui gêne ton jeu, et remet tout en place après.',
+    toast: {
+      unknownApp: 'Cette app n’est plus ouverte.',
+      unknownGame: 'Ce jeu n’est plus dans la liste.',
+      notAGame: 'Shinku ne traite jamais cette app comme un jeu.',
+      protectedApp: 'Cette app ne peut pas être mise en veilleuse.',
+      listFull: 'La liste est pleine.',
+    },
   },
 
   toast: {

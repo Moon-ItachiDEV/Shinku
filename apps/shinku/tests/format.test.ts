@@ -11,6 +11,7 @@ import {
   formatAgo,
   formatBytes,
   formatCount,
+  formatDuration,
   formatLimit,
   frenchSpacing,
   listOf,
@@ -113,4 +114,20 @@ test('une énumération se termine par « et »', () => {
   assert.equal(listOf(['Discord']), 'Discord');
   assert.equal(listOf(['Google Chrome', 'Discord']), 'Google Chrome et Discord');
   assert.equal(listOf(['Google Chrome', 'Discord', 'Steam']), 'Google Chrome, Discord et Steam');
+});
+
+test('une durée de jeu se lit « 45 min » ou « 2 h 10 »', () => {
+  const minute = 60_000;
+  assert.equal(formatDuration(45 * minute), `45${NBSP}min`);
+  assert.equal(formatDuration(59 * minute + 59_000), `59${NBSP}min`);
+  assert.equal(formatDuration(60 * minute), `1${NBSP}h`);
+  assert.equal(formatDuration(130 * minute), `2${NBSP}h${NBSP}10`);
+  assert.equal(formatDuration(125 * minute), `2${NBSP}h${NBSP}05`);
+  assert.equal(formatDuration(26 * 60 * minute + 7 * minute), `26${NBSP}h${NBSP}07`);
+});
+
+test('une durée de jeu ne descend jamais sous une minute, ni sous zéro', () => {
+  assert.equal(formatDuration(0), `1${NBSP}min`);
+  assert.equal(formatDuration(20_000), `1${NBSP}min`);
+  assert.equal(formatDuration(-5 * 60_000), `1${NBSP}min`);
 });

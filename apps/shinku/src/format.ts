@@ -109,6 +109,20 @@ export function formatAgo(then: number, now: number): string {
   return `il y a ${Math.max(1, years)}${NBSP}${plural(years, 'an', 'ans')}`;
 }
 
+/**
+ * Une durée de jeu : « 45 min », « 2 h 10 ». Moins d'une minute se lit « 1 min » ;
+ * une heure pile s'écrit sans minutes (« 2 h »).
+ */
+export function formatDuration(milliseconds: number): string {
+  const minutes = Math.max(1, Math.floor(Math.max(0, milliseconds) / MINUTE));
+  if (minutes < 60) {
+    return `${minutes}${NBSP}min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}${NBSP}h` : `${hours}${NBSP}h${NBSP}${String(rest).padStart(2, '0')}`;
+}
+
 /** Heure locale : « 14:32 ». */
 export function formatClock(timestamp: number): string {
   const date = new Date(timestamp);

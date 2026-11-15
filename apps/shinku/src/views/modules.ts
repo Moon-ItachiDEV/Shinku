@@ -273,7 +273,7 @@ export function binView(state: AppState): TemplateResult {
 
 // ── Modules à venir ────────────────────────────────────────────────────────
 
-type SoonRoute = Extract<Route, 'startup' | 'gameMode' | 'uninstall' | 'privacy'>;
+type SoonRoute = Extract<Route, 'startup' | 'uninstall' | 'privacy'>;
 
 export function soonView(route: SoonRoute): TemplateResult {
   return stage({

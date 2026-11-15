@@ -7,11 +7,16 @@ import type {
   CleanPreview,
   CleanRequest,
   DuplicatesPage,
+  GameOption,
+  GameStatus,
+  GameView,
   JunkReport,
   LargeFilesPage,
+  OpenApp,
   Overview,
   SessionView,
   Theme,
+  WindowsPage,
 } from './backend/types.ts';
 import { type CleanRowId, type Selection, UNTOUCHED } from './model/scan.ts';
 
@@ -41,6 +46,13 @@ export interface CleanConfirmation {
   request: CleanRequest;
 }
 
+/** Le sélecteur du mode jeu : un jeu ou une app à choisir parmi celles qui sont ouvertes. */
+export interface Picker {
+  kind: 'game' | 'app';
+  /** `null` tant que le cœur n'a pas rendu la liste. */
+  apps: OpenApp[] | null;
+}
+
 export interface AppState {
   /** `loading` tant que le cœur n'a pas répondu ; `failed` s'il ne répond pas. */
   boot: 'loading' | 'ready' | 'failed' | 'outside';
@@ -68,6 +80,12 @@ export interface AppState {
   /** Message bref affiché en bas de l'écran ; son texte reste le temps qu'il s'efface. */
   toast: string;
   toastShown: boolean;
+  /** La dernière vue du mode jeu ; `null` tant que le cœur n'a pas répondu. */
+  game: GameView | null;
+  /** Depuis quand l'agent du mode jeu est vu arrêté, ou `null`. */
+  gameStoppedSince: number | null;
+  /** Le sélecteur de jeu ou d'app, tant qu'il est ouvert. */
+  picker: Picker | null;
   /** L'heure qu'il est, rafraîchie de temps en temps : pour « il y a 8 mois ». */
   now: number;
 }
@@ -100,6 +118,9 @@ export function initialState(now: number): AppState {
     pickingFolder: false,
     toast: '',
     toastShown: false,
+    game: null,
+    gameStoppedSince: null,
+    picker: null,
     now,
   };
 }
@@ -126,6 +147,16 @@ export interface Actions {
   addFolder(): void;
   removeFolder(path: string): void;
   acknowledgeIssue(): void;
+  setGameOption(option: GameOption, on: boolean): void;
+  setQuietApp(exe: string, on: boolean): void;
+  /** « Tout remettre maintenant ». */
+  releaseGame(): void;
+  setGameStatus(path: string, status: GameStatus): void;
+  openPicker(kind: 'game' | 'app'): void;
+  closePicker(): void;
+  /** La personne a choisi une app ouverte dans le sélecteur. */
+  pickOpenApp(id: number): void;
+  openWindowsSettings(page: WindowsPage): void;
   minimize(): void;
   toggleMaximize(): void;
   close(): void;

@@ -7,9 +7,20 @@
 
 import { render } from 'lit-html';
 
-import type { Backend, BackendError, SessionView, Settings, Theme } from './backend/types.ts';
+import type {
+  Backend,
+  BackendError,
+  GameOption,
+  GameStatus,
+  GameView,
+  SessionView,
+  Settings,
+  Theme,
+  WindowsPage,
+} from './backend/types.ts';
 import { fr } from './i18n/fr.ts';
 import { cleanRequest, confirmedRequest, readiness, requestedSteps } from './model/clean.ts';
+import { GAME_POLL_DELAY, optionOf, stoppedSince, withOption, withQuietApp } from './model/game.ts';
 import { reportKey, toggled } from './model/scan.ts';
 import { type Actions, type AppState, initialState, type Route } from './state.ts';
 import { applyTheme } from './theme.ts';
@@ -47,6 +58,8 @@ function errorMessage(error: unknown): string {
       return fr.toast[error.reason];
     case 'cleanNotStarted':
       return fr.toast.cleanNotStarted;
+    case 'gameRefused':
+      return fr.game.toast[error.reason];
     default:
       return fr.toast.unexpected;
   }
@@ -70,6 +83,14 @@ const NO_ACTIONS: Actions = {
   addFolder: () => {},
   removeFolder: () => {},
   acknowledgeIssue: () => {},
+  setGameOption: () => {},
+  setQuietApp: () => {},
+  releaseGame: () => {},
+  setGameStatus: () => {},
+  openPicker: () => {},
+  closePicker: () => {},
+  pickOpenApp: () => {},
+  openWindowsSettings: () => {},
   minimize: () => {},
   toggleMaximize: () => {},
   close: () => {},
@@ -97,6 +118,12 @@ export class App {
   private lastReportKey = '';
   private readonly loading = new Set<string>();
   private lastOverviewRefresh = 0;
+  private gameTimer: number | undefined;
+  /** Change à chaque geste du mode jeu : une vue demandée avant lui et arrivée après est ignorée. */
+  private gameEpoch = 0;
+  private gameLoading = false;
+  /** Change à chaque ouverture ou fermeture du sélecteur : une liste arrivée trop tard est ignorée. */
+  private pickerEpoch = 0;
 
   constructor(backend: Backend, root: HTMLElement) {
     this.backend = backend;
@@ -142,7 +169,10 @@ export class App {
       this.set({ now: Date.now() });
       void this.refreshResults();
     }, CLOCK_DELAY);
-    window.addEventListener('focus', () => void this.refreshOverview(5000));
+    window.addEventListener('focus', () => {
+      void this.refreshOverview(5000);
+      void this.refreshGame();
+    });
   }
 
   /** Relit le disque, la corbeille et les réglages. Rend `false` si rien n'a été relu. */
@@ -528,10 +558,160 @@ export class App {
     }
   }
 
+  // ── Mode jeu ─────────────────────────────────────────────────────────────
+
+  /**
+   * Tant que la page Mode jeu est affichée, la vue est redemandée toutes les
+   * deux secondes : l'agent écrit seul, et la page doit le montrer. Hors de la
+   * page, rien n'est demandé.
+   */
+  private watchGame(): void {
+    window.clearInterval(this.gameTimer);
+    this.gameTimer = undefined;
+    if (this.state.route !== 'gameMode') {
+      return;
+    }
+    void this.refreshGame();
+    this.gameTimer = window.setInterval(() => {
+      if (this.state.route !== 'gameMode') {
+        // La route a changé sans passer par `navigate` : on cesse de demander.
+        window.clearInterval(this.gameTimer);
+        this.gameTimer = undefined;
+        return;
+      }
+      void this.refreshGame();
+    }, GAME_POLL_DELAY);
+  }
+
+  private adoptGame(view: GameView): void {
+    const now = Date.now();
+    this.set({ game: view, gameStoppedSince: stoppedSince(this.state.gameStoppedSince, view.agent, now), now });
+  }
+
+  private async refreshGame(): Promise<void> {
+    if (this.gameLoading || this.state.route !== 'gameMode') {
+      return;
+    }
+    this.gameLoading = true;
+    const epoch = this.gameEpoch;
+    try {
+      const view = await this.backend.gameView();
+      if (epoch === this.gameEpoch && this.state.route === 'gameMode') {
+        this.adoptGame(view);
+      }
+    } catch {
+      // La page garde sa dernière vue ; la prochaine demande dira.
+    } finally {
+      this.gameLoading = false;
+    }
+  }
+
+  /**
+   * Envoie un geste du mode jeu. `optimistic` change la vue tout de suite ;
+   * `undo` la remet comme elle était si le cœur refuse, et la page relit alors
+   * la vue du cœur.
+   */
+  private async gameCommand(
+    request: () => Promise<GameView>,
+    optimistic: ((view: GameView) => GameView) | null = null,
+    undo: ((view: GameView) => GameView) | null = null,
+  ): Promise<boolean> {
+    this.gameEpoch += 1;
+    const epoch = this.gameEpoch;
+    const before = this.state.game;
+    if (optimistic !== null && before !== null) {
+      this.set({ game: optimistic(before) });
+    }
+    try {
+      const view = await request();
+      if (epoch === this.gameEpoch) {
+        this.adoptGame(view);
+      }
+      return true;
+    } catch (error) {
+      const current = this.state.game;
+      if (undo !== null && current !== null) {
+        this.set({ game: undo(current) });
+      }
+      this.toast(errorMessage(error));
+      void this.refreshGame();
+      return false;
+    }
+  }
+
+  private async setGameOption(option: GameOption, on: boolean): Promise<void> {
+    const before = this.state.game;
+    if (before === null || optionOf(before, option) === on) {
+      return;
+    }
+    const previous = optionOf(before, option);
+    await this.gameCommand(
+      () => this.backend.setGameOption(option, on),
+      (view) => withOption(view, option, on),
+      (view) => withOption(view, option, previous),
+    );
+  }
+
+  private async setQuietApp(exe: string, on: boolean): Promise<void> {
+    const before = this.state.game?.apps.find((app) => app.exe === exe);
+    if (before === undefined || before.on === on) {
+      return;
+    }
+    await this.gameCommand(
+      () => this.backend.setQuietApp(exe, on),
+      (view) => withQuietApp(view, exe, on),
+      (view) => withQuietApp(view, exe, before.on),
+    );
+  }
+
+  /** Ouvre le sélecteur ; la liste des apps ouvertes est demandée au cœur à ce moment-là. */
+  private async openPicker(kind: 'game' | 'app'): Promise<void> {
+    if (this.state.picker !== null) {
+      return;
+    }
+    this.pickerEpoch += 1;
+    const epoch = this.pickerEpoch;
+    this.set({ picker: { kind, apps: null } });
+    try {
+      const apps = await this.backend.openApps();
+      if (epoch === this.pickerEpoch) {
+        this.set({ picker: { kind, apps } });
+      }
+    } catch (error) {
+      if (epoch === this.pickerEpoch) {
+        this.set({ picker: null });
+        this.toast(errorMessage(error));
+      }
+    }
+  }
+
+  private closePicker(): void {
+    this.pickerEpoch += 1;
+    this.set({ picker: null });
+  }
+
+  private async pickOpenApp(id: number): Promise<void> {
+    const picker = this.state.picker;
+    if (picker === null || picker.apps === null) {
+      return;
+    }
+    this.closePicker();
+    await this.gameCommand(() => (picker.kind === 'game' ? this.backend.addGame(id) : this.backend.addQuietApp(id)));
+  }
+
+  private async openWindowsSettings(page: WindowsPage): Promise<void> {
+    try {
+      await this.backend.openWindowsSettings(page);
+    } catch (error) {
+      this.toast(errorMessage(error));
+    }
+  }
+
   // ── Gestes ───────────────────────────────────────────────────────────────
 
   private navigate(route: Route): void {
     this.set({ route });
+    this.watchGame();
     this.ensureData();
     if (route === 'bin') {
       void this.refreshOverview(2000);
@@ -561,6 +741,15 @@ export class App {
     addFolder: () => void this.addFolder(),
     removeFolder: (path) => void this.changeFolders(() => this.backend.removeExcludedFolder(path)),
     acknowledgeIssue: () => void this.acknowledgeIssue(),
+    setGameOption: (option, on) => void this.setGameOption(option, on),
+    setQuietApp: (exe, on) => void this.setQuietApp(exe, on),
+    releaseGame: () => void this.gameCommand(() => this.backend.releaseGame()),
+    setGameStatus: (path: string, status: GameStatus) =>
+      void this.gameCommand(() => this.backend.setGameStatus(path, status)),
+    openPicker: (kind) => void this.openPicker(kind),
+    closePicker: () => this.closePicker(),
+    pickOpenApp: (id) => void this.pickOpenApp(id),
+    openWindowsSettings: (page) => void this.openWindowsSettings(page),
     minimize: () => void this.backend.minimizeWindow(),
     toggleMaximize: () => void this.backend.toggleMaximizeWindow(),
     close: () => void this.backend.closeWindow(),

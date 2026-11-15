@@ -1,0 +1,269 @@
+/*
+ * La page Mode jeu. Elle réutilise les cartes, les lignes et les boutons des
+ * Paramètres ; ce fichier n'ajoute que ce qui lui est propre. Aucune couleur
+ * nouvelle : tout vient de tokens.css, clair et sombre.
+ */
+
+.game {
+  padding-top: 4px;
+}
+
+/* ── En-tête d'état ─────────────────────────────────────────────────────── */
+
+.ghead {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 2px 0 4px;
+}
+
+.gart {
+  flex-shrink: 0;
+  width: 96px;
+}
+
+.gart .ill {
+  width: 96px;
+}
+
+.gtx {
+  flex: 1;
+  min-width: 0;
+}
+
+.ghead .eb {
+  margin: 0;
+}
+
+.ghead h1 {
+  margin: 6px 0 0;
+  font-size: 24px;
+}
+
+.gtext {
+  max-width: 620px;
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-weight: 300;
+  line-height: 1.65;
+  letter-spacing: 0.025em;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.gchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.gbtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.game .d {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 300;
+  line-height: 1.55;
+  letter-spacing: 0.025em;
+  color: var(--text-3);
+}
+
+.game .glast {
+  margin-top: 10px;
+}
+
+/* ── Interrupteurs ──────────────────────────────────────────────────────── */
+
+/* Un interrupteur est un bouton `role="switch"` : il reprend le dessin de `.sw`. */
+button.sw {
+  padding: 0;
+  border: 0;
+  font: inherit;
+}
+
+.sw[aria-checked='true'] {
+  background: var(--peach);
+}
+
+.sw[aria-checked='true']::before {
+  transform: translateX(16px);
+  background: var(--knob-on);
+}
+
+.sw.big {
+  width: 46px;
+  height: 26px;
+}
+
+.sw.big::before {
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+}
+
+.sw.big[aria-checked='true']::before {
+  transform: translateX(20px);
+}
+
+.srow.tall {
+  min-height: 72px;
+}
+
+.srow .tag {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* ── Sections ───────────────────────────────────────────────────────────── */
+
+.gsec {
+  display: flex;
+  flex-direction: column;
+  margin-top: 22px;
+}
+
+.gmain {
+  margin-top: 18px;
+}
+
+/* Réglable, mais atténué tant que le mode jeu automatique est éteint. */
+.card.dim {
+  opacity: 0.78;
+}
+
+/* L'avertissement : un point orange et une phrase, sous la ligne principale. */
+.gwarn {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 18px 14px;
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1.55;
+  letter-spacing: 0.025em;
+  color: var(--text-soft);
+}
+
+.gwarn i {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--badge-dot);
+}
+
+/* Le bloc des apps : une case par app, puis les précisions. */
+.gquiet > .d {
+  margin-top: 10px;
+}
+
+.gquiet .list + .d {
+  margin-top: 12px;
+}
+
+.glist > li + li {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+.glist .row.short {
+  min-height: 40px;
+}
+
+.game .add {
+  margin-top: 12px;
+}
+
+.gquiet .add {
+  margin-top: 12px;
+}
+
+.game .gintro {
+  margin-bottom: 12px;
+}
+
+.game .gempty {
+  padding: 4px 0 2px;
+}
+
+.game .add + .d {
+  margin-top: 8px;
+}
+
+.game .list .row + .row {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+.game .list .row .st {
+  flex-shrink: 0;
+}
+
+.game .row .ghost.small {
+  flex-shrink: 0;
+}
+
+h3.gnever {
+  margin: 22px 0 10px;
+}
+
+.gpromise {
+  margin: 22px 4px 0;
+  max-width: 620px;
+}
+
+/* ── Sélecteur ──────────────────────────────────────────────────────────── */
+
+.pickl {
+  max-height: min(320px, 42vh);
+  overflow-y: auto;
+}
+
+.pickl > li + li {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+.pickl .row {
+  min-height: 52px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pickl .row:hover {
+    background: rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+  }
+}
+
+/* ── Fenêtre basse : tout se resserre ───────────────────────────────────── */
+
+@media (max-height: 760px) {
+  .gsec {
+    margin-top: 18px;
+  }
+
+  .gmain {
+    margin-top: 14px;
+  }
+
+  .srow.tall {
+    min-height: 64px;
+  }
+
+  .ghead {
+    gap: 18px;
+  }
+}
+
+@media (max-width: 900px) {
+  .gart,
+  .gart .ill {
+    width: 72px;
+  }
+}

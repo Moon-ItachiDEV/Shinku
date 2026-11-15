@@ -17,14 +17,24 @@ import type {
   CleanStop,
   DuplicateGroup,
   DuplicatesPage,
+  GameOption,
+  GameRefusal,
+  GameSession,
+  GameStatus,
+  GameView,
   JunkReport,
+  KnownGame,
   LargeFile,
   LargeFilesPage,
+  LastGame,
   LeftOpen,
   LoadIssue,
+  OpenApp,
   Overview,
+  PowerOutcome,
   Phase,
   Progress,
+  QuietApp,
   RecycleBin,
   SessionView,
   Settings,
@@ -36,6 +46,15 @@ import type {
 const GB = 1024 ** 3;
 const MB = 1024 ** 2;
 const DAY = 24 * 3600 * 1000;
+
+/** Ce que la démo montre du mode jeu (`?game=…&agent=…&power=…&startup=…`). */
+export interface GameDemo {
+  /** Où en est la partie : éteint, en veille, en jeu, remis en place, remise en attente. */
+  state: 'off' | 'idle' | 'playing' | 'released' | 'pending';
+  agent: 'running' | 'stopped' | 'missing';
+  power: 'available' | 'unavailable' | 'unsuited' | 'battery';
+  startup: 'enabled' | 'disabled';
+}
 
 export interface MockOptions {
   /** Accélère l'analyse simulée (1 : durée normale, environ 7 secondes). */
@@ -54,11 +73,15 @@ export interface MockOptions {
   clean: 'smooth' | 'rough' | 'halt';
   /** Annonce, à l'Accueil, un grand vide interrompu au lancement précédent. */
   interrupted: boolean;
+  /** Ce que la démo montre du mode jeu. */
+  game: GameDemo;
 }
 
 /**
  * Lit les options de la démo dans l'adresse de la page :
  * `?speed=4&theme=light&issue=unreadable&bin=empty&clean=rough&interrupted=1`.
+ * Le mode jeu : `?game=off|idle|playing|released|pending`, `?agent=missing|stopped`,
+ * `?power=unavailable|unsuited|battery`, `?startup=disabled`.
  */
 export function demoOptions(search: string): MockOptions {
   const query = new URLSearchParams(search);
@@ -66,6 +89,9 @@ export function demoOptions(search: string): MockOptions {
   const issue = query.get('issue');
   const theme = query.get('theme');
   const clean = query.get('clean');
+  const game = query.get('game');
+  const agent = query.get('agent');
+  const power = query.get('power');
   return {
     speed: Number.isFinite(speed) && speed > 0 ? speed : 1,
     issue: issue === 'unreadable' || issue === 'partial' ? issue : 'none',
@@ -73,8 +99,51 @@ export function demoOptions(search: string): MockOptions {
     theme: theme === 'light' || theme === 'dark' ? theme : 'system',
     clean: clean === 'rough' || clean === 'halt' ? clean : 'smooth',
     interrupted: query.get('interrupted') === '1',
+    game: {
+      state:
+        game === 'idle' || game === 'playing' || game === 'released' || game === 'pending' ? game : 'off',
+      agent: agent === 'missing' || agent === 'stopped' ? agent : 'running',
+      power: power === 'unavailable' || power === 'unsuited' || power === 'battery' ? power : 'available',
+      startup: query.get('startup') === 'disabled' ? 'disabled' : 'enabled',
+    },
   };
 }
+
+// ── Le mode jeu de la démo ─────────────────────────────────────────────────
+
+/** Les apps que le cœur propose d'office : `on` est leur état d'origine. */
+const BUILT_IN_APPS: ReadonlyArray<{ exe: string; label: string; on: boolean }> = [
+  { exe: 'onedrive.exe', label: 'OneDrive', on: true },
+  { exe: 'dropbox.exe', label: 'Dropbox', on: true },
+  { exe: 'googledrivefs.exe', label: 'Google Drive', on: true },
+  { exe: 'chrome.exe', label: 'Google Chrome', on: false },
+  { exe: 'msedge.exe', label: 'Microsoft Edge', on: false },
+  { exe: 'firefox.exe', label: 'Firefox', on: false },
+  { exe: 'brave.exe', label: 'Brave', on: false },
+  { exe: 'opera.exe', label: 'Opera', on: false },
+  { exe: 'vivaldi.exe', label: 'Vivaldi', on: false },
+];
+
+/** Les apps qui tournent dans la démo. */
+const RUNNING_APPS: ReadonlySet<string> = new Set(['onedrive.exe', 'chrome.exe']);
+
+/** Ce que le sélecteur propose : quatre apps fictives, dont un lanceur que le cœur refuse comme jeu. */
+const OPEN_APPS: readonly OpenApp[] = [
+  { id: 1, name: 'Roblox', path: 'C:\\Users\\Léa\\AppData\\Local\\Roblox\\Versions\\version-1a2b3c4d\\RobloxPlayerBeta.exe' },
+  { id: 2, name: 'Notepad++', path: 'C:\\Program Files\\Notepad++\\notepad++.exe' },
+  { id: 3, name: 'VLC media player', path: 'C:\\Program Files\\VideoLAN\\VLC\\vlc.exe' },
+  { id: 4, name: 'Battle.net', path: 'C:\\Program Files (x86)\\Battle.net\\Battle.net.exe' },
+];
+
+/** Les programmes que le cœur ne laisse jamais ajouter comme jeu. */
+const NEVER_GAMES: ReadonlySet<string> = new Set(['vlc.exe', 'battle.net.exe']);
+
+const HOLLOW_PEAKS = 'D:\\SteamLibrary\\steamapps\\common\\Hollow Peaks\\hp.exe';
+const MINECRAFT = 'C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.9.9-hotspot\\bin\\javaw.exe';
+
+const fileName = (path: string): string => path.slice(path.lastIndexOf('\\') + 1).toLowerCase();
+const samePath = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase();
+const gameRefused = (reason: GameRefusal): Promise<never> => Promise.reject({ kind: 'gameRefused', reason });
 
 const JUNK: JunkReport = {
   bytes: 3.7 * GB,
@@ -220,6 +289,7 @@ function endOf(run: Cleaning): number {
 }
 
 export function mockBackend(options: MockOptions): Backend {
+  const demo = options.game;
   let settings: Settings = {
     version: 1,
     launchWithWindows: true,
@@ -227,7 +297,6 @@ export function mockBackend(options: MockOptions): Backend {
     theme: options.theme,
     autoScan: 'weekly',
     notifyFromGb: 5,
-    gameModeOnLaunch: true,
     shaderCacheLimitGb: 5,
     recycleBinAlert: true,
     recycleBinThresholdGb: 5,
@@ -236,6 +305,13 @@ export function mockBackend(options: MockOptions): Backend {
     useRecycleBin: true,
     excludedFolders:
       options.issue === 'unreadable' ? [] : ['C:\\Users\\Léa\\Documents\\Projets', 'D:\\Sauvegardes'],
+    gameModeAuto: demo.state !== 'off',
+    gameModePower: true,
+    gameModeQuietApps: true,
+    gameModeQuietAdded: ['qbittorrent.exe'],
+    gameModeQuietRemoved: [],
+    gameModeGames: [MINECRAFT],
+    gameModeNotGames: [],
   };
   let issue: LoadIssue | null =
     options.issue === 'unreadable'
@@ -308,6 +384,150 @@ export function mockBackend(options: MockOptions): Backend {
     scanBlocked: blocked(),
     interruptedClean: interrupted,
   });
+
+
+  // ── Le mode jeu simulé ───────────────────────────────────────────────────
+  // Les réglages vivent dans `settings`, comme dans le cœur ; l'agent est
+  // joué par `session`, `last` et `seen`.
+
+  const startedAt = Date.now();
+  const MINUTE = 60_000;
+  /** Les jeux reconnus par bibliothèque déjà joués, le plus récent d'abord. */
+  let seen: Array<{ path: string; name: string; lastPlayed: number }> = [
+    { path: HOLLOW_PEAKS, name: 'Hollow Peaks', lastPlayed: demo.state === 'off' || demo.state === 'idle' ? startedAt - 130 * MINUTE : startedAt - 38 * MINUTE },
+  ];
+  /** Les noms que la démo connaît pour les chemins que la personne a ajoutés. */
+  const names = new Map<string, string>([
+    [MINECRAFT.toLowerCase(), 'Minecraft'],
+    [HOLLOW_PEAKS.toLowerCase(), 'Hollow Peaks'],
+  ]);
+  const labels = new Map<string, string>([['qbittorrent.exe', 'qBittorrent']]);
+  let last: LastGame | null = {
+    name: 'Hollow Peaks',
+    // Deux heures dix de jeu, finies il y a deux heures dix.
+    started: startedAt - 260 * MINUTE,
+    ended: startedAt - 130 * MINUTE,
+    powerRestored: true,
+    appsRestored: 2,
+    complete: true,
+  };
+  let session: { path: string; name: string; since: number; released: boolean; restorePending: boolean } | null =
+    demo.state === 'playing' || demo.state === 'released' || demo.state === 'pending'
+      ? {
+          path: HOLLOW_PEAKS,
+          name: 'Hollow Peaks',
+          since: startedAt - 38 * MINUTE,
+          released: demo.state === 'released',
+          restorePending: demo.state === 'pending',
+        }
+      : null;
+  /** La dernière liste d'apps ouvertes rendue : les `id` ne valent que pour elle. */
+  let offered: readonly OpenApp[] = [];
+
+  const gameApps = (): QuietApp[] => [
+    ...BUILT_IN_APPS.map(
+      (app): QuietApp => ({
+        exe: app.exe,
+        label: app.label,
+        on: settings.gameModeQuietAdded.includes(app.exe) || (app.on && !settings.gameModeQuietRemoved.includes(app.exe)),
+        running: RUNNING_APPS.has(app.exe),
+        builtIn: true,
+      }),
+    ),
+    ...settings.gameModeQuietAdded
+      .filter((exe) => !BUILT_IN_APPS.some((app) => app.exe === exe))
+      .map((exe): QuietApp => ({ exe, label: labels.get(exe) ?? exe, on: true, running: RUNNING_APPS.has(exe), builtIn: false })),
+  ];
+
+  const powerSupport = (): GameView['powerSupport'] =>
+    demo.power === 'unavailable' || demo.power === 'unsuited' ? demo.power : 'available';
+
+  /** Ce que l'agent a fait de l'alimentation pour la partie en cours. */
+  function powerOutcome(): PowerOutcome {
+    if (!settings.gameModePower) {
+      return 'off';
+    }
+    if (demo.power === 'unavailable' || demo.power === 'unsuited') {
+      return demo.power;
+    }
+    return demo.power === 'battery' ? 'onBattery' : 'applied';
+  }
+
+  const quietedCount = (): number =>
+    settings.gameModeQuietApps ? gameApps().filter((app) => app.on && app.running).length : 0;
+
+  function gameSession(): GameSession | null {
+    if (session === null) {
+      return null;
+    }
+    const released = session.released;
+    return {
+      name: session.name,
+      path: session.path,
+      since: session.since,
+      source: settings.gameModeGames.some((path) => samePath(path, session?.path ?? '')) ? 'added' : 'library',
+      power: released ? 'off' : powerOutcome(),
+      quietedApps: released ? 0 : quietedCount(),
+      released,
+      restorePending: session.restorePending,
+    };
+  }
+
+  /** Les jeux connus : ajoutés d'abord, puis vus, sans ceux que la personne a écartés. */
+  function gameList(): KnownGame[] {
+    const added = settings.gameModeGames.map(
+      (path): KnownGame => ({ path, name: names.get(path.toLowerCase()) ?? fileName(path), source: 'added', lastPlayed: null }),
+    );
+    const known = seen
+      .filter((entry) => ![...settings.gameModeGames, ...settings.gameModeNotGames].some((path) => samePath(path, entry.path)))
+      .map((entry): KnownGame => ({ path: entry.path, name: entry.name, source: 'library', lastPlayed: entry.lastPlayed }));
+    return [...added, ...known];
+  }
+
+  function gameView(): GameView {
+    const auto = settings.gameModeAuto;
+    return {
+      auto,
+      power: settings.gameModePower,
+      quietApps: settings.gameModeQuietApps,
+      agent: demo.agent === 'running' ? (auto || session !== null ? 'running' : 'stopped') : demo.agent,
+      startupDisabled: demo.startup === 'disabled',
+      session: gameSession(),
+      last,
+      powerSupport: powerSupport(),
+      onBattery: demo.power === 'battery',
+      apps: gameApps(),
+      games: gameList(),
+      notGames: settings.gameModeNotGames.map((path) => ({ path, name: names.get(path.toLowerCase()) ?? fileName(path) })),
+    };
+  }
+
+  /** Fin de partie : tout est remis en place, le bilan est noté. */
+  function endSession(): void {
+    if (session === null) {
+      return;
+    }
+    const outcome = powerOutcome();
+    last = {
+      name: session.name,
+      started: session.since,
+      ended: Date.now(),
+      powerRestored: outcome === 'applied' && !session.released ? true : null,
+      appsRestored: session.released ? 0 : quietedCount(),
+      complete: true,
+    };
+    const known = seen.filter((entry) => !samePath(entry.path, session?.path ?? ''));
+    seen = [{ path: session.path, name: session.name, lastPlayed: Date.now() }, ...known];
+    session = null;
+  }
+
+  /** Les chemins que le cœur connaît : c'est tout ce qu'`set_game_status` accepte. */
+  const knownGamePath = (path: string): string | undefined =>
+    [...settings.gameModeGames, ...settings.gameModeNotGames, ...seen.map((entry) => entry.path), ...(session === null ? [] : [session.path])].find(
+      (known) => samePath(known, path),
+    );
+
+  const without = (list: readonly string[], path: string): string[] => list.filter((other) => !samePath(other, path));
 
   const groups = () => (duplicatesGone ? [] : duplicateGroups(Date.now()));
   const duplicateBytes = () => groups().reduce((total, group) => total + group.reclaimable, 0);
@@ -711,6 +931,121 @@ export function mockBackend(options: MockOptions): Backend {
       started = null;
       return structuredClone(settings);
     },
+    gameView: async () => gameView(),
+    setGameOption: async (option: GameOption, on) => {
+      switch (option) {
+        case 'auto':
+          settings = { ...settings, gameModeAuto: on };
+          if (!on) {
+            // L'agent voit le réglage éteint : la partie se termine, tout est remis.
+            endSession();
+          }
+          break;
+        case 'power':
+          settings = { ...settings, gameModePower: on };
+          break;
+        case 'quietApps':
+          settings = { ...settings, gameModeQuietApps: on };
+          break;
+      }
+      return gameView();
+    },
+    setQuietApp: async (exe, on) => {
+      const known = gameApps().find((app) => app.exe === exe);
+      if (known === undefined) {
+        return gameRefused('unknownApp');
+      }
+      const added = settings.gameModeQuietAdded;
+      if (on) {
+        // Cochée d'office : on la retire des refusées ; sinon on l'ajoute aux choisies.
+        const builtIn = BUILT_IN_APPS.find((app) => app.exe === exe);
+        settings =
+          builtIn?.on === true
+            ? { ...settings, gameModeQuietRemoved: settings.gameModeQuietRemoved.filter((other) => other !== exe) }
+            : { ...settings, gameModeQuietAdded: added.includes(exe) ? added : [...added, exe] };
+      } else {
+        const builtIn = BUILT_IN_APPS.find((app) => app.exe === exe);
+        settings = {
+          ...settings,
+          gameModeQuietAdded: added.filter((other) => other !== exe),
+          gameModeQuietRemoved:
+            builtIn?.on === true && !settings.gameModeQuietRemoved.includes(exe)
+              ? [...settings.gameModeQuietRemoved, exe]
+              : settings.gameModeQuietRemoved,
+        };
+      }
+      return gameView();
+    },
+    openApps: async () => {
+      await delay(250);
+      offered = OPEN_APPS;
+      return OPEN_APPS.map((app) => ({ ...app }));
+    },
+    addGame: async (id) => {
+      const app = offered.find((entry) => entry.id === id);
+      if (app === undefined) {
+        return gameRefused('unknownApp');
+      }
+      if (NEVER_GAMES.has(fileName(app.path))) {
+        return gameRefused('notAGame');
+      }
+      names.set(app.path.toLowerCase(), app.name);
+      settings = {
+        ...settings,
+        gameModeGames: [...without(settings.gameModeGames, app.path), app.path],
+        gameModeNotGames: without(settings.gameModeNotGames, app.path),
+      };
+      return gameView();
+    },
+    addQuietApp: async (id) => {
+      const app = offered.find((entry) => entry.id === id);
+      if (app === undefined) {
+        return gameRefused('unknownApp');
+      }
+      const exe = fileName(app.path);
+      if (!gameApps().some((known) => known.exe === exe)) {
+        labels.set(exe, app.name);
+      }
+      const builtIn = BUILT_IN_APPS.find((entry) => entry.exe === exe);
+      if (builtIn?.on === true) {
+        settings = { ...settings, gameModeQuietRemoved: settings.gameModeQuietRemoved.filter((other) => other !== exe) };
+      } else if (!settings.gameModeQuietAdded.includes(exe)) {
+        settings = { ...settings, gameModeQuietAdded: [...settings.gameModeQuietAdded, exe] };
+      }
+      return gameView();
+    },
+    setGameStatus: async (path: string, status: GameStatus) => {
+      const known = knownGamePath(path);
+      if (known === undefined) {
+        return gameRefused('unknownGame');
+      }
+      if (status === 'notGame') {
+        settings = {
+          ...settings,
+          gameModeGames: without(settings.gameModeGames, known),
+          gameModeNotGames: [...without(settings.gameModeNotGames, known), known],
+        };
+        if (session !== null && samePath(session.path, known)) {
+          // Ce n'est plus un jeu : la partie se termine, tout est remis.
+          endSession();
+        }
+      } else {
+        settings = {
+          ...settings,
+          gameModeGames: without(settings.gameModeGames, known),
+          gameModeNotGames: without(settings.gameModeNotGames, known),
+        };
+      }
+      return gameView();
+    },
+    releaseGame: async () => {
+      if (session !== null) {
+        // Tout est remis en place ; la partie continue sans rien appliquer.
+        session = { ...session, released: true, restorePending: false };
+      }
+      return gameView();
+    },
+    openWindowsSettings: async () => {},
     minimizeWindow: async () => {},
     toggleMaximizeWindow: async () => {},
     closeWindow: async () => {},
