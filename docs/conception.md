@@ -591,6 +591,15 @@ du PC ne l'est pas (voir « Limites connues »).
   allumé).
 - **Les jeux hors bibliothèque** (Battle.net, Minecraft, Roblox…) ne sont pas
   reconnus tout seuls : la personne les ajoute depuis la liste des apps ouvertes.
+  Un jeu ajouté est retenu par le chemin exact de son programme : si ce chemin
+  change à chaque mise à jour (Roblox range le sien dans un dossier au nom de la
+  version, comme les anciens jeux du Store sous `WindowsApps`), l'ajout cesse de
+  valoir sans rien dire, et il faut l'ajouter de nouveau.
+- **La bibliothèque déplacée** : seuls les dossiers habituels des boutiques sont
+  reconnus. Un jeu installé dans un dossier que la personne a choisi (`D:\Epic\…`)
+  s'ajoute à la main.
+- **Deux écrans** : seule l'app au premier plan retrouve sa vitesse. Une vidéo
+  regardée sur le second écran dans une app en veilleuse reste ralentie.
 - **Les jeux UWP** passent par `ApplicationFrameHost.exe`, que le veto écarte :
   la fenêtre au premier plan n'est pas celle du jeu.
 - **Un anti-triche** peut refuser d'ouvrir le processus du jeu : Shinku ne le
