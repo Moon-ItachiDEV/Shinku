@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Ce que la fenêtre de Shinku a le droit de demander : ses quatorze commandes, et les gestes de sa barre de titre (déplacer, réduire, agrandir, fermer). Rien d'autre : ni fichiers, ni réseau, ni lancement de programmes.",
+  "description": "Ce que la fenêtre de Shinku a le droit de demander : ses quinze commandes, et les gestes de sa barre de titre (déplacer, réduire, agrandir, fermer). Rien d'autre : ni fichiers, ni réseau, ni lancement de programmes.",
   "local": true,
   "windows": ["main"],
   "permissions": [
@@ -18,6 +18,7 @@
     "allow-clean-preview",
     "allow-start-clean",
     "allow-cancel-clean",
+    "allow-keep-duplicate",
     "allow-junk-details",
     "allow-large-files-page",
     "allow-duplicates-page",

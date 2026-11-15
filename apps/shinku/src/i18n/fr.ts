@@ -195,12 +195,20 @@ export const fr = typeset({
   },
 
   duplicates: {
-    intro: 'Photos, musiques et documents copiés plusieurs fois. Shinku garde toujours l’exemplaire le plus ancien.',
+    intro:
+      'Photos, musiques et documents copiés plusieurs fois. Tu choisis l’exemplaire à garder ; sans choix, c’est le plus ancien.',
     scanTitle: 'Comparaison des fichiers',
     scanText: 'Les fichiers de même taille sont comparés par leur contenu.',
     found: (groups: number) =>
       groups === 0 ? 'Aucun doublon' : `${countOf(groups, 'groupe de doublons', 'groupes de doublons')}`,
-    hint: 'Dans chaque groupe, l’exemplaire le plus ancien est conservé.',
+    hint: 'Dans chaque groupe, un seul exemplaire reste : le plus ancien, ou celui que tu choisis en cliquant sur sa ligne. Une nouvelle analyse repart du plus ancien.',
+    hintFixed: 'Dans chaque groupe, un seul exemplaire reste.',
+    folders: 'Garder tout un dossier',
+    folderGroups: (groups: number) => `Présent dans ${countOf(groups, 'groupe', 'groupes')}`,
+    foldersPartial: 'Garder un dossier vaut aussi pour les groupes pas encore affichés.',
+    keepFolder: 'Garder ce dossier',
+    folderKept: 'Dossier gardé',
+    keepThis: 'Garder celui-ci',
     hintNone: 'Tes bibliothèques ne contiennent pas de fichier en double.',
     pendingTitle: 'Recherche des doublons',
     pendingText: (done: number) => `Les fichiers qui se ressemblent sont en cours de lecture : ${done}${NBSP}%.`,
@@ -352,6 +360,7 @@ export const fr = typeset({
 
   toast: {
     foldersChanged: 'Liste mise à jour. Les résultats précédents ont été effacés.',
+    keepRefused: 'Ce choix n’a pas pu être noté : relance une analyse.',
     settingsNotSaved: 'Les réglages n’ont pas pu être enregistrés. Rien n’a changé.',
     scanNotStarted: 'L’analyse n’a pas pu démarrer.',
     scanFailed: 'L’analyse s’est arrêtée sur une erreur.',

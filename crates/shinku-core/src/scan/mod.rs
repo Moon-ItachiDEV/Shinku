@@ -231,6 +231,15 @@ impl Control {
         self.latest.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
+    /// Remplace le rapport publié par une version revue (l'exemplaire à
+    /// garder d'un doublon). Faux si `revise` ne rend rien : rien ne change.
+    pub(crate) fn revise(&self, revise: impl FnOnce(&Report) -> Option<Report>) -> bool {
+        let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(revised) = latest.as_deref().and_then(revise) else { return false };
+        *latest = Some(Arc::new(revised));
+        true
+    }
+
     fn publish(&self, report: Option<Arc<Report>>) {
         *self.latest.lock().unwrap_or_else(PoisonError::into_inner) = report;
     }

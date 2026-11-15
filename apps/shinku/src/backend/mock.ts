@@ -33,6 +33,8 @@ import type {
   Theme,
 } from './types.ts';
 
+import { keepIn } from '../model/duplicates.ts';
+
 const GB = 1024 ** 3;
 const MB = 1024 ** 2;
 const DAY = 24 * 3600 * 1000;
@@ -136,9 +138,11 @@ function largeFiles(now: number): LargeFile[] {
 
 function duplicateGroups(now: number): DuplicateGroup[] {
   const user = 'C:\\Users\\Léa';
+  let rank = 0;
   const group = (name: string, size: number, folders: string[], synced: boolean[] = []): DuplicateGroup => ({
     size,
-    digest: 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262',
+    // Une empreinte par groupe, comme dans le cœur.
+    digest: `${(rank++).toString(16).padStart(2, '0')}1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262`,
     reclaimable: size * (folders.length - 1),
     files: folders.map((folder, index) => ({
       path: `${user}\\${folder}\\${name}`,
@@ -309,7 +313,9 @@ export function mockBackend(options: MockOptions): Backend {
     interruptedClean: interrupted,
   });
 
-  const groups = () => (duplicatesGone ? [] : duplicateGroups(Date.now()));
+  // Les doublons de l'analyse en cours, avec les exemplaires que la personne a choisi de garder.
+  let found: DuplicateGroup[] | null = null;
+  const groups = (): DuplicateGroup[] => (duplicatesGone ? [] : (found ??= duplicateGroups(Date.now())));
   const duplicateBytes = () => groups().reduce((total, group) => total + group.reclaimable, 0);
   const duplicateCopies = () => groups().reduce((total, group) => total + group.files.length - 1, 0);
 
@@ -552,6 +558,7 @@ export function mockBackend(options: MockOptions): Backend {
       }
       cleaning = null;
       interrupted = null;
+      found = null;
       started = Date.now();
       return view();
     },
@@ -621,7 +628,9 @@ export function mockBackend(options: MockOptions): Backend {
         }
       }
       const leftOpen = junkGone ? [] : openApps();
-      const kept = groups().find((group) => group.files.length > 2)?.files[0];
+      const kept = groups()
+        .find((group) => group.files.length > 2)
+        ?.files.find((file) => file.keep);
       cleaning = {
         request,
         began: Date.now(),
@@ -686,6 +695,16 @@ export function mockBackend(options: MockOptions): Backend {
         offset: Math.min(offset, all.length),
         groups: all.slice(offset, offset + limit),
       };
+    },
+    keepDuplicate: async (choice) => {
+      const known = groups();
+      const group = known.find((other) => other.digest === choice.digest && other.size === choice.size);
+      const current = view();
+      if (current.state !== 'results' || current.stale || group === undefined || choice.index >= group.files.length) {
+        return false;
+      }
+      found = keepIn(known, choice);
+      return true;
     },
     setTheme: async (theme) => {
       settings = { ...settings, theme };
