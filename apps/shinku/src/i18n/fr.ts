@@ -376,6 +376,7 @@ export const fr = typeset({
     // `since` : « 14:32 », « hier, 23:40 » ou « le 14 nov., 23:40 » (voir formatSince).
     textPlaying: (since: string) => `Mode jeu actif depuis ${since}. Tout revient en place quand tu quittes le jeu.`,
     textReleased: 'Remis en place pour cette partie. Le mode jeu reprendra à la prochaine.',
+    textLeaving: 'Shinku remet tout en place…',
     textPending: 'Shinku n’a pas encore pu tout remettre en place. Il réessaie tout seul.',
     release: 'Tout remettre maintenant',
     notAGame: 'Ce n’est pas un jeu',

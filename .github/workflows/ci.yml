@@ -155,8 +155,9 @@ jobs:
 
       # Compile l'interface, puis l'agent du mode jeu (beforeBuildCommand, dans
       # target/release), puis shinku.exe en version finale, puis l'installeur
-      # NSIS, qui embarque l'agent par son crochet (installer-hooks.nsh). Non
-      # signé : la signature vient avant la version publique.
+      # NSIS, qui embarque l'agent par ses crochets (installer-hooks.nsh, puis
+      # installeur/agent.nsh). Non signé : la signature vient avant la version
+      # publique.
       - name: Installeur
         working-directory: apps/shinku
         run: npm run tauri build
@@ -207,6 +208,25 @@ jobs:
         if: always()
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Nettoyer
+
+      # Les crochets de l'installeur, avec un agent qui tourne : l'installeur
+      # tout juste fabriqué est relancé par-dessus l'installation (mise à jour),
+      # puis Shinku est désinstallé. Dans les deux cas, plus aucun agent ne doit
+      # rester, la valeur de démarrage doit suivre (rester à la mise à jour,
+      # partir à la désinstallation) et le dossier d'installation disparaître.
+      # Shinku n'est plus installé ensuite : les étapes qui suivent n'en ont pas
+      # besoin (elles publient des fichiers). L'installeur n'est publié que si
+      # tout a réussi.
+      - name: Essai de la mise à jour et de la désinstallation
+        working-directory: apps/shinku
+        run: |
+          $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis" -Filter *-setup.exe | Select-Object -First 1
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-installeur-agent.ps1 -Installeur $setup.FullName
+
+      - name: Remettre la machine d'essai en place (installeur)
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-installeur-agent.ps1 -Restaurer
 
       - name: Publier les captures de la fenêtre
         if: always()

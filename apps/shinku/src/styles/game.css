@@ -82,6 +82,15 @@
 }
 
 /*
+ * La seconde ligne d'une rangée : en sombre, sur le fond éclairé des cartes,
+ * le gris le plus doux tombait sous 4:1 (mesuré). Elle prend le gris du texte
+ * courant, comme sur la page Démarrage.
+ */
+.game .row .t2 {
+  color: var(--text-2);
+}
+
+/*
  * Une app ajoutée par la personne n'a pas de case (elle se retire par sa
  * croix) : son nom garde la place de la case (18 px) et de l'écart (14 px),
  * pour rester aligné sur les noms des lignes à case.

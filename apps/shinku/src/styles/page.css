@@ -42,6 +42,11 @@
   font-size: 24px;
 }
 
+/* Le titre reçoit le focus quand ce qui l'avait disparaît (pour que le clavier ne reparte pas du haut) : ce n'est pas un contrôle, pas d'anneau. */
+.phead h1:focus {
+  outline: none;
+}
+
 .ptext {
   max-width: 620px;
   margin: 8px 0 0;

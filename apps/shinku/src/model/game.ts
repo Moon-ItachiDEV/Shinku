@@ -27,6 +27,9 @@ export const GAME_POLL_DELAY = 2000;
  */
 export const RELEASE_GRACE = 6000;
 
+/** Un geste resté sans réponse ce temps-là est abandonné : son bouton se libère et le sondage reprend, en millisecondes. */
+export const GESTURE_TIMEOUT = 10_000;
+
 /** Les échecs de suite de `game_view` après lesquels la page le dit, au lieu de « Chargement… ». */
 export const VIEW_FAILURES = 3;
 
@@ -195,6 +198,36 @@ export function withReleased(view: GameView, released: boolean): GameView {
   return view.session === null ? view : { ...view, session: { ...view.session, released } };
 }
 
+/** « Ce n'est pas un jeu » sur la partie en cours : l'en-tête attend au plus ce temps que l'agent la termine, en millisecondes. */
+export const LEAVE_GRACE = 15_000;
+
+/** La partie dont « Ce n'est pas un jeu » est parti, et jusqu'à quand l'en-tête l'attend. */
+export interface Leaving {
+  path: string;
+  until: number;
+}
+
+/**
+ * L'en-tête attend-il que l'agent termine la partie ? Seulement tant que la
+ * partie est vraiment en cours : pas pendant une remise en place en attente
+ * (l'avertissement ne doit jamais être caché), pas si l'agent ne tourne pas
+ * (personne ne la terminera), pas si le cœur n'a pas noté l'ordre (le jeu n'est
+ * pas dans `notGames`), et pas au-delà du délai. `sent` : la réponse du cœur est
+ * arrivée ; avant elle, `notGames` ne peut pas encore le dire.
+ */
+export function isLeaving(view: GameView, leaving: Leaving | null, now: number, sent: boolean): boolean {
+  const session = view.session;
+  return (
+    leaving !== null &&
+    now < leaving.until &&
+    session !== null &&
+    session.path === leaving.path &&
+    !session.restorePending &&
+    view.agent === 'running' &&
+    (!sent || view.notGames.some((entry) => entry.path === leaving.path))
+  );
+}
+
 /** La partie dont « Tout remettre maintenant » est parti, et jusqu'à quand la page la tient pour remise en place. */
 export interface Releasing {
   path: string;
@@ -242,6 +275,7 @@ export const busyKey = {
 /** Ce qui identifie un bouton où le focus peut être rendu (`data-fk` dans la page). */
 export const focusKey = {
   headerNotGame: 'header-notgame',
+  title: 'title',
   addGame: 'add-game',
   addApp: 'add-app',
   game: (path: string): string => `game:${path}`,

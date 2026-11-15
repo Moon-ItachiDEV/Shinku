@@ -1311,6 +1311,24 @@ function agentCount() {
 }
 
 /**
+ * Arrête, de force, l'agent du dossier d'installation que l'essai a lancé (celui
+ * qui est à côté de `--programme`), et lui seul : un autre `shinku-agent.exe`
+ * (celui d'une autre session, ou d'une autre installation) n'est pas à l'essai.
+ * Le chemin est comparé sans tenir compte de la casse, comme Windows.
+ */
+function stopOwnAgent() {
+  const own = path.join(path.dirname(path.resolve(options.programme)), 'shinku-agent.exe');
+  const script =
+    "Get-Process -Name 'shinku-agent' -ErrorAction SilentlyContinue | " +
+    'Where-Object { $_.Path -and ($_.Path -ieq $env:SHINKU_ESSAI_AGENT) } | ' +
+    'Stop-Process -Force -ErrorAction SilentlyContinue';
+  spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    stdio: 'ignore',
+    env: { ...process.env, SHINKU_ESSAI_AGENT: own },
+  });
+}
+
+/**
  * L'interrupteur principal du mode jeu. Éteint au départ : l'allumer lance
  * l'agent, l'éteindre le fait sortir. Allumé au départ (la machine l'avait
  * allumé) : l'essai fait le parcours dans l'autre sens, et le laisse allumé.
@@ -1417,7 +1435,7 @@ async function checkGameMode(window) {
       // La fenêtre a pu se fermer ; l'essai a déjà dit pourquoi il échoue.
     }
     if (!startOn && controlled && agentCount() > 0) {
-      spawnSync('taskkill', ['/F', '/IM', 'shinku-agent.exe'], { stdio: 'ignore' });
+      stopOwnAgent();
     }
   }
   done(startOn ? 'l’état de départ est restauré (mode jeu allumé)' : 'l’état de départ est restauré (mode jeu éteint, plus d’agent)');

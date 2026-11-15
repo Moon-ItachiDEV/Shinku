@@ -1670,13 +1670,10 @@ mod tests {
         file.remember(r"D:\SteamLibrary\steamapps\common\Baz\baz.exe", "Baz", 1_700_000_000_000);
         file.session = Some(GameSession {
             game: GameRef { path: FOO.to_owned(), name: "Foo".to_owned(), source: Source::Added },
-            opened: 5,
-            opened_uptime: None,
             since: 5,
             released: false,
             power: PowerRecord::applied(PowerPlan::BALANCED),
             quieted: Vec::new(),
-            roots: Vec::new(),
             restore_pending: true,
         });
         file.last = Some(Last {
@@ -1816,13 +1813,10 @@ mod tests {
                     name: "Foo".to_owned(),
                     source: Source::Added,
                 },
-                opened: 5,
-                opened_uptime: None,
                 since: 5,
                 released: false,
                 power: PowerRecord::of(PowerOutcome::Custom),
                 quieted: Vec::new(),
-                roots: Vec::new(),
                 restore_pending: false,
             }),
             ..GameFile::default()
@@ -1858,13 +1852,10 @@ mod tests {
                     name: "Foo".to_owned(),
                     source: Source::Added,
                 },
-                opened: 5,
-                opened_uptime: None,
                 since: 5,
                 released: false,
                 power: PowerRecord::of(PowerOutcome::Custom),
                 quieted: Vec::new(),
-                roots: Vec::new(),
                 restore_pending: false,
             }),
             ..GameFile::default()

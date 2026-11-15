@@ -1270,8 +1270,8 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
     },
     addGame: async (id, path) => {
       const app = offered.find((entry) => entry.id === id);
-      // Le chemin n'est que comparé : il doit être celui du numéro, dans la dernière liste du cœur.
-      if (app === undefined || !samePath(app.path, path)) {
+      // Le chemin n'est que comparé, exactement (casse comprise, comme le cœur) : il doit être celui du numéro, dans la dernière liste du cœur.
+      if (app === undefined || app.path !== path) {
         return gameRefused('unknownApp');
       }
       if (NEVER_GAMES.has(fileName(app.path))) {
@@ -1290,7 +1290,7 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
     },
     addQuietApp: async (id, path) => {
       const app = offered.find((entry) => entry.id === id);
-      if (app === undefined || !samePath(app.path, path)) {
+      if (app === undefined || app.path !== path) {
         return gameRefused('unknownApp');
       }
       const exe = fileName(app.path);

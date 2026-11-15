@@ -382,41 +382,111 @@ après un plantage ou une coupure de courant. Un processus n'est remis que s'il
 vit encore (numéro **et** date de création : un numéro se recycle) ; sa priorité
 n'est remise que si elle vaut encore ce que Shinku a posé.
 
-**Les racines et les descendants.** Un processus créé par un processus en
-veilleuse hérite de sa priorité. La session note donc ses *racines* (`roots` :
-numéro, date de création, et `goneMs`, l'instant où la racine a disparu ; 512 au
-plus, la plus ancienne morte part la première) : tout ce qui est en veilleuse
-ou l'a été. À la remise en place, les descendants des racines (né après son
-parent, né après `opened`, et, si la racine est morte, né dans les trente
-secondes qui suivent sa mort : au-delà, c'est un numéro recyclé) trouvés en
-priorité basse y sont remis aussi. Un descendant de la liste, trouvé déjà bas
-parce qu'il a hérité, est noté « normale » comme état d'avant. Un descendant qui
-est le jeu (ou un ancêtre du jeu) n'est jamais ralenti, et est remis « normale »
-à chaque pas s'il l'a été. Cela ne dépend pas du journal des processus en
-veilleuse : un orphelin dont le parent a quitté le journal est toujours remis.
+**Dans le doute, on remet.** C'est la règle qui tranche toute incertitude de
+cette section : relever par erreur un processus (le remettre en priorité
+normale alors que la personne l'avait baissé elle-même) est un défaut bénin ;
+laisser une app en priorité basse, sans que personne le sache, est un défaut
+grave. L'heure murale, qui peut sauter ou reculer, ne décide donc de rien de
+grave.
 
-**Les dates de la session.** `opened` est l'ouverture de la partie : elle ne
-change jamais, et c'est elle qui borne ce qui peut être remis (rien de plus
-ancien, rien d'avant le démarrage de Windows). `since` est le début du jeu
-affiché : un changement de jeu en cours de partie le déplace sans toucher à
-`opened` ni aux racines. Un journal d'avant ces champs se lit avec
-`opened = since`.
+**Les processus nés d'une app en veilleuse.** Un processus créé par un
+processus dont la classe de priorité a été baissée en hérite. La règle est un
+invariant, sans date ni horloge : *seuls les processus du journal restent en
+veilleuse ; tout autre processus trouvé exactement « sous la normale » par
+héritage est relevé dès qu'on le voit.* L'identité d'un processus est le couple
+(numéro, date de création), comparé par égalité seulement : aucune comparaison
+d'ordre, aucune heure murale, aucune horloge monotone dans la filiation.
 
-**L'horloge.** Tous les délais (deux pas pour confirmer un jeu, dix minutes
+- Un **émetteur** est une entrée du journal dont l'état d'avant était
+  strictement au-dessus de « sous la normale » (`priority::lowers`). Une app
+  déjà basse avant Shinku n'émet rien : ses enfants ne sont jamais touchés.
+- La **famille** (en mémoire seulement) : les processus hors journal, ni le jeu
+  ni ancêtre du jeu, vus naître d'un émetteur ou d'un membre. Un processus est
+  *nouveau* s'il est absent du dernier relevé lisible ; un **héritier** est un
+  membre nouveau trouvé exactement « sous la normale ». Les processus déjà là
+  avant la partie, ou déjà bas avant d'être vus, ne sont jamais touchés.
+- À chaque pas où le journal n'est pas vide, avant tout retour anticipé
+  (veilleuse éteinte, partie relâchée, remise en attente), la passe de famille
+  cherche les membres jusqu'au point fixe : l'ensemble de départ réunit les
+  numéros des émetteurs vivants, des membres vivants et des morts de ce pas (un
+  parent mort au pas où son enfant apparaît reste un émetteur) ; un membre qui
+  s'est remis « normale » lui-même laisse passer ses propres enfants, car
+  ceux-ci ont pu hériter à travers lui. La famille est bornée à 2048 membres.
+  Chaque membre est évalué une seule fois (priorité illisible : trois essais).
+  Trouvé sous la normale, il est relevé en « normale » avec le mode efficacité
+  par défaut, en un seul essai ; un héritier qui se rabaisse ensuite lui-même
+  n'est pas poursuivi.
+- Un héritier **listé** et coché passe par le chemin normal du journal, avec
+  « normale » (mode efficacité par défaut) pour état d'avant, qu'il ait hérité
+  ou non du mode efficacité. Si le journal ne peut pas le prendre (veilleuse
+  éteinte, app décochée, journal plein, écriture impossible), il est relevé tout
+  de suite. Un nouveau processus listé dont le parent n'est dans aucun processus
+  du relevé (orphelin : l'intermédiaire a vécu moins d'un pas) est traité de
+  même ; un nouveau processus listé dont le parent est un processus vivant
+  étranger garde l'état lu comme état d'avant. Si le geste de mise en veilleuse
+  échoue, l'entrée ne sort du journal que si l'état lu est celui qu'on avait
+  noté.
+- Le jeu et ses ancêtres ne sont jamais ralentis : un ancêtre absent du journal
+  trouvé bas est relevé, un ancêtre du journal est remis à chaque pas, y compris
+  après un changement de jeu.
+
+**Les morts.** Une entrée du journal absente du relevé n'en sort que si Windows
+prouve que le processus n'existe plus : `liveness` rend `Dead`, `Alive` ou
+`Unknown` (accès refusé, relevé incomplet), et seul `Dead` retire l'entrée.
+Sinon l'entrée garde son état d'avant et la remise la retentera. Un relevé
+illisible (vide, ou sans le jeu alors que son processus n'est pas prouvé mort)
+suspend seulement les morts, la famille, la mise en veilleuse des nouveaux et la
+fin « plus aucun processus du jeu » ; les autres fins (mode automatique éteint,
+« Ce n'est pas un jeu », dix minutes d'arrière-plan, nouveaux essais de remise)
+passent.
+
+**Une seule remise en place** sert à la fin de partie, à « Tout remettre », aux
+nouveaux essais, à la reprise après plantage et à `--quitter` / `--retirer`,
+avec ou sans mémoire. Au plus trois tours : (a) chaque entrée retrouve son état
+d'avant par identité exacte (un processus mort sort, un processus illisible
+reste en attente) ; (b) un relevé frais, puis la passe de famille en mode
+remise, qui relève tout membre entrant trouvé sous la normale, listé ou non ;
+(c) un tour de plus si quelque chose a été relevé. Le journal n'est écrit
+qu'après (b). Sans mémoire (reprise après plantage, ordres sans agent), il n'y a
+pas de filtre « nouveau », les points de départ sont les émetteurs trouvés
+vivants, et tout membre sous la normale est relevé une fois ; une entrée morte
+ne donne rien. Après un redémarrage du PC, aucune identité du journal ne
+correspond : rien n'est touché, sans qu'on ait à détecter le redémarrage.
+
+**Les dates.** `since` est le début du jeu affiché ; il ne sert qu'à
+l'affichage. Les délais (deux pas pour confirmer un jeu, dix minutes
 d'arrière-plan, trente secondes de relevé, soixante secondes avant de réessayer
 une écriture, les deux minutes de l'agent lancé par Windows) se comptent avec
-l'horloge monotone (`GetTickCount64`), jamais avec l'heure murale, qui peut
-sauter. L'heure murale ne sert qu'aux dates écrites et affichées. Au
-démarrage de l'agent, si Windows a démarré *après* `opened` (heure murale moins
-temps écoulé depuis le démarrage), le PC a redémarré : la partie est close, seul
-le mode d'alimentation est remis, aucun processus n'est touché (les numéros ne
-désignent plus les mêmes).
+l'horloge monotone (`GetTickCount64`), jamais avec l'heure murale ; aucun n'entre
+dans la filiation. Un ancien `game.json` reste lisible : les champs `opened`,
+`openedUptime` et `roots` (avec `goneMs`, `goneUptime`) sont ignorés et ne sont
+plus écrits.
+
+**Limites connues.**
+
+- Un programme non listé lancé par un intermédiaire qui a vécu moins de deux
+  secondes, jamais vu, garde la priorité basse héritée.
+- Reprise après plantage : les enfants nés pendant que l'agent était arrêté, de
+  parents déjà morts, ne sont pas retrouvés ; sans mémoire, un assistant qui
+  s'était baissé lui-même peut être relevé.
+- Un héritier qui se rabaisse lui-même après son relèvement n'est pas repris
+  (un essai par identité).
+- L'état d'avant d'un héritier listé est « normale », mode efficacité par défaut,
+  que le mode efficacité soit hérité ou non (non vérifié sous Windows).
+- Après un redémarrage du PC avec le même jeu ouvert, la partie reprise peut
+  afficher une durée fausse (cosmétique).
 
 **Les échecs.** Un processus dont la priorité a changé mais pas le mode
 efficacité est remis tel qu'il était (`SetPriorityClass`), et le cœur relit son
 état avant de le laisser de côté ; si l'état a bougé, l'entrée reste au journal.
-Un journal qui ne s'écrit pas est marqué sale et réécrit au début de chaque pas :
-dès que l'écriture passe, le disque dit la vérité. Les tentatives de remise sont
+Cette marche arrière ne vaut que pour un geste qui *baissait* la priorité : une
+remise dont la deuxième étape échoue garde la priorité rendue et rend l'erreur,
+pour que la suite retente le reste. Le journal n'est écrit que si son contenu
+change. Un journal qui ne s'écrit pas est marqué sale et réécrit au début de
+chaque pas : dès que l'écriture passe, le disque dit la vérité ; un agent qui
+voudrait s'arrêter avec un journal en retard attend jusqu'à cinq pas pour
+l'écrire. Un `settings.json` illisible n'est relu que toutes les 30 secondes (ou
+dès que sa date change). Les tentatives de remise sont
 cumulées sur toute la partie (relâchement compris).
 
 Une session se termine quand plus aucun processus du jeu ne vit, quand le jeu
@@ -438,10 +508,44 @@ de 1 024 signes est écarté.
 le programme qui envoie l'ordre fait lui-même la reprise : il lit le journal et
 remet ce qui y est noté. Pour `--retirer`, si quelque chose résiste, quelques
 essais rapprochés (cinq, à 200 ms) suivent, car après la désinstallation plus
-rien ne le reprendrait. La valeur `Run` est effacée dans tous les cas.
+rien ne le reprendrait. Pour `--retirer`, la valeur `Run` du compte qui envoie
+l'ordre est effacée dans tous les cas, agent ou pas ; celle des autres comptes
+du PC ne l'est pas (voir « Limites connues »).
 
 ### Limites connues
 
+- **Un ordre `--quitter` ou `--retirer` lancé pendant qu'un agent démarre peut
+  ne pas être entendu** : pendant la reprise et la lecture des réglages, le
+  mutex de l'agent existe mais pas encore sa fenêtre. L'ordre n'arrive pas, la
+  reprise sur place tourne alors en même temps que l'agent, et l'agent continue
+  ensuite de tourner. Fenêtre de quelques centaines de millisecondes.
+- **Une désinstallation élevée par un autre compte** que celui de la personne
+  (un compte standard élevé avec les identifiants d'un administrateur) vise le
+  profil de l'administrateur : `--retirer` ne trouve pas le `game.json` de la
+  personne et ne remet rien. La valeur `Run` qui resterait pointe sur un
+  programme absent, donc inerte ; le journal resté est repris au prochain
+  démarrage de l'agent si Shinku est réinstallé.
+- **La valeur `Run` des autres comptes du PC reste** après la désinstallation :
+  l'installation est par machine, mais `--retirer` et le modèle de Tauri
+  n'effacent que la clé `HKCU` du compte qui désinstalle. Elle pointe sur un
+  programme absent, donc ne lance rien ; Windows la montre seulement comme une
+  entrée de démarrage cassée. Le journal que l'agent de ce compte aurait laissé
+  est repris si Shinku est réinstallé.
+- **Les agents des autres sessions Windows ouvertes** (changement rapide
+  d'utilisateur) ne reçoivent pas l'ordre de l'installeur, qui parle à la fenêtre
+  du bureau courant, mais ils verrouillent le fichier : l'installeur les arrête
+  de force, s'il en reste un en marche après la sortie de celui du compte. Leur
+  journal est repris au prochain démarrage de leur agent (`--demarrage` remet
+  d'abord en place la partie restée au journal).
+- **Le module de mise à jour de Tauri ne passe pas par le désinstalleur** : il
+  installe par-dessus, et la valeur `Run` n'est pas touchée. Le crochet sait
+  pourtant garder la valeur `Run` d'un désinstalleur lancé avec `/UPDATE`
+  (`--quitter` au lieu de `--retirer`), mais Tauri ne le lance jamais ainsi : la
+  page de réinstallation saute avant d'ajouter `/UPDATE`. Le choix « désinstaller
+  avant d'installer » de cette page lance l'ancien désinstalleur sans `/UPDATE` : la valeur
+  `Run` est effacée, et le mode jeu ne démarre plus avec Windows tant que la
+  personne n'a pas rouvert Shinku (qui la réécrit si le mode automatique est
+  allumé).
 - **Les jeux hors bibliothèque** (Battle.net, Minecraft, Roblox…) ne sont pas
   reconnus tout seuls : la personne les ajoute depuis la liste des apps ouvertes.
 - **Les jeux UWP** passent par `ApplicationFrameHost.exe`, que le veto écarte :
@@ -805,14 +909,53 @@ personne.
 
 **Son installation.** `shinku-agent.exe` n'est pas le programme principal : Tauri
 ne l'embarque pas tout seul. `tauri.conf.json` le compile avant l'installeur
-(`beforeBuildCommand`), et le crochet `src-tauri/installer-hooks.nsh`
-(`bundle.windows.nsis.installerHooks`) le copie à côté de `shinku.exe`, et fait
-sortir l'ancien agent avant toute copie ou suppression (`--quitter` à
-l'installation, `--retirer` à la désinstallation, puis `taskkill` en dernier
-recours). Le chemin du fichier est bâti à partir de `${__FILEDIR__}`, par un
+(`beforeBuildCommand`), et les crochets de l'installeur le copient à côté de
+`shinku.exe` et font sortir l'ancien agent avant toute copie ou suppression.
+
+Les crochets sont répartis en deux fichiers, parce que NSIS n'accepte qu'une
+définition par macro et qu'un autre fichier de crochets doit pouvoir cohabiter.
+`src-tauri/installer-hooks.nsh` (`bundle.windows.nsis.installerHooks`) ne garde
+que l'inclusion et quatre macros `NSIS_HOOK_*` d'une ligne. Tout le reste est
+dans `src-tauri/installeur/agent.nsh`, qui ne dépend que de `LogicLib.nsh` et
+définit `ShinkuAgentPreInstall`, `ShinkuAgentPostInstall`,
+`ShinkuAgentPreUninstall` et `ShinkuAgentPostUninstall` (les macros internes
+portent aussi le préfixe `ShinkuAgent`). Ces fichiers restent en ASCII : un
+accent y serait mal lu selon la page de code.
+
+Ce que font les crochets :
+
+- **La sortie de l'agent** (`ShinkuAgentLeave`) lance l'agent installé avec
+  l'ordre voulu et lit son code de sortie. Code 0 : il a tout remis en place et
+  il est parti. Autre code (il n'est pas sorti en dix secondes, ou n'a pas pu
+  démarrer) : `taskkill /F /IM shinku-agent.exe`, puis le même ordre une
+  seconde fois ; plus aucun agent ne répond, c'est alors cette commande qui
+  reprend le journal, remet l'alimentation et les apps en place, et pour
+  `--retirer` efface la valeur `Run`. `taskkill` n'est donc un dernier recours
+  que pour l'agent du compte. Même après une sortie réussie, un `tasklist`
+  cherche un `shinku-agent.exe` encore en marche (ceux des autres sessions, voir
+  « Limites connues ») et l'arrête de force.
+- **À l'installation**, la sortie a lieu deux fois : avant toute copie, et juste
+  avant de déposer le nouveau fichier. Tauri ne ferme `shinku.exe` qu'entre les
+  deux, et tant que la fenêtre vit, elle relance l'agent qu'on vient de faire
+  sortir (page Mode jeu ouverte, mode allumé) : l'ancien agent verrouillerait
+  alors le fichier. Une fois la fenêtre fermée, rien ne le relance plus.
+- **À la désinstallation**, `--retirer` si c'est une vraie désinstallation,
+  `--quitter` si la variable `$UpdateMode` de Tauri vaut 1 (désinstalleur lancé
+  avec `/UPDATE`, ce que Tauri ne fait pas aujourd'hui : la branche est sans
+  danger et juste si cela change). Le fichier de
+  l'agent est supprimé tout de suite : Tauri retire le dossier d'installation
+  avant le crochet suivant, et un dossier qui contient encore l'agent ne se
+  retire pas. Une fois `shinku.exe` fermé par Tauri (il a pu relancer l'agent
+  entre les deux crochets), le crochet suivant fait sortir une dernière fois
+  l'agent s'il reste un fichier. Sans `/REBOOTOK` : une suppression remise au redémarrage effacerait
+  l'agent d'une réinstallation faite entre-temps.
+
+Le chemin du fichier compilé est bâti à partir de `${__FILEDIR__}`, par un
 `!define` hors de toute macro : NSIS résout sinon les chemins relatifs par
 rapport au script généré, et relirait `${__FILEDIR__}` à l'endroit où la macro
-est insérée, pas où le fichier est écrit.
+est insérée, pas où le fichier est écrit. Comme `${__FILEDIR__}` vaut le dossier
+du fichier où il est écrit, c'est depuis `installeur/` qu'il remonte de quatre
+dossiers jusqu'à `target/release`.
 
 ## L'installeur
 
@@ -874,13 +1017,85 @@ machine, dont celui de l'essai : l'agent croirait la partie encore en cours.
 Quand le faux jeu a le premier plan, l'essai exige une session au journal, le
 ping en priorité basse et, si le mode « Performances élevées » existe sur la
 machine, l'alimentation dedans. Il ferme le jeu, exige un bilan complet, le ping
-et l'alimentation revenus, puis arrête l'agent par `--quitter`. Une étape de la
-CI, exécutée quoi qu'il arrive, remet le mode d'alimentation, les réglages et le
-journal d'origine. Si Windows refuse le premier plan à la fenêtre du faux jeu,
+et l'alimentation revenus, puis arrête l'agent par `--quitter`. Les réglages d'essai retirent aussi les trois apps cochées d'office
+(OneDrive, Dropbox, Google Drive) : seul le ping est touché. Une étape de la CI,
+exécutée quoi qu'il arrive, remet le mode d'alimentation, les réglages et le
+journal d'origine. Si un essai a été interrompu sans cette remise en place, le
+suivant commence par elle ; elle n'arrête que les processus que l'essai a
+lancés (chemin et heure de départ notés, comparés avant d'arrêter quoi que ce
+soit), jamais un agent qu'il n'a pas lancé (s'il en trouve un au départ, il
+s'arrête avec un message), et relance `--quitter` après un arrêt forcé pour
+que le journal soit repris avant d'être remplacé. Son dossier temporaire est
+effacé à la fin. Si Windows refuse le premier plan à la fenêtre du faux jeu,
 l'essai le dit (« premier plan refusé par la machine d'essai ») et échoue : pas
 de faux succès.
 
-Un troisième essai, `apps/shinku/scripts/essai-demarrage.ps1`, prépare la page
+**Ce que l'essai prouve de l'alimentation, et ce qu'il ne prouve pas.** Avant de
+lancer l'agent, une sonde fait, avec le jeton filtré de l'agent, le même appel
+que lui : `powercfg /setactive` vers « Performances élevées ». Sur un Windows de
+particulier, un compte ordinaire en a le droit. Sur un Windows Server, comme les
+machines de GitHub, `PowerSetActiveScheme` lui est refusé : il faut les droits
+d'administrateur. L'essai affiche le résultat de la sonde, la sortie de
+`powercfg /getsecuritydescriptor ActionSetActive` et `whoami /groups` pris avec
+les droits ordinaires, pour le compte rendu, puis exige de l'agent ce que la
+sonde a montré. Sonde réussie : l'agent dit `applied`, l'alimentation passe en
+« Performances élevées » puis revient. Sonde refusée : l'agent dit `refused`,
+l'alimentation n'a pas bougé, et l'essai continue (veilleuse, fin de partie,
+bilan) en écrivant : « cette machine refuse le changement d'alimentation à un
+compte ordinaire : le passage en Performances élevées n'est pas prouvé ici ».
+Sur les machines de GitHub, le passage effectif n'est donc **pas prouvé** ; il
+l'est seulement par un essai sur un Windows 11 de particulier.
+
+L'essai peut pourtant mettre la machine dans l'état d'un Windows 11. La
+description de sécurité de l'action (`powercfg /getsecuritydescriptor
+ActionSetActive`) donne, sur le Windows Server de GitHub, la seule lecture aux
+comptes ordinaires (`(A;CI;KR;;;BU)`) ; un Windows 11 de particulier les laisse
+changer de mode. Quand la sonde échoue, que l'essai tourne en administrateur et
+que cette entrée est présente une seule fois, il pose la même description avec
+`KRKW` pour `BU` seulement (`powercfg /setsecuritydescriptor`), refait la sonde,
+et, si elle passe, écrit « machine mise dans l'état d'un Windows 11 : un compte
+ordinaire peut changer l'alimentation » puis exige `applied`, le mode
+« Performances élevées » pendant la partie et le retour au mode d'avant. La
+description d'origine est notée dans `etat.json` avant le changement, remise à
+la fin (y compris par `-Restaurer` et après une interruption) et relue : si elle
+n'est pas identique, l'essai échoue. Si la sonde échoue encore, ou si l'essai
+n'a pas les droits, on retombe sur la branche `refused` ci-dessus. Ce que cela
+prouve : l'agent applique le mode quand le droit existe, pas que Windows 11
+donne ce droit (c'est un fait de Windows, pas de Shinku).
+
+Un troisième essai, `apps/shinku/scripts/essai-installeur-agent.ps1`, exerce les
+crochets de l'installeur, que l'installation sur machine vierge ne touche pas
+(pas encore d'agent). Il part de l'installation faite par la CI : réglages
+d'essai avec le mode automatique allumé, valeur `Run\Shinku` posée (c'est
+`shinku.exe` qui l'écrit, pas l'agent), agent lancé avec le jeton filtré. Sur la
+CI, l'installation vient du même installeur : l'essai ajoute d'abord un octet à
+la fin de `shinku-agent.exe` installé, et vérifie que son hachage diffère alors
+de l'agent compilé, pour que le retour du hachage prouve le remplacement (en
+silencieux, un `File` qui échoue est ignoré et l'installeur rend quand même 0).
+Il lance aussi `shinku.exe` avant la mise à jour. Il relance l'installeur tout
+juste fabriqué en `/S` et exige : code 0, `shinku-agent.exe` remplacé (identique
+à l'agent compilé), `shinku.exe` fermé par l'installeur, aucun agent en marche
+(l'ancien est parti, rien ne l'a relancé), valeur `Run` toujours là. Il relance
+alors l'agent et lance `uninstall.exe /S`, le chemin de « Paramètres >
+Applications » : NSIS se recopie dans `%TEMP%\~nsu<n>.tmp\Un.exe` (NSIS 3.13,
+téléchargé par Tauri) et rend la main tout de suite. L'essai attend ce processus,
+borné, puis exige, dans l'ordre où le désinstalleur finit : dossier
+d'installation disparu, clé `HKLM\...\Uninstall\Shinku` disparue, valeur `Run`
+effacée, plus aucun agent. Le code de sortie n'est pas lisible sur ce chemin : un
+crochet qui abandonne se voit à la clé ou au dossier restés là. La remise en
+place ne tourne jamais tant qu'un désinstalleur recopié vit encore. La valeur
+`Run` est aussi effacée par le modèle de Tauri : son absence prouve l'état final,
+pas lequel des deux l'a effacée. Le contrôle « alimentation inchangée » est un
+garde-fou, pas une preuve : aucune partie n'a lieu. Shinku n'est plus installé
+ensuite, ce qui ne gêne rien : l'étape suivante publie l'installeur. Les
+réglages, le journal et la valeur `Run` d'origine sont remis comme pour l'essai
+précédent (`--quitter` d'abord, arrêt forcé ensuite). Il ne couvre pas un agent
+qui refuse de sortir (le `taskkill` puis la reprise du journal), un agent en
+pleine partie, ni la relance de l'agent par la page Mode jeu entre les deux
+crochets (la fenêtre n'est pas pilotée) : ces cas ne sont couverts que par la
+lecture du code.
+
+Un quatrième essai, `apps/shinku/scripts/essai-demarrage.ps1`, prépare la page
 Démarrage avant celui de la fenêtre (`-Preparer`) et la remet en place après,
 quoi qu'il arrive (`-Nettoyer`). Il crée cinq entrées d'essai aux noms
 `Essai Shinku …` : trois valeurs `Run` (dont une avec une commande portée par

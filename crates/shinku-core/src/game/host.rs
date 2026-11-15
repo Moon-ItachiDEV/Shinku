@@ -172,6 +172,18 @@ impl Serialize for PowerPlan {
     }
 }
 
+/// Ce que l'hôte sait dire d'un processus dont on connaît l'identité.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Liveness {
+    /// Il n'existe plus : son numéro n'existe pas, ou sa date de création
+    /// diffère, ou il a un code de sortie.
+    Dead,
+    /// Il existe, c'est bien lui, il tourne.
+    Alive,
+    /// On ne sait pas (accès refusé, autre erreur) : jamais une preuve de mort.
+    Unknown,
+}
+
 /// La machine, vue par le mode jeu. Ne modifie que deux choses : le mode
 /// d'alimentation, et la priorité et le mode efficacité d'un processus.
 pub trait GameHost: Send + Sync + fmt::Debug {
@@ -213,6 +225,11 @@ pub trait GameHost: Send + Sync + fmt::Debug {
 
     /// Le nom du processeur (« AMD Ryzen 9 7950X3D 16-Core Processor »).
     fn processor_name(&self) -> String;
+
+    /// Ce que Windows dit de ce processus, lu avec des droits limités. Seul
+    /// `Dead` prouve qu'il n'existe plus : `inspect` qui rend `None` ne prouve
+    /// rien (un accès refusé donne le même résultat).
+    fn liveness(&self, process: ProcessRef) -> Liveness;
 
     /// Lit l'état d'un processus, sans rien changer. `None` s'il n'existe plus
     /// (ou si son pid a été repris par un autre) ou s'il ne s'ouvre pas.
@@ -274,6 +291,10 @@ impl GameHost for InertHost {
         String::new()
     }
 
+    fn liveness(&self, _process: ProcessRef) -> Liveness {
+        Liveness::Dead
+    }
+
     fn inspect(&self, _process: ProcessRef) -> Option<ProcessState> {
         None
     }
@@ -318,6 +339,8 @@ struct FakeProcess {
     path: String,
     state: ProcessState,
     readable: bool,
+    /// Absent du relevé, mais bien vivant et lisible.
+    hidden: bool,
     writable: bool,
     /// Le mode efficacité refuse de changer, après la priorité (comme sous Wine).
     throttle_broken: bool,
@@ -337,6 +360,8 @@ struct Fake {
     plans: Vec<PowerPlan>,
     processor: String,
     power_refused: bool,
+    /// Le relevé des processus échoue : il rend une liste vide.
+    snapshot_broken: bool,
     /// Nombre de changements d'alimentation encore refusés avant que Windows accepte.
     power_refusals_left: u32,
     /// Nombre de gestes refusés sur un processus (accès refusé).
@@ -388,6 +413,7 @@ impl FakeHost {
                 ],
                 processor: "Intel(R) Core(TM) i7-13700K".to_owned(),
                 power_refused: false,
+                snapshot_broken: false,
                 power_refusals_left: 0,
                 apply_refusals: 0,
                 gestures: Vec::new(),
@@ -473,6 +499,7 @@ impl FakeHost {
                 throttle_state: 0,
             },
             readable: true,
+            hidden: false,
             writable: true,
             throttle_broken: false,
             rollback_broken: false,
@@ -504,6 +531,13 @@ impl FakeHost {
     /// L'état d'un processus qui vit.
     pub fn state_of(&self, process: ProcessRef) -> Option<ProcessState> {
         self.state().processes.iter().find(|p| p.process == process).map(|p| p.state)
+    }
+
+    /// Un processus vivant que le relevé ne montre pas (un relevé incomplet).
+    pub fn hide_from_snapshot(&self, process: ProcessRef, hidden: bool) {
+        if let Some(known) = self.state().processes.iter_mut().find(|p| p.process == process) {
+            known.hidden = hidden;
+        }
     }
 
     /// Un processus qu'on ne peut ni lire ni modifier, comme celui d'un jeu
@@ -555,6 +589,12 @@ impl FakeHost {
     /// puis les accepte à nouveau.
     pub fn refuse_power_changes_for(&self, count: u32) {
         self.state().power_refusals_left = count;
+    }
+
+    /// Le relevé des processus échoue (manque de mémoire…) : il rend une liste
+    /// vide, alors que les processus vivent.
+    pub fn break_snapshot(&self, broken: bool) {
+        self.state().snapshot_broken = broken;
     }
 
     /// Combien de fois un geste sur un processus a été refusé (accès refusé).
@@ -619,10 +659,13 @@ impl GameHost for FakeHost {
     }
 
     fn processes(&self) -> Vec<RunningProcess> {
-        self.state()
-            .processes
+        let fake = self.state();
+        if fake.snapshot_broken {
+            return Vec::new();
+        }
+        fake.processes
             .iter()
-            .filter(|p| p.readable)
+            .filter(|p| p.readable && !p.hidden)
             .map(|p| RunningProcess {
                 process: p.process,
                 parent: p.parent,
@@ -671,6 +714,14 @@ impl GameHost for FakeHost {
 
     fn processor_name(&self) -> String {
         self.state().processor.clone()
+    }
+
+    fn liveness(&self, process: ProcessRef) -> Liveness {
+        match self.state().processes.iter().find(|p| p.process == process) {
+            None => Liveness::Dead,
+            Some(known) if known.readable => Liveness::Alive,
+            Some(_) => Liveness::Unknown,
+        }
     }
 
     fn inspect(&self, process: ProcessRef) -> Option<ProcessState> {

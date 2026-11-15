@@ -9,7 +9,7 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 
 import type { Backend, GameView, OpenApp } from '../src/backend/types.ts';
 import { fr } from '../src/i18n/fr.ts';
-import { GAME_POLL_DELAY, gameWarning, STOPPED_GRACE } from '../src/model/game.ts';
+import { GAME_POLL_DELAY, GESTURE_TIMEOUT, gameWarning, LEAVE_GRACE, STOPPED_GRACE } from '../src/model/game.ts';
 
 // ── Un faux environnement de page ──────────────────────────────────────────
 
@@ -113,15 +113,30 @@ function playing(released = false): GameView {
   });
 }
 
+/** Les clés de focus des lignes des vues d'essai. */
+const KEYS = [`game:${MINECRAFT}`, `game:${HOLLOW_PEAKS}`, `never:${HOLLOW_PEAKS}`, 'quiet:qbittorrent.exe', 'quiet:onedrive.exe'];
+
 /** Laisse passer tout ce qui est en attente de promesses (la page se redessine dans une micro-tâche). */
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 function start() {
   const fake = fakeBackend();
-  const app = new App(fake.backend, { querySelectorAll: () => [] } as unknown as HTMLElement, () => {});
+  // Les boutons où le focus peut aller (`data-fk`) : les faux se contentent de noter qu'on les a focalisés.
+  const focused: string[] = [];
+  const root = {
+    querySelectorAll: () =>
+      ['title', 'add-game', 'add-app', 'header-notgame'].concat(KEYS).map((fk) => ({
+        dataset: { fk },
+        focus: () => focused.push(fk),
+      })),
+  } as unknown as HTMLElement;
+  let drawn = 0;
+  const app = new App(fake.backend, root, () => (drawn += 1));
   const actions = app['actions'];
   return {
     ...fake,
+    focused,
+    draws: () => drawn,
     app,
     actions,
     state: () => app['state'],
@@ -499,4 +514,260 @@ test('retirer une app ajoutée n’affiche rien avant la réponse, et son bouton
   page.of('setQuietApp')[0]?.resolve(gameView({ apps: [] }));
   await flush();
   assert.equal(page.state().game?.apps.length, 0);
+});
+
+// ── Deux gestes qui se croisent ────────────────────────────────────────────
+
+test('deux gestes dont les réponses arrivent dans le désordre : la vue finale est celle du dernier geste parti', async () => {
+  for (const order of [
+    [1, 0],
+    [0, 1],
+  ] as const) {
+    const page = start();
+    await page.open(gameView({ power: true, quietApps: true }));
+    page.actions.setGameOption('power', false);
+    page.actions.setGameOption('quietApps', false);
+    const first = gameView({ power: false, quietApps: true, agent: 'stopped' });
+    const last = gameView({ power: false, quietApps: false, agent: 'running' });
+    const answers = [first, last];
+    for (const index of order) {
+      page.of('setGameOption')[index]?.resolve(answers[index]);
+      await flush();
+    }
+    // Le geste parti en dernier fait foi, quel que soit l'ordre des réponses.
+    assert.equal(page.state().game?.agent, 'running', `ordre ${order.join('-')}`);
+    assert.equal(page.state().game?.quietApps, false);
+    assert.deepEqual(page.state().gameBusy, []);
+    page.actions.navigate('home');
+  }
+});
+
+// ── Un geste sans réponse ──────────────────────────────────────────────────
+
+test('un geste resté sans réponse dix secondes est abandonné : bouton libéré, sondage repris, réponse tardive ignorée', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(MINECRAFT, 'forgotten');
+  assert.deepEqual(page.state().gameBusy, [`status:${MINECRAFT}`]);
+  const asked = page.of('gameView').length;
+  mock.timers.tick(9_000);
+  await flush();
+  assert.equal(page.of('gameView').length, asked, 'avant le délai, le sondage attend toujours');
+  assert.equal(page.state().gameBusy.length, 1);
+
+  mock.timers.tick(1_000);
+  await flush();
+  // Le geste est abandonné : plus occupé, et la page relit tout de suite la vue.
+  assert.deepEqual(page.state().gameBusy, []);
+  assert.equal(page.of('gameView').length, asked + 1);
+  page.of('gameView')[asked]?.resolve(playing());
+  await flush();
+
+  // Sa réponse, arrivée bien plus tard, ne change rien.
+  page.of('setGameStatus')[0]?.resolve(gameView({ auto: false }));
+  await flush();
+  assert.equal(page.state().game?.auto, true);
+  assert.deepEqual(page.state().gameBusy, []);
+  // Le sondage tourne de nouveau, et le bouton peut repartir.
+  await page.poll(playing());
+  page.actions.setGameStatus(MINECRAFT, 'forgotten');
+  assert.equal(page.of('setGameStatus').length, 2);
+});
+
+test('une réponse arrivée avant le délai annule l’abandon', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(MINECRAFT, 'forgotten');
+  page.of('setGameStatus')[0]?.resolve(playing());
+  await flush();
+  const asked = page.of('gameView').length;
+  mock.timers.tick(10_000);
+  await flush();
+  // Seuls les sondages ordinaires (toutes les 2 s) sont partis, pas un rattrapage de plus.
+  assert.ok(page.of('gameView').length - asked <= 1);
+  assert.deepEqual(page.state().gameBusy, []);
+});
+
+// ── « Ce n'est pas un jeu » sur la partie en cours ─────────────────────────
+
+/** La partie en cours, une fois « Ce n'est pas un jeu » enregistré par le cœur (l'agent ne l'a pas encore terminée). */
+const left = (parts: Partial<GameView> = {}): GameView => ({
+  ...playing(),
+  notGames: [{ path: HOLLOW_PEAKS, name: 'Hollow Peaks' }],
+  ...parts,
+});
+
+test('« Ce n’est pas un jeu » : l’en-tête attend, puis le focus va au titre quand la partie a disparu', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+  page.of('setGameStatus')[0]?.resolve(left());
+  await flush();
+  // Le cœur a répondu mais l'agent n'a pas fini : l'en-tête attend toujours, rien ne bouge.
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+  assert.deepEqual(page.focused, []);
+  await page.poll(left());
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+
+  // La partie n'est plus dans la vue : l'attente tombe, le focus va au titre.
+  await page.poll(gameView({ notGames: left().notGames }));
+  assert.equal(page.state().gameLeaving, null);
+  assert.deepEqual(page.focused, ['title']);
+});
+
+test('« Ce n’est pas un jeu » refusé : l’en-tête reprend son état, le message s’affiche, le bouton retrouve le focus', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+  page.of('setGameStatus')[0]?.reject({ kind: 'gameRefused', reason: 'unknownGame' });
+  await flush();
+  assert.equal(page.state().gameLeaving, null);
+  assert.equal(page.state().toast, fr.game.toast.unknownGame);
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('l’attente de l’en-tête tombe quand la remise en place échoue : l’avertissement n’est pas caché', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  page.of('setGameStatus')[0]?.resolve(left());
+  await flush();
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+
+  // L'agent ferme la partie, mais la remise en place échoue : la session reste, en attente.
+  const pending = left();
+  await page.poll({ ...pending, session: { ...pending.session!, restorePending: true } });
+  assert.equal(page.state().gameLeaving, null, 'plus d’attente : la page dit que la remise en place a échoué');
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('l’attente de l’en-tête tombe si l’agent s’arrête', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  page.of('setGameStatus')[0]?.resolve(left());
+  await flush();
+  await page.poll(left({ agent: 'stopped' }));
+  assert.equal(page.state().gameLeaving, null);
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('l’attente de l’en-tête tombe quand le geste est abandonné faute de réponse', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+  mock.timers.tick(GESTURE_TIMEOUT);
+  await flush();
+  assert.equal(page.state().gameLeaving, null);
+  assert.deepEqual(page.state().gameBusy, []);
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('l’attente de l’en-tête tombe au bout du délai, même si le sondage est arrêté, et la page est redessinée', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  page.of('setGameStatus')[0]?.resolve(left());
+  await flush();
+  // Le sondage ne répond plus (fenêtre cachée) : seul le délai peut finir l'attente.
+  environment.hidden = true;
+  const drawn = page.draws();
+  mock.timers.tick(LEAVE_GRACE - 1_000);
+  await flush();
+  assert.equal(page.state().gameLeaving?.path, HOLLOW_PEAKS);
+  mock.timers.tick(1_000);
+  await flush();
+  assert.equal(page.state().gameLeaving, null);
+  assert.ok(page.draws() > drawn, 'la page est redessinée quand le délai est atteint');
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+// ── Le focus quand une ligne disparaît ─────────────────────────────────────
+
+test('« Retirer » un jeu : le focus va à la ligne qui suit, sinon à celle qui précède, sinon au bouton d’ajout', async () => {
+  const page = start();
+  await page.open(gameView());
+  page.actions.setGameStatus(MINECRAFT, 'forgotten');
+  page.of('setGameStatus')[0]?.resolve(gameView({ games: [gameView().games[1]!] }));
+  await flush();
+  assert.deepEqual(page.focused, [`game:${HOLLOW_PEAKS}`]);
+
+  // Dernière ligne : celle d'avant. Seule ligne : le bouton d'ajout.
+  const other = start();
+  await other.open(gameView());
+  other.actions.setGameStatus(HOLLOW_PEAKS, 'notGame');
+  other.of('setGameStatus')[0]?.resolve(gameView());
+  await flush();
+  assert.deepEqual(other.focused, [`game:${MINECRAFT}`]);
+
+  const alone = start();
+  await alone.open(gameView({ games: [gameView().games[0]!] }));
+  alone.actions.setGameStatus(MINECRAFT, 'forgotten');
+  alone.of('setGameStatus')[0]?.resolve(gameView({ games: [] }));
+  await flush();
+  assert.deepEqual(alone.focused, ['add-game']);
+});
+
+test('« Rétablir » : le focus va à la ligne voisine des jeux écartés, sinon au bouton d’ajout', async () => {
+  const page = start();
+  await page.open(gameView({ notGames: [{ path: HOLLOW_PEAKS, name: 'Hollow Peaks' }] }));
+  page.actions.setGameStatus(HOLLOW_PEAKS, 'forgotten');
+  page.of('setGameStatus')[0]?.resolve(gameView());
+  await flush();
+  assert.deepEqual(page.focused, ['add-game']);
+});
+
+test('« Tout remettre maintenant » : le focus va au bouton « Ce n’est pas un jeu » de l’en-tête', async () => {
+  const page = start();
+  await page.open(playing());
+  page.actions.releaseGame();
+  await flush();
+  assert.deepEqual(page.focused, ['header-notgame']);
+});
+
+test('retirer une app ajoutée : le focus va à l’app voisine, sinon au bouton d’ajout', async () => {
+  const page = start();
+  const added = { exe: 'qbittorrent.exe', label: 'qBittorrent', on: true, running: true, builtIn: false };
+  const builtIn = { exe: 'onedrive.exe', label: 'OneDrive', on: true, running: true, builtIn: true };
+  await page.open(gameView({ apps: [builtIn, added] }));
+  page.actions.setQuietApp('qbittorrent.exe', false);
+  page.of('setQuietApp')[0]?.resolve(gameView({ apps: [builtIn] }));
+  await flush();
+  assert.deepEqual(page.focused, ['quiet:onedrive.exe']);
+
+  const alone = start();
+  await alone.open(gameView({ apps: [added] }));
+  alone.actions.setQuietApp('qbittorrent.exe', false);
+  alone.of('setQuietApp')[0]?.resolve(gameView({ apps: [] }));
+  await flush();
+  assert.deepEqual(alone.focused, ['add-app']);
+});
+
+test('deux gestes croisés : la vue est relue dès que le dernier a répondu, sans attendre le sondage', async () => {
+  const page = start();
+  await page.open(gameView({ power: true, quietApps: true }));
+  page.actions.setGameOption('power', false);
+  page.actions.setGameOption('quietApps', false);
+  const asked = page.of('gameView').length;
+  page.of('setGameOption')[1]?.resolve(gameView({ power: true, quietApps: false }));
+  await flush();
+  assert.equal(page.of('gameView').length, asked, 'un geste est encore en vol : pas de relecture');
+  page.of('setGameOption')[0]?.resolve(gameView({ power: false, quietApps: true }));
+  await flush();
+  // Le dernier a répondu : la vue est redemandée tout de suite (le cœur a pu les appliquer dans l'autre ordre).
+  assert.equal(page.of('gameView').length, asked + 1);
+  page.of('gameView')[asked]?.resolve(gameView({ power: false, quietApps: false }));
+  await flush();
+  assert.equal(page.state().game?.power, false);
+  assert.equal(page.state().game?.quietApps, false);
+
+  // Un geste seul n'ajoute pas de relecture.
+  const before = page.of('gameView').length;
+  page.actions.setGameOption('power', true);
+  page.of('setGameOption')[2]?.resolve(gameView({ power: true, quietApps: false }));
+  await flush();
+  assert.equal(page.of('gameView').length, before);
 });
