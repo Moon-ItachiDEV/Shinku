@@ -1,5 +1,10 @@
 {
   "enums": {
+    "agentState": [
+      "running",
+      "stopped",
+      "missing"
+    ],
     "autoScan": [
       "never",
       "weekly",
@@ -10,6 +15,7 @@
       "cleanRefused",
       "cleanRunning",
       "folderRefused",
+      "gameRefused",
       "scanNotStarted",
       "settingsNotSaved",
       "settingsUnchecked"
@@ -45,6 +51,26 @@
       "notAbsolute",
       "notAFolder",
       "notUnicode"
+    ],
+    "gameOption": [
+      "auto",
+      "power",
+      "quietApps"
+    ],
+    "gameRefusal": [
+      "unknownApp",
+      "unknownGame",
+      "notAGame",
+      "protectedApp",
+      "listFull"
+    ],
+    "gameSource": [
+      "added",
+      "library"
+    ],
+    "gameStatus": [
+      "notGame",
+      "forgotten"
     ],
     "junkCategory": [
       "appCaches",
@@ -83,6 +109,21 @@
       "done",
       "cancelled"
     ],
+    "powerOutcome": [
+      "applied",
+      "alreadyFast",
+      "onBattery",
+      "unavailable",
+      "unsuited",
+      "custom",
+      "refused",
+      "off"
+    ],
+    "powerSupport": [
+      "available",
+      "unavailable",
+      "unsuited"
+    ],
     "risk": [
       "A",
       "B",
@@ -117,6 +158,10 @@
       "system",
       "light",
       "dark"
+    ],
+    "windowsPage": [
+      "gameMode",
+      "power"
     ]
   },
   "shapes": {
@@ -195,6 +240,10 @@
       "kind": "string",
       "reason": "string"
     },
+    "error.gameRefused": {
+      "kind": "string",
+      "reason": "string"
+    },
     "error.scanNotStarted": {
       "kind": "string",
       "reason": "string"
@@ -205,6 +254,90 @@
     },
     "error.settingsUnchecked": {
       "kind": "string"
+    },
+    "gameView.idle": {
+      "agent": "string",
+      "apps": [
+        {
+          "builtIn": "boolean",
+          "exe": "string",
+          "label": "string",
+          "on": "boolean",
+          "running": "boolean"
+        }
+      ],
+      "auto": "boolean",
+      "games": [
+        {
+          "lastPlayed": "number",
+          "name": "string",
+          "path": "string",
+          "source": "string"
+        }
+      ],
+      "last": "null",
+      "notGames": [
+        {
+          "name": "string",
+          "path": "string"
+        }
+      ],
+      "onBattery": "boolean",
+      "power": "boolean",
+      "powerSupport": "string",
+      "quietApps": "boolean",
+      "session": "null",
+      "startupDisabled": "boolean"
+    },
+    "gameView.playing": {
+      "agent": "string",
+      "apps": [
+        {
+          "builtIn": "boolean",
+          "exe": "string",
+          "label": "string",
+          "on": "boolean",
+          "running": "boolean"
+        }
+      ],
+      "auto": "boolean",
+      "games": [
+        {
+          "lastPlayed": "number",
+          "name": "string",
+          "path": "string",
+          "source": "string"
+        }
+      ],
+      "last": {
+        "appsRestored": "number",
+        "complete": "boolean",
+        "ended": "number",
+        "name": "string",
+        "powerRestored": "boolean",
+        "started": "number"
+      },
+      "notGames": [
+        {
+          "name": "string",
+          "path": "string"
+        }
+      ],
+      "onBattery": "boolean",
+      "power": "boolean",
+      "powerSupport": "string",
+      "quietApps": "boolean",
+      "session": {
+        "name": "string",
+        "path": "string",
+        "power": "string",
+        "quietedApps": "number",
+        "released": "boolean",
+        "restorePending": "boolean",
+        "since": "number",
+        "source": "string"
+      },
+      "startupDisabled": "boolean"
     },
     "junk": {
       "bytes": "number",
@@ -259,6 +392,13 @@
       "kind": "string",
       "reason": "string"
     },
+    "openApps": [
+      {
+        "id": "number",
+        "name": "string",
+        "path": "string"
+      }
+    ],
     "overview": {
       "interruptedClean": {
         "finishedMs": "null",
@@ -279,7 +419,21 @@
         "excludedFolders": [
           "string"
         ],
-        "gameModeOnLaunch": "boolean",
+        "gameModeAuto": "boolean",
+        "gameModeGames": [
+          "string"
+        ],
+        "gameModeNotGames": [
+          "string"
+        ],
+        "gameModePower": "boolean",
+        "gameModeQuietAdded": [
+          "string"
+        ],
+        "gameModeQuietApps": "boolean",
+        "gameModeQuietRemoved": [
+          "string"
+        ],
         "language": "string",
         "launchWithWindows": "boolean",
         "notifyFromGb": "number",
@@ -434,7 +588,21 @@
       "excludedFolders": [
         "string"
       ],
-      "gameModeOnLaunch": "boolean",
+      "gameModeAuto": "boolean",
+      "gameModeGames": [
+        "string"
+      ],
+      "gameModeNotGames": [
+        "string"
+      ],
+      "gameModePower": "boolean",
+      "gameModeQuietAdded": [
+        "string"
+      ],
+      "gameModeQuietApps": "boolean",
+      "gameModeQuietRemoved": [
+        "string"
+      ],
       "language": "string",
       "launchWithWindows": "boolean",
       "notifyFromGb": "number",

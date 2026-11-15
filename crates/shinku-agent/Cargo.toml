@@ -11,3 +11,7 @@ workspace = true
 
 [dependencies]
 shinku-core.workspace = true
+
+[build-dependencies]
+static_vcruntime = "3"
+tauri-winres = "0.3"

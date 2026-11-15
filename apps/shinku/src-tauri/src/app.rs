@@ -90,6 +90,15 @@ pub fn run() -> ExitCode {
             commands::set_theme,
             commands::add_excluded_folder,
             commands::remove_excluded_folder,
+            commands::game_view,
+            commands::set_game_option,
+            commands::set_quiet_app,
+            commands::open_apps,
+            commands::add_game,
+            commands::add_quiet_app,
+            commands::set_game_status,
+            commands::release_game,
+            commands::open_windows_settings,
         ])
         .setup(|app| {
             // Une erreur rendue ici ferait paniquer Tauri, donc fermerait
@@ -97,6 +106,11 @@ pub fn run() -> ExitCode {
             if let Err(error) = open_window(app.handle()) {
                 could_not_start(&error);
             }
+            // Met l'agent du mode jeu et la valeur `Run` d'accord avec les
+            // réglages. Hors du fil de la fenêtre : lancer un programme et
+            // écrire dans le registre ne doivent jamais retarder son ouverture.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || handle.state::<Backend>().sync_agent());
             Ok(())
         })
         .build(tauri::generate_context!());

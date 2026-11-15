@@ -21,6 +21,15 @@ const COMMANDS: &[&str] = &[
     "set_theme",
     "add_excluded_folder",
     "remove_excluded_folder",
+    "game_view",
+    "set_game_option",
+    "set_quiet_app",
+    "open_apps",
+    "add_game",
+    "add_quiet_app",
+    "set_game_status",
+    "release_game",
+    "open_windows_settings",
 ];
 
 /// Le manifeste de `shinku.exe` : ce que le programme déclare à Windows.

@@ -12,6 +12,10 @@
 //! Si le fichier entier est illisible, on le dit ([`LoadIssue`]) : c'est à
 //! l'interface de prévenir que les réglages sont revenus à leurs valeurs par
 //! défaut.
+//!
+//! Ce fichier est lu par deux programmes : la fenêtre, qui l'écrit, et l'agent
+//! du mode jeu, qui le relit quand sa date change. N'importe quel programme du
+//! compte peut aussi l'écrire : tout ce qui vient de lui est donc contrôlé.
 
 use std::fs;
 use std::io::{self, Write};
@@ -39,6 +43,12 @@ pub const THRESHOLDS_GB: [u32; 4] = [2, 5, 10, 20];
 pub const SHADER_CACHE_LIMITS_GB: [u32; 2] = [5, 10];
 /// Délais proposés pour le vidage automatique de la corbeille, en jours.
 pub const AUTO_EMPTY_DAYS: [u32; 3] = [30, 60, 90];
+/// Nombre maximal de noms d'exécutables dans une liste du mode jeu.
+pub const MAX_EXE_NAMES: usize = 64;
+/// Longueur maximale d'un nom d'exécutable, en caractères.
+pub const MAX_EXE_NAME_LEN: usize = 64;
+/// Nombre maximal de chemins dans une liste du mode jeu.
+pub const MAX_GAME_PATHS: usize = 256;
 
 /// Langue de l'interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,8 +105,23 @@ pub struct Settings {
     pub auto_scan: AutoScan,
     /// Prévenir quand un grand vide peut libérer au moins cet espace, en Go.
     pub notify_from_gb: u32,
-    /// Proposer le mode jeu au lancement d'un jeu.
-    pub game_mode_on_launch: bool,
+    /// Mode jeu automatique : quand un jeu passe au premier plan, l'agent de
+    /// Shinku applique les réglages ci-dessous, puis remet tout en place.
+    pub game_mode_auto: bool,
+    /// Pendant la partie, passer l'alimentation en « Performances élevées ».
+    pub game_mode_power: bool,
+    /// Pendant la partie, mettre des apps d'arrière-plan en veilleuse.
+    pub game_mode_quiet_apps: bool,
+    /// Apps cochées par la personne, en plus de celles qui le sont d'office
+    /// (noms d'exécutables, en minuscules).
+    pub game_mode_quiet_added: Vec<String>,
+    /// Apps cochées d'office que la personne a décochées (noms d'exécutables,
+    /// en minuscules).
+    pub game_mode_quiet_removed: Vec<String>,
+    /// Jeux ajoutés par la personne (chemins d'exécutables).
+    pub game_mode_games: Vec<PathBuf>,
+    /// « Ce n'est pas un jeu » : exécutables que Shinku ne traite jamais comme des jeux.
+    pub game_mode_not_games: Vec<PathBuf>,
     /// Vider le cache de shaders au-delà de cette taille, en Go. `None` : jamais.
     pub shader_cache_limit_gb: Option<u32>,
     /// Alerter quand la corbeille est trop pleine.
@@ -122,7 +147,13 @@ impl Default for Settings {
             theme: Theme::System,
             auto_scan: AutoScan::Weekly,
             notify_from_gb: 5,
-            game_mode_on_launch: true,
+            game_mode_auto: false,
+            game_mode_power: true,
+            game_mode_quiet_apps: true,
+            game_mode_quiet_added: Vec::new(),
+            game_mode_quiet_removed: Vec::new(),
+            game_mode_games: Vec::new(),
+            game_mode_not_games: Vec::new(),
             shader_cache_limit_gb: Some(5),
             recycle_bin_alert: true,
             recycle_bin_threshold_gb: 5,
@@ -140,6 +171,10 @@ impl Settings {
     ///
     /// Les dossiers exclus sont gardés tels quels, même s'ils n'existent pas
     /// (un disque débranché reviendra) : seuls les doublons sont retirés.
+    ///
+    /// Les listes du mode jeu ne gardent que des noms d'exécutables valides
+    /// (voir [`clean_exe_name`]) et des chemins non vides, sans doublon, en
+    /// nombre borné.
     pub fn sanitize(&mut self) -> Vec<&'static str> {
         let defaults = Self::default();
         let mut fixed = Vec::new();
@@ -170,6 +205,22 @@ impl Settings {
             }
         }
         self.excluded_folders = seen;
+        for (list, name) in [
+            (&mut self.game_mode_quiet_added, "gameModeQuietAdded"),
+            (&mut self.game_mode_quiet_removed, "gameModeQuietRemoved"),
+        ] {
+            if clean_exe_names(list) {
+                fixed.push(name);
+            }
+        }
+        for (list, name) in [
+            (&mut self.game_mode_games, "gameModeGames"),
+            (&mut self.game_mode_not_games, "gameModeNotGames"),
+        ] {
+            if clean_game_paths(list) {
+                fixed.push(name);
+            }
+        }
         fixed
     }
 
@@ -183,7 +234,11 @@ impl Settings {
         read(document, "theme", &mut settings.theme, &mut rejected);
         read(document, "autoScan", &mut settings.auto_scan, &mut rejected);
         read(document, "notifyFromGb", &mut settings.notify_from_gb, &mut rejected);
-        read(document, "gameModeOnLaunch", &mut settings.game_mode_on_launch, &mut rejected);
+        // L'ancien réglage `gameModeOnLaunch` n'existe plus : s'il traîne dans
+        // un fichier, il est ignoré.
+        read(document, "gameModeAuto", &mut settings.game_mode_auto, &mut rejected);
+        read(document, "gameModePower", &mut settings.game_mode_power, &mut rejected);
+        read(document, "gameModeQuietApps", &mut settings.game_mode_quiet_apps, &mut rejected);
         read(document, "shaderCacheLimitGb", &mut settings.shader_cache_limit_gb, &mut rejected);
         read(document, "recycleBinAlert", &mut settings.recycle_bin_alert, &mut rejected);
         read(
@@ -217,6 +272,19 @@ impl Settings {
             }
             Some(_) => rejected.push("excludedFolders"),
         }
+        // Les listes du mode jeu, elles aussi, se lisent entrée par entrée.
+        settings.game_mode_quiet_added =
+            read_strings(document, "gameModeQuietAdded", &mut rejected);
+        settings.game_mode_quiet_removed =
+            read_strings(document, "gameModeQuietRemoved", &mut rejected);
+        settings.game_mode_games = read_strings(document, "gameModeGames", &mut rejected)
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        settings.game_mode_not_games = read_strings(document, "gameModeNotGames", &mut rejected)
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
         for name in settings.sanitize() {
             if !rejected.contains(&name) {
                 rejected.push(name);
@@ -240,6 +308,84 @@ fn read<T: DeserializeOwned>(
             Err(_) => rejected.push(name),
         }
     }
+}
+
+/// Lit une liste de textes, entrée par entrée : une entrée qui n'est pas un
+/// texte est écartée et fait noter le réglage, sans emporter les autres.
+fn read_strings(
+    document: &Map<String, Value>,
+    name: &'static str,
+    rejected: &mut Vec<&'static str>,
+) -> Vec<String> {
+    match document.get(name) {
+        None => Vec::new(),
+        Some(Value::Array(entries)) => {
+            let mut strings = Vec::with_capacity(entries.len());
+            for entry in entries {
+                match entry.as_str() {
+                    Some(text) => strings.push(text.to_owned()),
+                    None if !rejected.contains(&name) => rejected.push(name),
+                    None => {}
+                }
+            }
+            strings
+        }
+        Some(_) => {
+            rejected.push(name);
+            Vec::new()
+        }
+    }
+}
+
+/// Un nom d'exécutable que Shinku sait comparer : en minuscules, terminé par
+/// `.exe`, sans séparateur de dossier, ni `:`, ni caractère de contrôle, et
+/// d'au plus [`MAX_EXE_NAME_LEN`] caractères. `None` sinon.
+pub fn clean_exe_name(name: &str) -> Option<String> {
+    let name = name.to_lowercase();
+    let valid = name.ends_with(".exe")
+        && name.chars().count() <= MAX_EXE_NAME_LEN
+        && !name.chars().any(|c| c == '\\' || c == '/' || c == ':' || c.is_control());
+    valid.then_some(name)
+}
+
+/// Nettoie une liste de noms d'exécutables : noms valides seulement, sans
+/// doublon, [`MAX_EXE_NAMES`] au plus. Vrai si une entrée valide ou non a dû
+/// être écartée pour une autre raison qu'un doublon.
+fn clean_exe_names(list: &mut Vec<String>) -> bool {
+    let mut kept: Vec<String> = Vec::with_capacity(list.len());
+    let mut dropped = false;
+    for name in list.drain(..) {
+        match clean_exe_name(&name) {
+            Some(clean) if kept.contains(&clean) => {}
+            Some(clean) if kept.len() < MAX_EXE_NAMES => kept.push(clean),
+            _ => dropped = true,
+        }
+    }
+    *list = kept;
+    dropped
+}
+
+/// Nettoie une liste de chemins : non vides, sans doublon (la casse ne compte
+/// pas), [`MAX_GAME_PATHS`] au plus. Vrai si une entrée a dû être écartée pour
+/// une autre raison qu'un doublon.
+fn clean_game_paths(list: &mut Vec<PathBuf>) -> bool {
+    let mut kept: Vec<PathBuf> = Vec::with_capacity(list.len());
+    let mut keys: Vec<String> = Vec::with_capacity(list.len());
+    let mut dropped = false;
+    for path in list.drain(..) {
+        let key = crate::game::detect::key(&path.to_string_lossy());
+        if key.is_empty() {
+            dropped = true;
+        } else if keys.contains(&key) {
+        } else if kept.len() < MAX_GAME_PATHS {
+            keys.push(key);
+            kept.push(path);
+        } else {
+            dropped = true;
+        }
+    }
+    *list = kept;
+    dropped
 }
 
 /// Ce qui n'a pas pu être lu.
@@ -394,6 +540,14 @@ mod tests {
         assert_eq!(settings.recycle_bin_auto_empty_days, None);
         assert_eq!(settings.recycle_bin_threshold_gb, 5);
         assert!(settings.excluded_folders.is_empty());
+        // Le mode jeu automatique est éteint : rien ne change sans l'accord de la personne.
+        assert!(!settings.game_mode_auto);
+        assert!(settings.game_mode_power);
+        assert!(settings.game_mode_quiet_apps);
+        assert!(settings.game_mode_quiet_added.is_empty());
+        assert!(settings.game_mode_quiet_removed.is_empty());
+        assert!(settings.game_mode_games.is_empty());
+        assert!(settings.game_mode_not_games.is_empty());
         let mut copy = settings.clone();
         assert!(copy.sanitize().is_empty(), "les valeurs par défaut sont valides");
         assert_eq!(copy, settings);
@@ -414,7 +568,13 @@ mod tests {
             theme: Theme::Dark,
             auto_scan: AutoScan::Monthly,
             notify_from_gb: 20,
-            game_mode_on_launch: false,
+            game_mode_auto: true,
+            game_mode_power: false,
+            game_mode_quiet_apps: false,
+            game_mode_quiet_added: vec!["chrome.exe".to_owned(), "qbittorrent.exe".to_owned()],
+            game_mode_quiet_removed: vec!["dropbox.exe".to_owned()],
+            game_mode_games: vec![PathBuf::from(r"C:\Program Files\Java\bin\javaw.exe")],
+            game_mode_not_games: vec![PathBuf::from(r"D:\Games\Hades\Hades.exe")],
             shader_cache_limit_gb: None,
             recycle_bin_alert: false,
             recycle_bin_threshold_gb: 10,
@@ -449,7 +609,13 @@ mod tests {
                 "alwaysAsk",
                 "autoScan",
                 "excludedFolders",
-                "gameModeOnLaunch",
+                "gameModeAuto",
+                "gameModeGames",
+                "gameModeNotGames",
+                "gameModePower",
+                "gameModeQuietAdded",
+                "gameModeQuietApps",
+                "gameModeQuietRemoved",
                 "language",
                 "launchWithWindows",
                 "notifyFromGb",
@@ -560,5 +726,87 @@ mod tests {
         let store = SettingsStore::for_machine(&environment).unwrap();
         assert_eq!(store.path(), roaming.join("Shinku").join("settings.json"));
         assert!(SettingsStore::for_machine(&StaticEnvironment::new()).is_none());
+    }
+
+    #[test]
+    fn the_old_game_mode_setting_is_ignored() {
+        let (_temp, store) = store();
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), r#"{ "gameModeOnLaunch": true, "gameModeAuto": true }"#).unwrap();
+        let loaded = store.load();
+        assert!(loaded.settings.game_mode_auto);
+        assert_eq!(loaded.issue, None, "un ancien réglage n'est pas une erreur");
+        // Il ne revient pas à la prochaine écriture.
+        store.save(&loaded.settings).unwrap();
+        assert!(!fs::read_to_string(store.path()).unwrap().contains("gameModeOnLaunch"));
+    }
+
+    #[test]
+    fn game_mode_lists_are_cleaned_entry_by_entry() {
+        let (_temp, store) = store();
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        let long = format!("{}.exe", "x".repeat(70));
+        let text = serde_json::json!({
+            "gameModeQuietAdded": [
+                "Chrome.EXE", "chrome.exe", "notepad", "a\\b.exe", "a/b.exe", "c:d.exe",
+                "tab\t.exe", long, 12, "qBittorrent.exe"
+            ],
+            "gameModeQuietRemoved": "pas une liste",
+            "gameModeGames": [r"C:\Jeux\A.exe", r"c:\jeux\a.EXE", "", 5, r"D:\B.exe"],
+            "gameModeNotGames": [r"E:\X.exe"],
+            "gameModeAuto": "oui",
+        });
+        fs::write(store.path(), text.to_string()).unwrap();
+        let loaded = store.load();
+        assert_eq!(loaded.settings.game_mode_quiet_added, ["chrome.exe", "qbittorrent.exe"]);
+        assert!(loaded.settings.game_mode_quiet_removed.is_empty());
+        assert_eq!(
+            loaded.settings.game_mode_games,
+            [PathBuf::from(r"C:\Jeux\A.exe"), PathBuf::from(r"D:\B.exe")]
+        );
+        assert_eq!(loaded.settings.game_mode_not_games, [PathBuf::from(r"E:\X.exe")]);
+        assert!(
+            !loaded.settings.game_mode_auto,
+            "un réglage illisible revient à sa valeur par défaut"
+        );
+        let Some(LoadIssue::Partial { fields }) = loaded.issue else {
+            panic!("un problème partiel était attendu");
+        };
+        for field in ["gameModeAuto", "gameModeQuietAdded", "gameModeQuietRemoved", "gameModeGames"]
+        {
+            assert!(fields.contains(&field), "{field} dans {fields:?}");
+        }
+        // Ces réglages ne bloquent jamais l'analyse.
+        assert!(fields.iter().all(|field| *field != EXCLUDED_NAME));
+    }
+
+    const EXCLUDED_NAME: &str = "excludedFolders";
+
+    #[test]
+    fn game_mode_lists_are_bounded() {
+        let mut settings = Settings {
+            game_mode_quiet_added: (0..100).map(|n| format!("app{n}.exe")).collect(),
+            game_mode_games: (0..300).map(|n| PathBuf::from(format!(r"D:\g{n}.exe"))).collect(),
+            ..Settings::default()
+        };
+        let fixed = settings.sanitize();
+        assert_eq!(settings.game_mode_quiet_added.len(), MAX_EXE_NAMES);
+        assert_eq!(settings.game_mode_games.len(), MAX_GAME_PATHS);
+        assert_eq!(fixed, ["gameModeQuietAdded", "gameModeGames"]);
+        assert_eq!(clean_exe_name("Ünïcode.EXE").as_deref(), Some("ünïcode.exe"));
+        assert_eq!(clean_exe_name(&format!("{}.exe", "x".repeat(60))).map(|n| n.len()), Some(64));
+        assert_eq!(clean_exe_name(&format!("{}.exe", "x".repeat(61))), None);
+        assert_eq!(clean_exe_name(""), None);
+        assert_eq!(clean_exe_name(".exe").as_deref(), Some(".exe"));
+    }
+
+    #[test]
+    fn game_mode_settings_never_block_a_scan() {
+        // `blocks_scan` ne regarde que les dossiers exclus : voir backend.rs.
+        let (_temp, store) = store();
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), r#"{ "gameModeGames": 3, "gameModeQuietAdded": [1] }"#).unwrap();
+        let Some(LoadIssue::Partial { fields }) = store.load().issue else { panic!() };
+        assert_eq!(fields, ["gameModeQuietAdded", "gameModeGames"]);
     }
 }

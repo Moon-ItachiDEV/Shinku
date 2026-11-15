@@ -27,8 +27,15 @@ use shinku_core::clean::journal::{JournalStore, Run, RunState};
 use shinku_core::clean::report::{CleanOutcome, DuplicatesStop, StepState, StopReason};
 use shinku_core::clean::{CleanPhase, CleanRefusal, CleanRequest};
 use shinku_core::fs::to_internal_path;
+use shinku_core::game::PowerOutcome;
+use shinku_core::game::control::FakeAgent;
+use shinku_core::game::detect::Source;
+use shinku_core::game::host::{FakeHost, PowerPlan};
+use shinku_core::game::store::{GameFile, GameRef, GameStore, Last, PowerRecord, Quieted, Session};
+use shinku_core::game::view::{GameOption, GameRefusal, GameStatus, PowerSupport};
 use shinku_core::hash::MemoryCache;
 use shinku_core::model::{Lot, ModuleId, RiskLevel, Timestamp, Trigger};
+use shinku_core::platform::agent::{AgentState, OpenProgram, WindowsPage};
 use shinku_core::platform::{Environment, KnownFolder, RecycleBin, StaticEnvironment, Volume};
 use shinku_core::rules::JunkCategory;
 use shinku_core::scan::report::{CategoryState, DuplicatesState};
@@ -174,15 +181,78 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     let journal = JournalStore::for_machine(&environment).expect("un emplacement pour le journal");
     journal.record(&Run::starting(environment.now())).expect("journal écrit");
 
+    let game_store = GameStore::for_machine(&environment).expect("un emplacement pour game.json");
+    let agent = FakeAgent::new(AgentState::Running);
+    let open_program =
+        |name: &str, path: &str| OpenProgram { name: name.to_owned(), path: path.to_owned() };
+    agent.set_open_apps(vec![
+        open_program("mycloud.exe", r"C:\Program Files\MyCloud\mycloud.exe"),
+        open_program("foo.exe", r"C:\Games\Foo\foo.exe"),
+        open_program("bar.exe", r"C:\Games\Bar\bar.exe"),
+    ]);
+
     let mut options = ScanOptions::new(Trigger::Button);
     options.duplicate_min_size = 4096;
     options.large_threshold = 32 * 1024;
     let backend = Backend::new(Arc::new(environment), Arc::new(MemoryCache::new()), Some(store))
         .with_scan_defaults(options)
-        .with_journal(journal);
+        .with_journal(journal)
+        .with_game_parts(
+            Arc::new(FakeHost::new()),
+            Arc::new(agent.clone()),
+            Some(GameStore::at(game_store.path())),
+        );
 
     let mut samples: BTreeMap<&str, Value> = BTreeMap::new();
     samples.insert("sessionView.idle", to_json(&backend.view()));
+
+    // Le mode jeu : des listes pleines, pour que ni les réglages ni la page
+    // n'aient de liste vide dans leurs échantillons.
+    backend.set_game_option(GameOption::Auto, true).expect("mode automatique");
+    backend.set_game_option(GameOption::Power, true).expect("alimentation");
+    backend.set_game_option(GameOption::QuietApps, true).expect("veilleuse");
+    backend.set_quiet_app("onedrive.exe", false).expect("app décochée");
+    let open = backend.open_apps();
+    samples.insert("openApps", to_json(&open));
+    backend.add_quiet_app(open[0].id).expect("app ajoutée");
+    backend.add_game(open[1].id).expect("jeu ajouté");
+    backend.add_game(open[2].id).expect("jeu ajouté");
+    backend.set_game_status(&open[2].path, GameStatus::NotGame).expect("jeu écarté");
+    let mut file = GameFile::default();
+    file.remember(r"D:\SteamLibrary\steamapps\common\Baz\baz.exe", "Baz", 1_700_000_000_000);
+    file.remember(&open[1].path, "Foo", 1_700_000_100_000);
+    game_store.save(&file).expect("game.json écrit");
+    samples.insert("gameView.idle", to_json(&backend.game_view()));
+
+    // Une partie en cours, et le bilan de la précédente.
+    file.session = Some(Session {
+        game: GameRef { path: open[1].path.clone(), name: "Foo".to_owned(), source: Source::Added },
+        since: 1_700_000_200_000,
+        released: false,
+        power: PowerRecord::applied(PowerPlan::BALANCED),
+        quieted: vec![Quieted {
+            pid: 4242,
+            started: 133_000_000_000_000_000,
+            exe: "onedrive.exe".to_owned(),
+            priority: 0x20,
+            throttle_control: 0,
+            throttle_state: 0,
+        }],
+        restore_pending: false,
+    });
+    file.last = Some(Last {
+        name: "Bar".to_owned(),
+        path: open[2].path.clone(),
+        started: 1_700_000_000_000,
+        ended: 1_700_000_100_000,
+        power_restored: Some(true),
+        apps_restored: 2,
+        complete: true,
+    });
+    game_store.save(&file).expect("game.json écrit");
+    samples.insert("gameView.playing", to_json(&backend.game_view()));
+    file.session = None;
+    game_store.save(&file).expect("game.json écrit");
 
     // Un dossier jamais touché, pour que la liste des réglages ne soit pas vide.
     let settings = backend.exclude_folder(&profile.join("Documents")).expect("dossier exclu");
@@ -271,6 +341,11 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         to_json(&BackendError::CleanNotStarted { reason: "raison".to_owned() }),
     );
 
+    samples.insert(
+        "error.gameRefused",
+        to_json(&BackendError::GameRefused { reason: GameRefusal::UnknownGame }),
+    );
+
     // Les valeurs de chaque énumération.
     let mut enums: BTreeMap<&str, Value> = BTreeMap::new();
     enums.insert(
@@ -309,6 +384,20 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     enums.insert("stepState", variants!(StepState: NotRequested, Done, Stopped, Failed));
     enums.insert("stopReason", variants!(StopReason: NotInRecycleBin, KeptCopyChanged));
     enums.insert("runState", variants!(RunState: Running, Completed, Cancelled, Interrupted));
+    enums.insert("agentState", variants!(AgentState: Running, Stopped, Missing));
+    enums.insert(
+        "powerOutcome",
+        variants!(PowerOutcome: Applied, AlreadyFast, OnBattery, Unavailable, Unsuited, Custom, Refused, Off),
+    );
+    enums.insert("powerSupport", variants!(PowerSupport: Available, Unavailable, Unsuited));
+    enums.insert("gameSource", variants!(Source: Added, Library));
+    enums.insert("windowsPage", variants!(WindowsPage: GameMode, Power));
+    enums.insert("gameStatus", variants!(GameStatus: NotGame, Forgotten));
+    enums.insert("gameOption", variants!(GameOption: Auto, Power, QuietApps));
+    enums.insert(
+        "gameRefusal",
+        variants!(GameRefusal: UnknownApp, UnknownGame, NotAGame, ProtectedApp, ListFull),
+    );
     // Les énumérations dont les variantes portent des champs : la liste vient
     // des échantillons ci-dessus, et le `match` veille à ce qu'il n'en manque pas.
     fn every_error_has_a_sample(error: BackendError) {
@@ -319,7 +408,8 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             | BackendError::FolderRefused { .. }
             | BackendError::CleanRunning
             | BackendError::CleanRefused { .. }
-            | BackendError::CleanNotStarted { .. } => {}
+            | BackendError::CleanNotStarted { .. }
+            | BackendError::GameRefused { .. } => {}
         }
     }
     fn every_issue_has_a_sample(issue: LoadIssue) {

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Ce que la fenêtre de Shinku a le droit de demander : ses quatorze commandes, et les gestes de sa barre de titre (déplacer, réduire, agrandir, fermer). Rien d'autre : ni fichiers, ni réseau, ni lancement de programmes.",
+  "description": "Ce que la fenêtre de Shinku a le droit de demander : ses vingt-trois commandes, et les gestes de sa barre de titre (déplacer, réduire, agrandir, fermer). Rien d'autre : ni fichiers, ni réseau, ni lancement de programmes.",
   "local": true,
   "windows": ["main"],
   "permissions": [
@@ -23,6 +23,15 @@
     "allow-duplicates-page",
     "allow-set-theme",
     "allow-add-excluded-folder",
-    "allow-remove-excluded-folder"
+    "allow-remove-excluded-folder",
+    "allow-game-view",
+    "allow-set-game-option",
+    "allow-set-quiet-app",
+    "allow-open-apps",
+    "allow-add-game",
+    "allow-add-quiet-app",
+    "allow-set-game-status",
+    "allow-release-game",
+    "allow-open-windows-settings"
   ]
 }

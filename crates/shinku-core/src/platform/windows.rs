@@ -6,6 +6,8 @@
 //! corbeille (module [`shell`]).
 #![allow(unsafe_code)]
 
+pub(super) mod agent;
+mod game;
 mod shell;
 
 use std::ffi::{OsString, c_void};
@@ -15,6 +17,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, HANDLE};
 use windows::Win32::Security::{
@@ -50,6 +53,7 @@ use windows::core::{GUID, HSTRING};
 
 use super::{Desktop, Environment, KnownFolder, RecycleBin, RecycleError, Rights, Volume};
 use crate::fs::{fold_path, to_internal_path};
+use crate::game::host::GameHost;
 use crate::model::Timestamp;
 
 /// Valeur de `GetDriveTypeW` pour un disque interne.
@@ -299,6 +303,11 @@ impl Environment for SystemEnvironment {
     fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
         shell::recycle(path)
     }
+}
+
+/// Le mode jeu sur cette machine.
+pub(super) fn game_host() -> Arc<dyn GameHost> {
+    Arc::new(game::SystemHost::new())
 }
 
 pub(super) fn set_background_priority(on: bool) -> bool {

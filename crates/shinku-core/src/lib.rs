@@ -13,6 +13,7 @@
 pub mod backend;
 pub mod clean;
 pub mod fs;
+pub mod game;
 pub mod guard;
 pub mod hash;
 pub mod helper;

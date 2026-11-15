@@ -16,7 +16,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::Serialize;
 
+use crate::game::host::GameHost;
 use crate::model::Timestamp;
+
+pub mod agent;
 
 #[cfg(unix)]
 mod unix;
@@ -232,6 +235,12 @@ pub trait Environment: Send + Sync + fmt::Debug {
 /// La vraie machine.
 pub fn system() -> impl Environment {
     imp::SystemEnvironment::new()
+}
+
+/// La machine du mode jeu : la vraie sous Windows, une machine qui ne voit
+/// rien ailleurs.
+pub fn game_host() -> Arc<dyn GameHost> {
+    imp::game_host()
 }
 
 /// Vrai si ce processus a reçu les droits d'un administrateur par une

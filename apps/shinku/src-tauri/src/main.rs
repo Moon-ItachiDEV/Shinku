@@ -2,7 +2,7 @@
 //!
 //! Ce programme affiche l'interface (une page web locale, dans WebView2) et
 //! transmet ses demandes au cœur, [`shinku_core`]. Il ne contient aucune
-//! logique de nettoyage : tout ce qu'il sait faire tient dans les quatorze
+//! logique de nettoyage : tout ce qu'il sait faire tient dans les vingt-trois
 //! commandes de `commands.rs`, qui appellent le guichet du cœur.
 //!
 //! Il tourne toujours avec les droits de l'utilisateur, jamais en
