@@ -428,8 +428,9 @@ export interface Backend {
   setQuietApp(exe: string, on: boolean): Promise<GameView>;
   /** Les apps ouvertes ; les `id` rendus ne valent que pour cette liste. */
   openApps(): Promise<OpenApp[]>;
-  addGame(id: number): Promise<GameView>;
-  addQuietApp(id: number): Promise<GameView>;
+  /** `path` n'est que comparé : le cœur vérifie qu'il est bien celui du numéro `id` dans sa dernière liste. */
+  addGame(id: number, path: string): Promise<GameView>;
+  addQuietApp(id: number, path: string): Promise<GameView>;
   /** `path` n'est que comparé aux chemins que le cœur connaît. */
   setGameStatus(path: string, status: GameStatus): Promise<GameView>;
   /** « Tout remettre maintenant ». */

@@ -10,19 +10,30 @@ import { fr } from '../src/i18n/fr.ts';
 import {
   canRelease,
   gameWarning,
+  busyKey,
+  focusKey,
   headerState,
   inGame,
   isRemovable,
+  isRemovableApp,
+  neighbour,
+  noteStop,
   optionOf,
+  RELEASE_GRACE,
+  releaseExpected,
+  type Releasing,
   powerChip,
   powerRow,
   shownApps,
+  showsButtons,
   showsChips,
   STOPPED_GRACE,
   stoppedSince,
   waitingApps,
+  withExpectedRelease,
   withOption,
   withQuietApp,
+  withReleased,
 } from '../src/model/game.ts';
 
 const NOW = 1_794_770_000_000;
@@ -87,6 +98,21 @@ test('une partie notée au journal passe devant le réglage, même éteint', () 
 
 test('une partie remise en place est « released »', () => {
   assert.equal(headerState(view({ session: session({ released: true }) })), 'released');
+});
+
+test('une remise en place en attente n’est pas une partie en cours : titre neutre, ni pastilles ni boutons', () => {
+  const pending = view({ session: session({ restorePending: true }) });
+  const state = headerState(pending);
+  assert.equal(state, 'pending');
+  assert.ok(!inGame(state));
+  assert.ok(!showsChips(state));
+  assert.ok(!showsButtons(state));
+  assert.equal(fr.game.titlePending, 'Remise en place en cours');
+  // Pendant la partie, les boutons sont là.
+  assert.ok(showsButtons('playing'));
+  assert.ok(showsButtons('released'));
+  assert.ok(!showsButtons('idle'));
+  assert.ok(!showsButtons('off'));
 });
 
 test('une remise en place en attente passe devant « remis en place »', () => {
@@ -163,6 +189,17 @@ test('la date d’arrêt de l’agent se note une fois, et s’efface dès qu’
   assert.equal(stoppedSince(null, 'running', NOW), null);
 });
 
+test('un arrêt de l’agent n’est noté que si le mode automatique est allumé', () => {
+  const stopped = view({ auto: false, agent: 'stopped' });
+  // Éteint : l'agent arrêté est son état normal, aucun délai de grâce ne court.
+  assert.equal(noteStop(null, stopped, NOW), null);
+  assert.equal(noteStop(NOW - 20_000, stopped, NOW), null);
+  // Allumé : la date est notée, et garde sa valeur d'une vue à l'autre.
+  assert.equal(noteStop(null, { ...stopped, auto: true }, NOW), NOW);
+  assert.equal(noteStop(NOW - 9_000, { ...stopped, auto: true }, NOW), NOW - 9_000);
+  assert.equal(noteStop(NOW - 9_000, view({ agent: 'running' }), NOW), null);
+});
+
 // ── Alimentation ───────────────────────────────────────────────────────────
 
 test('la ligne d’alimentation porte un interrupteur seulement si Windows s’y prête', () => {
@@ -228,4 +265,55 @@ test('un jeu ajouté se retire, un jeu reconnu seul se refuse', () => {
   const added: KnownGame = { path: 'C:\\x\\javaw.exe', name: 'Minecraft', source: 'added', lastPlayed: null };
   assert.ok(isRemovable(added));
   assert.ok(!isRemovable({ ...added, source: 'library' }));
+});
+
+test('une app ajoutée par la personne se retire ; une app intégrée se coche', () => {
+  assert.ok(isRemovableApp(app('qbittorrent.exe', 'qBittorrent', { builtIn: false })));
+  assert.ok(!isRemovableApp(app('onedrive.exe', 'OneDrive')));
+});
+
+// ── « Tout remettre maintenant » ───────────────────────────────────────────
+
+test('la partie remise en place se montre tout de suite, et se défait si le cœur refuse', () => {
+  const playing = view({ session: session() });
+  assert.equal(withReleased(playing, true).session?.released, true);
+  assert.equal(withReleased(withReleased(playing, true), false).session?.released, false);
+  // Sans partie, rien à changer.
+  const idle = view();
+  assert.equal(withReleased(idle, true), idle);
+});
+
+test('la page tient la partie pour remise en place le temps que l’agent le note, pas plus', () => {
+  const playing = view({ session: session() });
+  const expected: Releasing = { path: session().path, until: NOW + RELEASE_GRACE };
+  // L'agent n'a pas encore réécrit son journal : la vue dément, la page ne revient pas en arrière.
+  assert.ok(releaseExpected(playing, expected, NOW + 1_000));
+  assert.equal(withExpectedRelease(playing, expected, NOW + 1_000).session?.released, true);
+  // Le délai passé, la vue du cœur fait foi.
+  assert.ok(!releaseExpected(playing, expected, NOW + RELEASE_GRACE));
+  assert.equal(withExpectedRelease(playing, expected, NOW + RELEASE_GRACE), playing);
+  // L'agent a rattrapé la demande, ou la partie est finie, ou c'en est une autre : rien à tenir.
+  const done = view({ session: session({ released: true }) });
+  assert.ok(!releaseExpected(done, expected, NOW + 1_000));
+  assert.ok(!releaseExpected(view(), expected, NOW + 1_000));
+  assert.ok(!releaseExpected(view({ session: session({ path: 'D:\\autre.exe' }) }), expected, NOW + 1_000));
+  assert.ok(!releaseExpected(playing, null, NOW));
+});
+
+// ── Gestes en vol et focus ─────────────────────────────────────────────────
+
+test('chaque geste a sa clé, et deux gestes sur deux jeux ne se gênent pas', () => {
+  assert.notEqual(busyKey.status('C:\\a.exe'), busyKey.status('C:\\b.exe'));
+  assert.notEqual(busyKey.status('C:\\a.exe'), busyKey.quiet('a.exe'));
+  assert.notEqual(focusKey.game('C:\\a.exe'), focusKey.never('C:\\a.exe'));
+});
+
+test('quand une ligne disparaît, le focus va à la suivante, sinon à la précédente, sinon nulle part', () => {
+  const rows = ['a', 'b', 'c'];
+  assert.equal(neighbour(rows, 'a'), 'b');
+  assert.equal(neighbour(rows, 'b'), 'c');
+  assert.equal(neighbour(rows, 'c'), 'b');
+  assert.equal(neighbour(['seule'], 'seule'), null);
+  assert.equal(neighbour(rows, 'absente'), null);
+  assert.equal(neighbour([], 'a'), null);
 });

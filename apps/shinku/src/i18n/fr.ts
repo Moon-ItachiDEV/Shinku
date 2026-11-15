@@ -353,15 +353,18 @@ export const fr = typeset({
     titleOff: 'Le mode jeu est éteint',
     titleIdle: 'Shinku veille sur tes parties',
     titlePlaying: (name: string) => `En jeu : ${name}`,
+    titlePending: 'Remise en place en cours',
     textOff:
       'Allume-le une fois. Ensuite, lance ton jeu comme d’habitude : Shinku le reconnaît tout seul et ne lance jamais rien à ta place.',
     textIdle:
       'Lance ton jeu comme d’habitude. Shinku applique tes réglages, puis remet tout en place quand tu le quittes.',
-    textPlaying: (clock: string) => `Mode jeu actif depuis ${clock}. Tout revient en place quand tu quittes le jeu.`,
+    // `since` : « 14:32 », « hier, 23:40 » ou « le 14 nov., 23:40 » (voir formatSince).
+    textPlaying: (since: string) => `Mode jeu actif depuis ${since}. Tout revient en place quand tu quittes le jeu.`,
     textReleased: 'Remis en place pour cette partie. Le mode jeu reprendra à la prochaine.',
     textPending: 'Shinku n’a pas encore pu tout remettre en place. Il réessaie tout seul.',
     release: 'Tout remettre maintenant',
     notAGame: 'Ce n’est pas un jeu',
+    notAGameNamed: (name: string) => `Ce n’est pas un jeu : ${name}`,
     lastOk: (name: string, duration: string) =>
       `Dernière partie : ${name}, ${duration}. Tout a été remis en place.`,
     lastIncomplete: (name: string, duration: string) =>
@@ -382,8 +385,8 @@ export const fr = typeset({
     during: 'Pendant que tu joues',
     power: 'Alimentation en performances élevées',
     powerHint:
-      'Windows passe sur son mode « Performances élevées » le temps de la partie, puis reprend ton mode habituel. Jamais sur batterie. Dans ce mode, le PC ne se met pas en veille tout seul.',
-    powerUnavailable: 'Ce PC ne propose pas le mode « Performances élevées » : son alimentation se règle dans Windows.',
+      `Windows passe sur son mode «${NBSP}Performances élevées${NBSP}» le temps de la partie, puis reprend ton mode habituel. Jamais sur batterie. Dans ce mode, le PC ne se met pas en veille tout seul.`,
+    powerUnavailable: `Ce PC ne propose pas le mode «${NBSP}Performances élevées${NBSP}» : son alimentation se règle dans Windows.`,
     powerUnsuited:
       'Sur ce processeur, AMD recommande de garder le mode normal de Windows : Shinku n’y touche pas.',
     powerOpen: 'Réglages d’alimentation de Windows',
@@ -391,6 +394,7 @@ export const fr = typeset({
     quiet: 'Apps d’arrière-plan en veilleuse',
     quietHint: 'Elles restent ouvertes, mais passent après ton jeu. Celle que tu regardes retrouve sa vitesse.',
     open: 'Ouverte',
+    addedApp: 'Ajoutée par toi',
     quietAlso: (list: string) => `Aussi mises en veilleuse si tu les ouvres : ${list}.`,
     quietAdvice: 'Évite d’y mettre une app qui joue du son ou de la vidéo pendant ta partie.',
     quietAdd: 'Ajouter une app ouverte',
@@ -405,6 +409,7 @@ export const fr = typeset({
     addGameHint: 'Un jeu n’est pas reconnu (Battle.net, Minecraft, Roblox…) ? Ouvre-le, puis ajoute-le ici.',
     never: 'Jamais traités comme des jeux',
     restore: 'Rétablir',
+    restoreNamed: (name: string) => `Rétablir ${name}`,
     pickGame: 'Choisis ton jeu',
     pickApp: 'Choisis une app',
     pickHint: 'Seules les apps ouvertes en ce moment sont listées.',
@@ -420,7 +425,7 @@ export const fr = typeset({
     promise:
       'Shinku ne promet pas d’images par seconde en plus : il écarte ce qui gêne ton jeu, et remet tout en place après.',
     toast: {
-      unknownApp: 'Cette app n’est plus ouverte.',
+      unknownApp: 'Cette app n’est plus dans la liste.',
       unknownGame: 'Ce jeu n’est plus dans la liste.',
       notAGame: 'Shinku ne traite jamais cette app comme un jeu.',
       protectedApp: 'Cette app ne peut pas être mise en veilleuse.',

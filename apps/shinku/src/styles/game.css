@@ -80,22 +80,7 @@
 
 /* ── Interrupteurs ──────────────────────────────────────────────────────── */
 
-/* Un interrupteur est un bouton `role="switch"` : il reprend le dessin de `.sw`. */
-button.sw {
-  padding: 0;
-  border: 0;
-  font: inherit;
-}
-
-.sw[aria-checked='true'] {
-  background: var(--peach);
-}
-
-.sw[aria-checked='true']::before {
-  transform: translateX(16px);
-  background: var(--knob-on);
-}
-
+/* Le grand interrupteur de la carte principale ; le dessin de `.sw` est dans forms.css. */
 .sw.big {
   width: 46px;
   height: 26px;
@@ -133,9 +118,20 @@ button.sw {
   margin-top: 18px;
 }
 
-/* Réglable, mais atténué tant que le mode jeu automatique est éteint. */
-.card.dim {
-  opacity: 0.78;
+/*
+ * Réglable, mais atténué tant que le mode jeu automatique est éteint : seul
+ * l'habillage s'estompe (interrupteurs, cases, fond des pastilles). Les
+ * libellés, les descriptions et le texte des pastilles gardent leur couleur,
+ * donc leur contraste : à 0,6, le texte d'une pastille de 11 px tombait à
+ * environ 3,4:1 (mesuré en clair et en sombre).
+ */
+.card.dim .sw,
+.card.dim .box {
+  opacity: 0.6;
+}
+
+.card.dim .tag {
+  background: rgb(var(--ov) / calc(0.025 * var(--ov-k)));
 }
 
 /* L'avertissement : un point orange et une phrase, sous la ligne principale. */
@@ -179,11 +175,26 @@ button.sw {
   min-height: 40px;
 }
 
-.game .add {
-  margin-top: 12px;
+/* Une case et sa pastille « Ouverte », qui est hors de l'étiquette de la case. */
+.gcheck {
+  display: flex;
+  align-items: center;
 }
 
-.gquiet .add {
+.gcheck > .row {
+  flex: 1;
+  min-width: 0;
+}
+
+.gcheck > .tag {
+  flex-shrink: 0;
+  height: 22px;
+  margin-right: 18px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.game .add {
   margin-top: 12px;
 }
 
@@ -197,10 +208,6 @@ button.sw {
 
 .game .add + .d {
   margin-top: 8px;
-}
-
-.game .list .row + .row {
-  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
 }
 
 .game .list .row .st {

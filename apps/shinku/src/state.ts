@@ -82,8 +82,12 @@ export interface AppState {
   toastShown: boolean;
   /** La dernière vue du mode jeu ; `null` tant que le cœur n'a pas répondu. */
   game: GameView | null;
-  /** Depuis quand l'agent du mode jeu est vu arrêté, ou `null`. */
+  /** Depuis quand l'agent du mode jeu est vu arrêté, le mode automatique allumé, ou `null`. */
   gameStoppedSince: number | null;
+  /** Plusieurs demandes de suite de la vue du mode jeu ont échoué : la page le dit au lieu de « Chargement… ». */
+  gameFailed: boolean;
+  /** Les gestes du mode jeu en vol (voir `busyKey`) : leurs boutons attendent la réponse. */
+  gameBusy: readonly string[];
   /** Le sélecteur de jeu ou d'app, tant qu'il est ouvert. */
   picker: Picker | null;
   /** L'heure qu'il est, rafraîchie de temps en temps : pour « il y a 8 mois ». */
@@ -120,6 +124,8 @@ export function initialState(now: number): AppState {
     toastShown: false,
     game: null,
     gameStoppedSince: null,
+    gameFailed: false,
+    gameBusy: [],
     picker: null,
     now,
   };

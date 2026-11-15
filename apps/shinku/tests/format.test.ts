@@ -13,6 +13,7 @@ import {
   formatCount,
   formatDuration,
   formatLimit,
+  formatSince,
   frenchSpacing,
   listOf,
   percent,
@@ -130,4 +131,34 @@ test('une durée de jeu ne descend jamais sous une minute, ni sous zéro', () =>
   assert.equal(formatDuration(0), `1${NBSP}min`);
   assert.equal(formatDuration(20_000), `1${NBSP}min`);
   assert.equal(formatDuration(-5 * 60_000), `1${NBSP}min`);
+});
+
+test('le début d’une partie dit le jour quand ce n’est pas aujourd’hui', () => {
+  // Heures et jours sont ceux de la machine : les dates se construisent en heure locale.
+  const at = (year: number, month: number, day: number, hour: number, minute: number) =>
+    new Date(year, month - 1, day, hour, minute).getTime();
+  const now = at(2026, 11, 15, 9, 5);
+  assert.equal(formatSince(at(2026, 11, 15, 0, 1), now), '00:01');
+  assert.equal(formatSince(at(2026, 11, 15, 8, 30), now), '08:30');
+  // Hier soir, même à moins de 24 h : la veille s'annonce.
+  assert.equal(formatSince(at(2026, 11, 14, 23, 40), now), 'hier, 23:40');
+  assert.equal(formatSince(at(2026, 11, 14, 0, 0), now), 'hier, 00:00');
+  assert.equal(formatSince(at(2026, 11, 14, 23, 40), at(2026, 11, 14, 23, 50)), '23:40');
+  // Plus loin : le jour et le mois, sans l'année de cette année.
+  assert.equal(formatSince(at(2026, 11, 13, 23, 40), now), `le 13${NBSP}nov., 23:40`);
+  assert.equal(formatSince(at(2026, 10, 1, 7, 0), now), `le 1er${NBSP}oct., 07:00`);
+  assert.equal(formatSince(at(2026, 7, 4, 12, 0), now), `le 4${NBSP}juil., 12:00`);
+  assert.equal(formatSince(at(2026, 5, 4, 12, 0), now), `le 4${NBSP}mai, 12:00`);
+  // Une autre année la porte.
+  assert.equal(formatSince(at(2025, 12, 31, 22, 15), now), `le 31${NBSP}déc. 2025, 22:15`);
+  // Une date dans le futur (horloge qui recule) ne fait pas dire n'importe quoi.
+  assert.equal(formatSince(now + 3_600_000, now), '10:05');
+});
+
+test('la phrase de la partie en cours porte ce début', async () => {
+  const { fr } = await import('../src/i18n/fr.ts');
+  assert.equal(
+    fr.game.textPlaying('hier, 23:40'),
+    'Mode jeu actif depuis hier, 23:40. Tout revient en place quand tu quittes le jeu.',
+  );
 });

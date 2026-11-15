@@ -130,6 +130,31 @@ export function formatClock(timestamp: number): string {
   return `${two(date.getHours())}:${two(date.getMinutes())}`;
 }
 
+const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+
+/**
+ * Un début, pour finir la phrase « depuis … » : « 14:32 » le jour même,
+ * « hier, 23:40 » la veille, sinon « le 14 nov., 23:40 » (avec l'année si ce
+ * n'est pas l'année en cours). Jours et heures sont ceux de la machine.
+ */
+export function formatSince(then: number, now: number): string {
+  const date = new Date(then);
+  const today = new Date(now);
+  const clock = formatClock(then);
+  const dayOf = (value: Date): number => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  // Les jours se comptent sur le calendrier, pas en tranches de 24 h : un changement d'heure ne les décale pas.
+  const days = Math.round((dayOf(today) - dayOf(date)) / DAY);
+  if (days <= 0) {
+    return clock;
+  }
+  if (days === 1) {
+    return `hier, ${clock}`;
+  }
+  const day = date.getDate() === 1 ? '1er' : String(date.getDate());
+  const year = date.getFullYear() === today.getFullYear() ? '' : ` ${date.getFullYear()}`;
+  return `le ${day}${NBSP}${MONTHS[date.getMonth()] ?? ''}${year}, ${clock}`;
+}
+
 /** Sépare un chemin en nom et dossier parent : pour Windows (`\`) et pour le développement (`/`). */
 export function splitPath(path: string): { name: string; parent: string } {
   const trimmed = path.replace(/[\\/]+$/, '');

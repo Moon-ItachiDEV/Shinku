@@ -42,3 +42,19 @@ test('les textes calculés accordent les nombres', () => {
   assert.equal(fr.results.skipped(1), `1${NBSP}dossier n’a pas pu être lu${NBSP}: il n’est pas compté.`);
   assert.equal(fr.results.skipped(3), `3${NBSP}dossiers n’ont pas pu être lus${NBSP}: ils ne sont pas comptés.`);
 });
+
+test('les guillemets français tiennent à leur texte par des espaces insécables', () => {
+  for (const [name, text] of allTexts(fr)) {
+    assert.doesNotMatch(text, /« | »/, `${name} : « ${text} »`);
+  }
+  assert.match(fr.game.powerHint, new RegExp(`«${NBSP}Performances élevées${NBSP}»`));
+  assert.match(fr.game.powerUnavailable, new RegExp(`«${NBSP}Performances élevées${NBSP}»`));
+});
+
+test('les textes neufs du mode jeu disent ce qu’il faut, au tutoiement', () => {
+  assert.equal(fr.game.titlePending, 'Remise en place en cours');
+  assert.equal(fr.game.addedApp, 'Ajoutée par toi');
+  assert.equal(fr.game.notAGameNamed('Hollow Peaks'), `Ce n’est pas un jeu${NBSP}: Hollow Peaks`);
+  assert.equal(fr.game.restoreNamed('Hollow Peaks'), 'Rétablir Hollow Peaks');
+  assert.equal(fr.game.toast.unknownApp, 'Cette app n’est plus dans la liste.');
+});

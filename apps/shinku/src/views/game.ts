@@ -9,46 +9,61 @@ import { html, nothing, type TemplateResult } from 'lit-html';
 import { ref } from 'lit-html/directives/ref.js';
 
 import type { GameOption, GameSession, GameView, KnownGame, OpenApp, QuietApp } from '../backend/types.ts';
-import { formatAgo, formatClock, formatDuration, listOf } from '../format.ts';
+import { formatAgo, formatDuration, formatSince, listOf } from '../format.ts';
 import { fr } from '../i18n/fr.ts';
 import {
   canRelease,
   type GameWarning,
   gameWarning,
+  busyKey,
+  focusKey,
   type HeaderState,
   headerState,
   inGame,
   isRemovable,
+  isRemovableApp,
   type PowerChip,
   powerChip,
   powerRow,
   shownApps,
+  showsButtons,
   showsChips,
   waitingApps,
 } from '../model/game.ts';
 import type { Actions, AppState } from '../state.ts';
 import { checkIcon, crossIcon, moduleArt } from './art.ts';
+import { openModal } from './modal.ts';
 import { stage } from './parts.ts';
 
 type Content = TemplateResult | typeof nothing;
 
 // ── En-tête ────────────────────────────────────────────────────────────────
 
+/** Ce que dit un geste en vol : son bouton est désactivé jusqu'à la réponse du cœur. */
+const isBusy = (state: AppState, key: string): boolean => state.gameBusy.includes(key);
+
 function headerTitle(state: HeaderState, session: GameSession | null): string {
   if (session !== null && inGame(state)) {
     return fr.game.titlePlaying(session.name);
   }
-  return state === 'off' ? fr.game.titleOff : fr.game.titleIdle;
+  switch (state) {
+    case 'pending':
+      return fr.game.titlePending;
+    case 'off':
+      return fr.game.titleOff;
+    default:
+      return fr.game.titleIdle;
+  }
 }
 
-function headerText(state: HeaderState, session: GameSession | null): string {
+function headerText(state: HeaderState, session: GameSession | null, now: number): string {
   switch (state) {
     case 'off':
       return fr.game.textOff;
     case 'idle':
       return fr.game.textIdle;
     case 'playing':
-      return fr.game.textPlaying(formatClock(session?.since ?? 0));
+      return fr.game.textPlaying(formatSince(session?.since ?? now, now));
     case 'released':
       return fr.game.textReleased;
     case 'pending':
@@ -87,31 +102,42 @@ function lastGame(view: GameView): Content {
   </p>`;
 }
 
-function header(view: GameView, actions: Actions): TemplateResult {
-  const state = headerState(view);
+function header(state: AppState, view: GameView, actions: Actions): TemplateResult {
+  const head = headerState(view);
   const session = view.session;
-  const playing = session !== null && inGame(state);
   return html`<header class="ghead">
-    <div class="gart">${moduleArt('gameMode', playing)}</div>
+    <div class="gart">${moduleArt('gameMode')}</div>
     <div class="gtx">
       <p class="eb">${fr.game.eyebrow}</p>
-      <h1>${headerTitle(state, session)}</h1>
-      <p class="gtext" role="status">${headerText(state, session)}</p>
-      ${session !== null && showsChips(state) ? chips(session) : nothing}
-      ${session !== null
+      <h1>${headerTitle(head, session)}</h1>
+      <p class="gtext" role="status">${headerText(head, session, state.now)}</p>
+      ${session !== null && showsChips(head) ? chips(session) : nothing}
+      ${session !== null && showsButtons(head)
         ? html`<div class="gbtns">
             ${canRelease(session)
-              ? html`<button type="button" class="ghost small" @click=${actions.releaseGame}>${fr.game.release}</button>`
+              ? html`<button
+                  type="button"
+                  class="ghost small"
+                  ?disabled=${isBusy(state, busyKey.release)}
+                  @click=${actions.releaseGame}
+                >
+                  ${fr.game.release}
+                </button>`
               : nothing}
             <button
               type="button"
               class="ghost small"
+              data-fk=${focusKey.headerNotGame}
+              aria-label=${fr.game.notAGameNamed(session.name)}
+              ?disabled=${isBusy(state, busyKey.status(session.path))}
               @click=${() => actions.setGameStatus(session.path, 'notGame')}
             >
               ${fr.game.notAGame}
             </button>
           </div>`
-        : lastGame(view)}
+        : session === null
+          ? lastGame(view)
+          : nothing}
     </div>
   </header>`;
 }
@@ -146,14 +172,15 @@ function switchRow(
   checked: boolean,
   actions: Actions,
   extra: Content = nothing,
+  big = false,
 ): TemplateResult {
   const id = `game-${option}`;
-  return html`<div class="srow">
+  return html`<div class="srow ${big ? 'tall' : ''}">
     <div class="lab">
-      <label class="l" for=${id}>${label}</label>
+      <label class="l" id=${`${id}-l`} for=${id}>${label}</label>
       <span class="d" id=${`${id}-d`}>${hint}</span>
     </div>
-    ${extra} ${switchButton(id, checked, false, (on) => actions.setGameOption(option, on))}
+    ${extra} ${switchButton(id, checked, big, (on) => actions.setGameOption(option, on))}
   </div>`;
 }
 
@@ -167,17 +194,14 @@ const WARNING_TEXT: Record<GameWarning, string> = {
 
 function mainCard(state: AppState, view: GameView, actions: Actions): TemplateResult {
   const warning = gameWarning(view, state.gameStoppedSince, state.now);
+  // La région vivante est toujours là : seule la phrase qu'elle contient change, et les lecteurs d'écran l'annoncent.
   return html`<div class="card gmain">
-    <div class="srow tall">
-      <div class="lab">
-        <label class="l" for="game-auto">${fr.game.auto}</label>
-        <span class="d" id="game-auto-d">${fr.game.autoHint}</span>
-      </div>
-      ${switchButton('game-auto', view.auto, true, (on) => actions.setGameOption('auto', on))}
+    ${switchRow('auto', fr.game.auto, fr.game.autoHint, view.auto, actions, nothing, true)}
+    <div role="status">
+      ${warning === null
+        ? nothing
+        : html`<p class="gwarn"><i aria-hidden="true"></i><span>${WARNING_TEXT[warning]}</span></p>`}
     </div>
-    ${warning === null
-      ? nothing
-      : html`<p class="gwarn" role="status"><i aria-hidden="true"></i><span>${WARNING_TEXT[warning]}</span></p>`}
   </div>`;
 }
 
@@ -212,20 +236,47 @@ function powerSection(view: GameView, actions: Actions): TemplateResult {
   }
 }
 
-function quietRow(app: QuietApp, actions: Actions): TemplateResult {
-  return html`<li>
+/** Une app intégrée : une case. Une app ajoutée par la personne : pas de case, une croix pour la retirer. */
+function quietRow(state: AppState, app: QuietApp, actions: Actions): TemplateResult {
+  const open = app.running ? html`<span class="tag">${fr.game.open}</span>` : nothing;
+  if (isRemovableApp(app)) {
+    const busy = isBusy(state, busyKey.quiet(app.exe));
+    return html`<li class="row short static">
+      <span class="tx"><span class="t1">${app.label}</span></span>
+      ${open}
+      <span class="tag">${fr.game.addedApp}</span>
+      <button
+        type="button"
+        class="icb"
+        data-fk=${focusKey.quiet(app.exe)}
+        aria-label=${fr.game.remove(app.label)}
+        title=${fr.game.remove(app.label)}
+        ?disabled=${busy}
+        @click=${() => actions.setQuietApp(app.exe, false)}
+      >
+        ${crossIcon()}
+      </button>
+    </li>`;
+  }
+  // La pastille « Ouverte » est hors de l'étiquette : le nom de la case n'est que le nom de l'app.
+  return html`<li class="gcheck">
     <label class="row short">
-      <input type="checkbox" .checked=${app.on} @change=${(event: Event) => {
-        actions.setQuietApp(app.exe, (event.target as HTMLInputElement).checked);
-      }} />
+      <input
+        type="checkbox"
+        data-fk=${focusKey.quiet(app.exe)}
+        .checked=${app.on}
+        @change=${(event: Event) => {
+          actions.setQuietApp(app.exe, (event.target as HTMLInputElement).checked);
+        }}
+      />
       <span class="box">${checkIcon()}</span>
       <span class="tx"><span class="t1">${app.label}</span></span>
-      ${app.running ? html`<span class="tag">${fr.game.open}</span>` : nothing}
     </label>
+    ${open}
   </li>`;
 }
 
-function quietBlock(view: GameView, actions: Actions): Content {
+function quietBlock(state: AppState, view: GameView, actions: Actions): Content {
   if (!view.quietApps) {
     return nothing;
   }
@@ -233,62 +284,79 @@ function quietBlock(view: GameView, actions: Actions): Content {
   const waiting = waitingApps(view.apps);
   return html`<div class="sblock gquiet">
     ${shown.length > 0
-      ? html`<ul class="list plain glist">
-          ${shown.map((app) => quietRow(app, actions))}
+      ? html`<ul class="list glist" aria-labelledby="game-quietApps-l">
+          ${shown.map((app) => quietRow(state, app, actions))}
         </ul>`
       : nothing}
     ${waiting.length > 0 ? html`<p class="d">${fr.game.quietAlso(listOf(waiting))}</p>` : nothing}
     <p class="d">${fr.game.quietAdvice}</p>
-    <button type="button" class="ghost small add" @click=${() => actions.openPicker('app')}>
+    <button type="button" class="ghost small add" data-fk=${focusKey.addApp} @click=${() => actions.openPicker('app')}>
       ${fr.game.quietAdd}
     </button>
   </div>`;
 }
 
-function duringSection(view: GameView, actions: Actions): TemplateResult {
+function duringSection(state: AppState, view: GameView, actions: Actions): TemplateResult {
   return html`<section class="gsec">
     <h2 class="sub flat">${fr.game.during}</h2>
     <div class="card ${view.auto ? '' : 'dim'}">
       ${powerSection(view, actions)}
       ${switchRow('quietApps', fr.game.quiet, fr.game.quietHint, view.quietApps, actions)}
-      ${quietBlock(view, actions)}
+      ${quietBlock(state, view, actions)}
     </div>
   </section>`;
 }
 
 // ── Tes jeux ───────────────────────────────────────────────────────────────
 
-function gameRow(game: KnownGame, now: number, actions: Actions): TemplateResult {
+function gameRow(state: AppState, game: KnownGame, actions: Actions): TemplateResult {
+  const busy = isBusy(state, busyKey.status(game.path));
   return html`<li class="row static">
     <span class="tx">
       <span class="t1">${game.name}</span>
       <span class="t2 path" title=${game.path}>${game.path}</span>
     </span>
-    ${game.lastPlayed === null ? nothing : html`<span class="st">${fr.game.lastPlayed(formatAgo(game.lastPlayed, now))}</span>`}
     <span class="tag">${game.source === 'added' ? fr.game.added : fr.game.recognised}</span>
+    ${game.lastPlayed === null ? nothing : html`<span class="st">${fr.game.lastPlayed(formatAgo(game.lastPlayed, state.now))}</span>`}
     ${isRemovable(game)
       ? html`<button
           type="button"
           class="icb"
+          data-fk=${focusKey.game(game.path)}
           aria-label=${fr.game.remove(game.name)}
           title=${fr.game.remove(game.name)}
+          ?disabled=${busy}
           @click=${() => actions.setGameStatus(game.path, 'forgotten')}
         >
           ${crossIcon()}
         </button>`
-      : html`<button type="button" class="ghost small" @click=${() => actions.setGameStatus(game.path, 'notGame')}>
+      : html`<button
+          type="button"
+          class="ghost small"
+          data-fk=${focusKey.game(game.path)}
+          aria-label=${fr.game.notAGameNamed(game.name)}
+          ?disabled=${busy}
+          @click=${() => actions.setGameStatus(game.path, 'notGame')}
+        >
           ${fr.game.notAGame}
         </button>`}
   </li>`;
 }
 
-function notGameRow(entry: { path: string; name: string }, actions: Actions): TemplateResult {
+function notGameRow(state: AppState, entry: { path: string; name: string }, actions: Actions): TemplateResult {
   return html`<li class="row static">
     <span class="tx">
       <span class="t1">${entry.name}</span>
       <span class="t2 path" title=${entry.path}>${entry.path}</span>
     </span>
-    <button type="button" class="ghost small" @click=${() => actions.setGameStatus(entry.path, 'forgotten')}>
+    <button
+      type="button"
+      class="ghost small"
+      data-fk=${focusKey.never(entry.path)}
+      aria-label=${fr.game.restoreNamed(entry.name)}
+      ?disabled=${isBusy(state, busyKey.status(entry.path))}
+      @click=${() => actions.setGameStatus(entry.path, 'forgotten')}
+    >
       ${fr.game.restore}
     </button>
   </li>`;
@@ -302,18 +370,18 @@ function gamesSection(state: AppState, view: GameView, actions: Actions): Templa
         <p class="d gintro">${fr.game.gamesHint}</p>
         ${view.games.length === 0
           ? html`<p class="d gempty">${fr.game.gamesEmpty}</p>`
-          : html`<ul class="list plain">
-              ${view.games.map((game) => gameRow(game, state.now, actions))}
+          : html`<ul class="list">
+              ${view.games.map((game) => gameRow(state, game, actions))}
             </ul>`}
-        <button type="button" class="ghost small add" @click=${() => actions.openPicker('game')}>
+        <button type="button" class="ghost small add" data-fk=${focusKey.addGame} @click=${() => actions.openPicker('game')}>
           ${fr.game.addGame}
         </button>
         <p class="d">${fr.game.addGameHint}</p>
         ${view.notGames.length === 0
           ? nothing
           : html`<h3 class="sub gnever">${fr.game.never}</h3>
-              <ul class="list plain">
-                ${view.notGames.map((entry) => notGameRow(entry, actions))}
+              <ul class="list">
+                ${view.notGames.map((entry) => notGameRow(state, entry, actions))}
               </ul>`}
       </div>
     </div>
@@ -353,8 +421,8 @@ export function gameView(state: AppState, actions: Actions): TemplateResult {
     body: html`<div class="scroll">
       <div class="page game">
         ${view === null
-          ? html`<p class="note">${fr.common.loading}</p>`
-          : html`${header(view, actions)} ${mainCard(state, view, actions)} ${duringSection(view, actions)}
+          ? html`<p class="note" role="status">${state.gameFailed ? fr.toast.unexpected : fr.common.loading}</p>`
+          : html`${header(state, view, actions)} ${mainCard(state, view, actions)} ${duringSection(state, view, actions)}
             ${gamesSection(state, view, actions)} ${windowsSection(actions)}
             <p class="note gpromise">${fr.game.promise}</p>`}
       </div>
@@ -364,25 +432,9 @@ export function gameView(state: AppState, actions: Actions): TemplateResult {
 
 // ── Sélecteur ──────────────────────────────────────────────────────────────
 
-/**
- * Ouvre la boîte en mode modal : le reste de la fenêtre ne répond plus, et
- * Échap la referme. À son premier dessin elle n'est pas encore dans la page :
- * l'ouverture attend qu'elle y soit.
- */
-function openModal(element: Element | undefined): void {
-  if (!(element instanceof HTMLDialogElement)) {
-    return;
-  }
-  queueMicrotask(() => {
-    if (element.isConnected && !element.open) {
-      element.showModal();
-    }
-  });
-}
-
-function pickRow(app: OpenApp, actions: Actions): TemplateResult {
+function pickRow(app: OpenApp, busy: boolean, actions: Actions): TemplateResult {
   return html`<li>
-    <button type="button" class="row" @click=${() => actions.pickOpenApp(app.id)}>
+    <button type="button" class="row" ?disabled=${busy} @click=${() => actions.pickOpenApp(app.id)}>
       <span class="tx">
         <span class="t1">${app.name}</span>
         <span class="t2 path" title=${app.path}>${app.path}</span>
@@ -424,8 +476,8 @@ export function pickerDialog(state: AppState, actions: Actions): Content {
         ? html`<p class="note" role="status">${fr.common.loading}</p>`
         : apps.length === 0
           ? html`<p class="note">${fr.game.pickEmpty}</p>`
-          : html`<ul class="list plain pickl">
-              ${apps.map((app) => pickRow(app, actions))}
+          : html`<ul class="list pickl">
+              ${apps.map((app) => pickRow(app, isBusy(state, busyKey.pick), actions))}
             </ul>`}
       <div class="askbtns">
         <button type="button" class="ghost" autofocus @click=${actions.closePicker}>${fr.game.cancel}</button>

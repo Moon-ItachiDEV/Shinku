@@ -2,16 +2,31 @@
 // les paramètres de la démo annoncent.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { demoOptions, type GameDemo, mockBackend } from '../src/backend/mock.ts';
-import type { Backend, BackendError, GameRefusal } from '../src/backend/types.ts';
+import {
+  GAME_LIST_LIMIT,
+  type GameSeed,
+  demoOptions,
+  type GameDemo,
+  mockBackend,
+  QUIET_LIST_LIMIT,
+} from '../src/backend/mock.ts';
+import type { Backend, BackendError, GameRefusal, OpenApp } from '../src/backend/types.ts';
 
 const HOLLOW_PEAKS = 'D:\\SteamLibrary\\steamapps\\common\\Hollow Peaks\\hp.exe';
 
 /** Un faux cœur de démo, avec les paramètres d'adresse donnés. */
-function demo(query = ''): Backend {
-  return mockBackend(demoOptions(query));
+function demo(query = '', seed: GameSeed = {}): Backend {
+  return mockBackend(demoOptions(query), seed);
+}
+
+/** Le sélecteur demande la liste, puis l'app de ce nom : `{ id, path }`, comme la page les renvoie. */
+async function pick(backend: Backend, name: string): Promise<OpenApp> {
+  const app = (await backend.openApps()).find((entry) => entry.name === name);
+  assert.ok(app !== undefined, name);
+  return app;
 }
 
 async function refusal(promise: Promise<unknown>): Promise<GameRefusal | null> {
@@ -61,7 +76,8 @@ test('chaque état de la démo rend la vue qu’il annonce', async () => {
   assert.equal(playing.session?.name, 'Hollow Peaks');
   assert.equal(playing.session?.source, 'library');
   assert.equal(playing.session?.power, 'applied');
-  assert.equal(playing.session?.quietedApps, 1);
+  // OneDrive et qBittorrent tournent, et sont cochées.
+  assert.equal(playing.session?.quietedApps, 2);
   assert.equal(playing.session?.released, false);
   assert.equal(playing.session?.restorePending, false);
 
@@ -129,6 +145,16 @@ test('les apps de la démo : intégrées cochées d’office, navigateurs décoc
   assert.equal(by('qbittorrent.exe')?.label, 'qBittorrent');
   assert.equal(by('qbittorrent.exe')?.builtIn, false);
   assert.equal(by('qbittorrent.exe')?.on, true);
+  assert.equal(by('qbittorrent.exe')?.running, true);
+});
+
+test('une app ajoutée est nommée comme le cœur la nomme : son nom d’affichage si elle tourne, sinon son fichier sans « .exe »', async () => {
+  const backend = demo('', { quietAdded: ['qbittorrent.exe', 'syncthing.exe'] });
+  const { apps } = await backend.gameView();
+  const by = (exe: string) => apps.find((entry) => entry.exe === exe);
+  // Ouverte : « qBittorrent » (nom lu sur l’app). Fermée : « syncthing », en minuscules, sans « .exe ».
+  assert.deepEqual([by('qbittorrent.exe')?.label, by('qbittorrent.exe')?.running], ['qBittorrent', true]);
+  assert.deepEqual([by('syncthing.exe')?.label, by('syncthing.exe')?.running], ['syncthing', false]);
 });
 
 test('cocher et décocher une app', async () => {
@@ -158,20 +184,20 @@ test('une app inconnue est refusée, et rien ne change', async () => {
   assert.deepEqual((await backend.overview()).settings.gameModeQuietAdded, ['qbittorrent.exe']);
 });
 
-test('le sélecteur liste quatre apps ouvertes', async () => {
+test('le sélecteur liste quatre apps ouvertes, sans l’Explorateur : le cœur filtre les noms protégés', async () => {
   const apps = await demo().openApps();
   assert.equal(apps.length, 4);
   assert.deepEqual(
     apps.map((entry) => entry.id),
     [1, 2, 3, 4],
   );
+  assert.ok(!apps.some((entry) => /explorer/i.test(entry.path) || /Explorateur/.test(entry.name)));
 });
 
 test('ajouter un jeu ouvert, puis le retirer', async () => {
   const backend = demo();
-  const [roblox] = await backend.openApps();
-  assert.ok(roblox !== undefined);
-  const added = await backend.addGame(roblox.id);
+  const roblox = await pick(backend, 'Roblox');
+  const added = await backend.addGame(roblox.id, roblox.path);
   const game = added.games.find((entry) => entry.path === roblox.path);
   assert.equal(game?.source, 'added');
   assert.equal(game?.name, 'Roblox');
@@ -184,23 +210,81 @@ test('ajouter un jeu ouvert, puis le retirer', async () => {
 
 test('un id qui n’est pas dans la dernière liste est refusé, comme un programme sous veto', async () => {
   const backend = demo();
+  const roblox = 'C:\\Users\\Léa\\AppData\\Local\\Roblox\\Versions\\version-1a2b3c4d\\RobloxPlayerBeta.exe';
   // Sans liste demandée, aucun id ne vaut.
-  assert.equal(await refusal(backend.addGame(1)), 'unknownApp');
-  assert.equal(await refusal(backend.addQuietApp(1)), 'unknownApp');
+  assert.equal(await refusal(backend.addGame(1, roblox)), 'unknownApp');
+  assert.equal(await refusal(backend.addQuietApp(1, roblox)), 'unknownApp');
   await backend.openApps();
-  assert.equal(await refusal(backend.addGame(99)), 'unknownApp');
+  assert.equal(await refusal(backend.addGame(99, roblox)), 'unknownApp');
   // Battle.net est un lanceur : jamais un jeu.
-  assert.equal(await refusal(backend.addGame(4)), 'notAGame');
+  const launcher = await pick(backend, 'Battle.net');
+  assert.equal(await refusal(backend.addGame(launcher.id, launcher.path)), 'notAGame');
+});
+
+test('le chemin envoyé avec l’id doit être celui de cet id dans la dernière liste', async () => {
+  const backend = demo();
+  const roblox = await pick(backend, 'Roblox');
+  const notepad = await pick(backend, 'Notepad++');
+  // Le numéro de Roblox avec le chemin d’une autre app : la liste a changé sous les pieds de la page.
+  assert.equal(await refusal(backend.addGame(roblox.id, notepad.path)), 'unknownApp');
+  assert.equal(await refusal(backend.addQuietApp(roblox.id, notepad.path)), 'unknownApp');
+  assert.equal(await refusal(backend.addGame(roblox.id, 'C:\\ailleurs\\x.exe')), 'unknownApp');
+  // Rien n’a bougé.
+  const view = await backend.gameView();
+  assert.ok(!view.games.some((entry) => entry.name === 'Roblox'));
+  assert.ok(!view.apps.some((entry) => entry.exe === 'robloxplayerbeta.exe'));
+  // Le bon couple passe, quelle que soit la casse du chemin.
+  const added = await backend.addGame(roblox.id, roblox.path.toUpperCase());
+  assert.ok(added.games.some((entry) => entry.name === 'Roblox'));
 });
 
 test('ajouter une app en veilleuse depuis le sélecteur', async () => {
   const backend = demo();
-  await backend.openApps();
-  const view = await backend.addQuietApp(2);
+  const app = await pick(backend, 'Notepad++');
+  const view = await backend.addQuietApp(app.id, app.path);
   const notepad = view.apps.find((entry) => entry.exe === 'notepad++.exe');
+  // Elle tourne : le cœur la nomme par son nom d’affichage.
   assert.equal(notepad?.label, 'Notepad++');
   assert.equal(notepad?.on, true);
   assert.equal(notepad?.builtIn, false);
+  assert.equal(notepad?.running, true);
+});
+
+test('un lanceur de jeux n’est jamais mis en veilleuse : « protectedApp »', async () => {
+  const backend = demo();
+  const launcher = await pick(backend, 'Battle.net');
+  assert.equal(await refusal(backend.addQuietApp(launcher.id, launcher.path)), 'protectedApp');
+  assert.deepEqual((await backend.overview()).settings.gameModeQuietAdded, ['qbittorrent.exe']);
+});
+
+test('les listes pleines refusent un nouveau venu, pas un élément déjà là', async () => {
+  // Les bornes du faux cœur sont celles du cœur.
+  const settings = readFileSync(new URL('../../../crates/shinku-core/src/settings.rs', import.meta.url), 'utf8');
+  const limit = (name: string): number => Number(new RegExp(`pub const ${name}: usize = (\\d+);`).exec(settings)?.[1]);
+  assert.equal(GAME_LIST_LIMIT, limit('MAX_GAME_PATHS'));
+  assert.equal(QUIET_LIST_LIMIT, limit('MAX_EXE_NAMES'));
+
+  // Jeux : la liste est pleine, et Roblox en fait partie ou non.
+  const filler = (count: number): string[] => Array.from({ length: count }, (_, index) => `D:\\Jeux\\g${index}\\g.exe`);
+  const probe = demo('', { games: filler(GAME_LIST_LIMIT) });
+  const roblox = await pick(probe, 'Roblox');
+  assert.equal(await refusal(probe.addGame(roblox.id, roblox.path)), 'listFull');
+  assert.equal((await probe.overview()).settings.gameModeGames.length, GAME_LIST_LIMIT);
+
+  const listed = demo('', { games: [...filler(GAME_LIST_LIMIT - 1), roblox.path] });
+  const again = await pick(listed, 'Roblox');
+  assert.equal((await listed.addGame(again.id, again.path)).games.length > 0, true);
+
+  // Apps : même chose avec la borne des noms de fichier.
+  const names = (count: number): string[] => Array.from({ length: count }, (_, index) => `app${index}.exe`);
+  const quiet = demo('', { quietAdded: names(QUIET_LIST_LIMIT) });
+  const notepad = await pick(quiet, 'Notepad++');
+  assert.equal(await refusal(quiet.addQuietApp(notepad.id, notepad.path)), 'listFull');
+  assert.equal((await quiet.overview()).settings.gameModeQuietAdded.length, QUIET_LIST_LIMIT);
+  // Une app déjà dans la liste n’a pas besoin de place.
+  const room = demo('', { quietAdded: [...names(QUIET_LIST_LIMIT - 1), 'notepad++.exe'] });
+  const same = await pick(room, 'Notepad++');
+  await room.addQuietApp(same.id, same.path);
 });
 
 test('« Ce n’est pas un jeu » écarte un jeu vu, et « Rétablir » le ramène', async () => {
@@ -212,6 +296,21 @@ test('« Ce n’est pas un jeu » écarte un jeu vu, et « Rétablir » le ramè
   const restored = await backend.setGameStatus(HOLLOW_PEAKS, 'forgotten');
   assert.equal(restored.notGames.length, 0);
   assert.equal(restored.games.find((entry) => entry.path === HOLLOW_PEAKS)?.source, 'library');
+});
+
+test('les jeux ajoutés se rangent comme dans le cœur : le dernier ajouté d’abord', async () => {
+  const backend = demo();
+  const roblox = await pick(backend, 'Roblox');
+  const view = await backend.addGame(roblox.id, roblox.path);
+  assert.deepEqual(
+    view.games.map((entry) => entry.name),
+    ['Roblox', 'Minecraft', 'Hollow Peaks'],
+  );
+  const notepad = await pick(backend, 'Notepad++');
+  assert.deepEqual(
+    (await backend.addGame(notepad.id, notepad.path)).games.map((entry) => entry.name),
+    ['Notepad++', 'Roblox', 'Minecraft', 'Hollow Peaks'],
+  );
 });
 
 test('la liste des jeux met les jeux ajoutés avant les jeux vus', async () => {
@@ -231,24 +330,32 @@ test('un chemin que le cœur ne connaît pas est refusé', async () => {
   assert.equal(await refusal(demo().setGameStatus('C:\\Windows\\System32\\notepad.exe', 'notGame')), 'unknownGame');
 });
 
-test('dire que le jeu en cours n’en est pas un termine la partie', async () => {
+test('dire que le jeu en cours n’en est pas un termine la partie, mais au pas suivant de l’agent', async () => {
   const backend = demo('?game=playing');
   const view = await backend.setGameStatus(HOLLOW_PEAKS, 'notGame');
-  assert.equal(view.session, null);
+  // Comme le cœur : la réponse du geste est celle d’avant que l’agent agisse.
+  assert.notEqual(view.session, null);
   assert.equal(view.notGames.length, 1);
-  assert.ok(view.last !== null);
+  const next = await backend.gameView();
+  assert.equal(next.session, null);
+  assert.ok(next.last !== null);
 });
 
-test('« Tout remettre maintenant » remet en place sans finir la partie', async () => {
+test('« Tout remettre maintenant » remet en place sans finir la partie, au pas suivant de l’agent', async () => {
   const backend = demo('?game=playing');
-  const view = await backend.releaseGame();
+  const answer = await backend.releaseGame();
+  assert.equal(answer.session?.released, false);
+  assert.equal(answer.session?.quietedApps, 2);
+  const view = await backend.gameView();
   assert.equal(view.session?.released, true);
   assert.equal(view.session?.quietedApps, 0);
   assert.equal(view.session?.restorePending, false);
 });
 
 test('relâcher une remise en attente la remet en place', async () => {
-  const view = await demo('?game=pending').releaseGame();
+  const backend = demo('?game=pending');
+  await backend.releaseGame();
+  const view = await backend.gameView();
   assert.equal(view.session?.restorePending, false);
   assert.equal(view.session?.released, true);
 });

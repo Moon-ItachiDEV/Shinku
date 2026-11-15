@@ -124,16 +124,39 @@ const BUILT_IN_APPS: ReadonlyArray<{ exe: string; label: string; on: boolean }> 
   { exe: 'vivaldi.exe', label: 'Vivaldi', on: false },
 ];
 
-/** Les apps qui tournent dans la démo. */
-const RUNNING_APPS: ReadonlySet<string> = new Set(['onedrive.exe', 'chrome.exe']);
+const fileName = (path: string): string => path.slice(path.lastIndexOf('\\') + 1).toLowerCase();
 
-/** Ce que le sélecteur propose : quatre apps fictives, dont un lanceur que le cœur refuse comme jeu. */
-const OPEN_APPS: readonly OpenApp[] = [
-  { id: 1, name: 'Roblox', path: 'C:\\Users\\Léa\\AppData\\Local\\Roblox\\Versions\\version-1a2b3c4d\\RobloxPlayerBeta.exe' },
-  { id: 2, name: 'Notepad++', path: 'C:\\Program Files\\Notepad++\\notepad++.exe' },
-  { id: 3, name: 'VLC media player', path: 'C:\\Program Files\\VideoLAN\\VLC\\vlc.exe' },
-  { id: 4, name: 'Battle.net', path: 'C:\\Program Files (x86)\\Battle.net\\Battle.net.exe' },
+/** Les apps qui tournent dans la démo, en plus des programmes ouverts ci-dessous. */
+const RUNNING_APPS: ReadonlySet<string> = new Set(['onedrive.exe', 'chrome.exe', 'qbittorrent.exe']);
+
+/**
+ * Les programmes ouverts de la démo : quatre que le sélecteur propose (dont un
+ * lanceur que le cœur refuse comme jeu et comme app en veilleuse), et
+ * l'Explorateur de Windows, que le cœur ne propose jamais (nom protégé).
+ */
+const OPEN_PROGRAMS: ReadonlyArray<{ name: string; path: string }> = [
+  { name: 'Roblox', path: 'C:\\Users\\Léa\\AppData\\Local\\Roblox\\Versions\\version-1a2b3c4d\\RobloxPlayerBeta.exe' },
+  { name: 'Notepad++', path: 'C:\\Program Files\\Notepad++\\notepad++.exe' },
+  { name: 'VLC media player', path: 'C:\\Program Files\\VideoLAN\\VLC\\vlc.exe' },
+  { name: 'Battle.net', path: 'C:\\Program Files (x86)\\Battle.net\\Battle.net.exe' },
+  { name: 'Explorateur Windows', path: 'C:\\Windows\\explorer.exe' },
 ];
+
+/** Les noms de fichier que le cœur ne propose ni ne met jamais en veilleuse. */
+const PROTECTED_EXES: ReadonlySet<string> = new Set(['explorer.exe']);
+
+/** Les lanceurs de jeux : jamais mis en veilleuse (règle du cœur), refusés comme « protégés ». */
+const LAUNCHER_EXES: ReadonlySet<string> = new Set(['steam.exe', 'epicgameslauncher.exe', 'battle.net.exe']);
+
+/** Les bornes des listes du cœur (`MAX_GAME_PATHS` et `MAX_EXE_NAMES`, crates/shinku-core/src/settings.rs). */
+export const GAME_LIST_LIMIT = 256;
+export const QUIET_LIST_LIMIT = 64;
+
+/** Les noms d'affichage que le cœur lit sur une app ouverte. */
+const DISPLAY_NAMES: ReadonlyMap<string, string> = new Map([
+  ['qbittorrent.exe', 'qBittorrent'],
+  ...OPEN_PROGRAMS.map((program): [string, string] => [fileName(program.path), program.name]),
+]);
 
 /** Les programmes que le cœur ne laisse jamais ajouter comme jeu. */
 const NEVER_GAMES: ReadonlySet<string> = new Set(['vlc.exe', 'battle.net.exe']);
@@ -141,7 +164,6 @@ const NEVER_GAMES: ReadonlySet<string> = new Set(['vlc.exe', 'battle.net.exe']);
 const HOLLOW_PEAKS = 'D:\\SteamLibrary\\steamapps\\common\\Hollow Peaks\\hp.exe';
 const MINECRAFT = 'C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.9.9-hotspot\\bin\\javaw.exe';
 
-const fileName = (path: string): string => path.slice(path.lastIndexOf('\\') + 1).toLowerCase();
 const samePath = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase();
 const gameRefused = (reason: GameRefusal): Promise<never> => Promise.reject({ kind: 'gameRefused', reason });
 
@@ -288,7 +310,13 @@ function endOf(run: Cleaning): number {
   return (run.stopAt === null ? last : Math.min(last, run.stopAt)) + WRAP_UP_TIME;
 }
 
-export function mockBackend(options: MockOptions): Backend {
+/** Ce que les essais changent aux listes de départ du mode jeu (les paramètres d'adresse n'y touchent pas). */
+export interface GameSeed {
+  games?: readonly string[];
+  quietAdded?: readonly string[];
+}
+
+export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend {
   const demo = options.game;
   let settings: Settings = {
     version: 1,
@@ -308,9 +336,9 @@ export function mockBackend(options: MockOptions): Backend {
     gameModeAuto: demo.state !== 'off',
     gameModePower: true,
     gameModeQuietApps: true,
-    gameModeQuietAdded: ['qbittorrent.exe'],
+    gameModeQuietAdded: [...(seed.quietAdded ?? ['qbittorrent.exe'])],
     gameModeQuietRemoved: [],
-    gameModeGames: [MINECRAFT],
+    gameModeGames: [...(seed.games ?? [MINECRAFT])],
     gameModeNotGames: [],
   };
   let issue: LoadIssue | null =
@@ -401,7 +429,6 @@ export function mockBackend(options: MockOptions): Backend {
     [MINECRAFT.toLowerCase(), 'Minecraft'],
     [HOLLOW_PEAKS.toLowerCase(), 'Hollow Peaks'],
   ]);
-  const labels = new Map<string, string>([['qbittorrent.exe', 'qBittorrent']]);
   let last: LastGame | null = {
     name: 'Hollow Peaks',
     // Deux heures dix de jeu, finies il y a deux heures dix.
@@ -423,6 +450,25 @@ export function mockBackend(options: MockOptions): Backend {
       : null;
   /** La dernière liste d'apps ouvertes rendue : les `id` ne valent que pour elle. */
   let offered: readonly OpenApp[] = [];
+  /**
+   * Ce que l'agent fera à son pas suivant : le cœur poste l'ordre et répond
+   * tout de suite, la partie ne change qu'à la vue demandée ensuite.
+   */
+  let releaseAsked = false;
+  let endAsked = false;
+
+  const isRunning = (exe: string): boolean =>
+    RUNNING_APPS.has(exe) || OPEN_PROGRAMS.some((program) => fileName(program.path) === exe);
+
+  /**
+   * Le libellé d'une app ajoutée : son nom d'affichage quand elle tourne, sinon
+   * son nom de fichier sans « .exe » (comme le cœur ; la démo ne ferme jamais
+   * une app : « déjà vue pendant cette ouverture » revient à « ouverte »).
+   */
+  const addedLabel = (exe: string): string => {
+    const stem = exe.replace(/\.exe$/, '');
+    return isRunning(exe) ? (DISPLAY_NAMES.get(exe) ?? stem) : stem;
+  };
 
   const gameApps = (): QuietApp[] => [
     ...BUILT_IN_APPS.map(
@@ -430,13 +476,13 @@ export function mockBackend(options: MockOptions): Backend {
         exe: app.exe,
         label: app.label,
         on: settings.gameModeQuietAdded.includes(app.exe) || (app.on && !settings.gameModeQuietRemoved.includes(app.exe)),
-        running: RUNNING_APPS.has(app.exe),
+        running: isRunning(app.exe),
         builtIn: true,
       }),
     ),
     ...settings.gameModeQuietAdded
       .filter((exe) => !BUILT_IN_APPS.some((app) => app.exe === exe))
-      .map((exe): QuietApp => ({ exe, label: labels.get(exe) ?? exe, on: true, running: RUNNING_APPS.has(exe), builtIn: false })),
+      .map((exe): QuietApp => ({ exe, label: addedLabel(exe), on: true, running: isRunning(exe), builtIn: false })),
   ];
 
   const powerSupport = (): GameView['powerSupport'] =>
@@ -473,9 +519,9 @@ export function mockBackend(options: MockOptions): Backend {
     };
   }
 
-  /** Les jeux connus : ajoutés d'abord, puis vus, sans ceux que la personne a écartés. */
+  /** Les jeux connus : ajoutés (le dernier ajouté d'abord, comme le cœur), puis vus, sans ceux que la personne a écartés. */
   function gameList(): KnownGame[] {
-    const added = settings.gameModeGames.map(
+    const added = settings.gameModeGames.toReversed().map(
       (path): KnownGame => ({ path, name: names.get(path.toLowerCase()) ?? fileName(path), source: 'added', lastPlayed: null }),
     );
     const known = seen
@@ -500,6 +546,19 @@ export function mockBackend(options: MockOptions): Backend {
       games: gameList(),
       notGames: settings.gameModeNotGames.map((path) => ({ path, name: names.get(path.toLowerCase()) ?? fileName(path) })),
     };
+  }
+
+  /** Le pas suivant de l'agent : il exécute les ordres postés depuis la dernière vue. */
+  function agentStep(): void {
+    if (session !== null) {
+      if (endAsked) {
+        endSession();
+      } else if (releaseAsked) {
+        session = { ...session, released: true, restorePending: false };
+      }
+    }
+    releaseAsked = false;
+    endAsked = false;
   }
 
   /** Fin de partie : tout est remis en place, le bilan est noté. */
@@ -931,7 +990,10 @@ export function mockBackend(options: MockOptions): Backend {
       started = null;
       return structuredClone(settings);
     },
-    gameView: async () => gameView(),
+    gameView: async () => {
+      agentStep();
+      return gameView();
+    },
     setGameOption: async (option: GameOption, on) => {
       switch (option) {
         case 'auto':
@@ -978,16 +1040,23 @@ export function mockBackend(options: MockOptions): Backend {
     },
     openApps: async () => {
       await delay(250);
-      offered = OPEN_APPS;
-      return OPEN_APPS.map((app) => ({ ...app }));
+      // Le cœur ne propose pas les noms protégés.
+      offered = OPEN_PROGRAMS.filter((program) => !PROTECTED_EXES.has(fileName(program.path))).map(
+        (program, index): OpenApp => ({ id: index + 1, ...program }),
+      );
+      return offered.map((app) => ({ ...app }));
     },
-    addGame: async (id) => {
+    addGame: async (id, path) => {
       const app = offered.find((entry) => entry.id === id);
-      if (app === undefined) {
+      // Le chemin n'est que comparé : il doit être celui du numéro, dans la dernière liste du cœur.
+      if (app === undefined || !samePath(app.path, path)) {
         return gameRefused('unknownApp');
       }
       if (NEVER_GAMES.has(fileName(app.path))) {
         return gameRefused('notAGame');
+      }
+      if (!settings.gameModeGames.some((other) => samePath(other, app.path)) && settings.gameModeGames.length >= GAME_LIST_LIMIT) {
+        return gameRefused('listFull');
       }
       names.set(app.path.toLowerCase(), app.name);
       settings = {
@@ -997,19 +1066,22 @@ export function mockBackend(options: MockOptions): Backend {
       };
       return gameView();
     },
-    addQuietApp: async (id) => {
+    addQuietApp: async (id, path) => {
       const app = offered.find((entry) => entry.id === id);
-      if (app === undefined) {
+      if (app === undefined || !samePath(app.path, path)) {
         return gameRefused('unknownApp');
       }
       const exe = fileName(app.path);
-      if (!gameApps().some((known) => known.exe === exe)) {
-        labels.set(exe, app.name);
+      if (PROTECTED_EXES.has(exe) || LAUNCHER_EXES.has(exe)) {
+        return gameRefused('protectedApp');
       }
       const builtIn = BUILT_IN_APPS.find((entry) => entry.exe === exe);
       if (builtIn?.on === true) {
         settings = { ...settings, gameModeQuietRemoved: settings.gameModeQuietRemoved.filter((other) => other !== exe) };
       } else if (!settings.gameModeQuietAdded.includes(exe)) {
+        if (settings.gameModeQuietAdded.length >= QUIET_LIST_LIMIT) {
+          return gameRefused('listFull');
+        }
         settings = { ...settings, gameModeQuietAdded: [...settings.gameModeQuietAdded, exe] };
       }
       return gameView();
@@ -1026,8 +1098,8 @@ export function mockBackend(options: MockOptions): Backend {
           gameModeNotGames: [...without(settings.gameModeNotGames, known), known],
         };
         if (session !== null && samePath(session.path, known)) {
-          // Ce n'est plus un jeu : la partie se termine, tout est remis.
-          endSession();
+          // Ce n'est plus un jeu : l'agent finira la partie à son pas suivant.
+          endAsked = true;
         }
       } else {
         settings = {
@@ -1040,8 +1112,8 @@ export function mockBackend(options: MockOptions): Backend {
     },
     releaseGame: async () => {
       if (session !== null) {
-        // Tout est remis en place ; la partie continue sans rien appliquer.
-        session = { ...session, released: true, restorePending: false };
+        // L'agent remettra tout en place à son pas suivant ; la partie continue sans rien appliquer.
+        releaseAsked = true;
       }
       return gameView();
     },

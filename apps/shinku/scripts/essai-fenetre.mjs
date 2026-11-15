@@ -28,7 +28,8 @@
 //
 // L'essai allume aussi, un instant, le mode jeu automatique : le programme
 // lance alors shinku-agent.exe (installé à côté de lui), que l'essai compte
-// parmi les processus de la machine. Il l'éteint ensuite. La reconnaissance
+// parmi les processus de la machine (il doit y en avoir exactement un). Il
+// l'éteint ensuite, ou le laisse allumé si la machine l'avait allumé. La reconnaissance
 // d'un vrai jeu est essayée à part, par essai-mode-jeu.ps1.
 //
 // Mise au point hors de Windows : `--programme` peut être un script qui ouvre
@@ -81,6 +82,7 @@ const started = Date.now();
 const elapsed = () => `${((Date.now() - started) / 1000).toFixed(1).padStart(6)} s`;
 const say = (line) => console.log(`[${elapsed()}] ${line}`);
 const done = (line) => say(`✓ ${line}`);
+const note = (line) => say(`• ${line}`);
 
 /** Écrit un texte en retrait : ce que la fenêtre affiche, un diagnostic. */
 function quote(text, limit = 40) {
@@ -1006,9 +1008,14 @@ function agentCount() {
 }
 
 /**
- * L'interrupteur principal du mode jeu : éteint au départ ; l'allumer lance
- * l'agent et la page ne montre plus d'avertissement ; l'éteindre fait sortir
- * l'agent. L'état de départ est remis, même si l'essai échoue en route.
+ * L'interrupteur principal du mode jeu. Éteint au départ : l'allumer lance
+ * l'agent, l'éteindre le fait sortir. Allumé au départ (la machine l'avait
+ * allumé) : l'essai fait le parcours dans l'autre sens, et le laisse allumé.
+ *
+ * Ce qui prouve que l'agent tourne, sous Windows, c'est le nombre de processus
+ * `shinku-agent.exe` (il doit valoir 1). L'avertissement de la page n'en est
+ * pas une preuve : il ne s'affiche qu'après 15 s d'arrêt, alors que l'essai
+ * lit la page bien avant. Sa lecture est donnée comme une indication.
  */
 async function checkGameMode(window) {
   const read = () => window.session.run(readGame);
@@ -1022,6 +1029,27 @@ async function checkGameMode(window) {
     }
     await window.healthy(`après avoir ${on ? 'allumé' : 'éteint'} le mode jeu`);
   };
+  const controlled = agentCount() !== null;
+  const turnOn = async () => {
+    await toggle(true);
+    if (controlled) {
+      // La preuve : exactement un agent, compté parmi les processus de Windows.
+      await until('un seul agent tourne', 20_000, () => agentCount() === 1, 500);
+      done('allumé : un agent tourne (compte des processus shinku-agent.exe : 1)');
+    } else {
+      done('contrôle de l’agent sauté (démo)');
+    }
+  };
+  const turnOff = async () => {
+    await toggle(false);
+    if (controlled) {
+      // L'agent se voit éteint à son prochain pas (2 s) : il n'a plus de raison de veiller.
+      await until('l’agent sort', 20_000, () => agentCount() === 0, 500);
+      done('éteint : l’agent est sorti (compte des processus shinku-agent.exe : 0)');
+    } else {
+      done('contrôle de l’agent sauté (démo)');
+    }
+  };
 
   const screen = await window.open('Mode jeu');
   for (const expected of ['Mode jeu automatique', 'Pendant que tu joues', 'Tes jeux', 'Windows s’en occupe déjà']) {
@@ -1030,61 +1058,66 @@ async function checkGameMode(window) {
     }
   }
   const start = await read();
-  if (start.on !== false) {
-    fail(`le mode jeu automatique devait être éteint au départ (interrupteur : ${start.on})`);
+  if (start.on === null) {
+    fail('la page Mode jeu n’a pas d’interrupteur principal');
   }
-  if (!shows(start.title, 'éteint')) {
-    fail(`au départ, l’en-tête devait dire que le mode jeu est éteint : « ${start.title} »`);
+  const startOn = start.on;
+  if (startOn) {
+    note('le mode jeu était déjà allumé au départ : l’essai fait le parcours dans l’autre sens (éteindre, puis rallumer) et le laisse allumé');
+  } else {
+    if (!shows(start.title, 'éteint')) {
+      fail(`au départ, l’en-tête devait dire que le mode jeu est éteint : « ${start.title} »`);
+    }
+    const before = agentCount();
+    if (before !== null && before !== 0) {
+      fail(`le mode jeu est éteint, mais ${before} agent(s) tournent déjà`);
+    }
+    done('au départ, le mode jeu automatique est éteint');
   }
-  const before = agentCount();
-  if (before !== null && before !== 0) {
-    fail(`le mode jeu est éteint, mais ${before} agent(s) tournent déjà`);
-  }
-  done('au départ, le mode jeu automatique est éteint');
-  await window.capture('mode-jeu-eteint');
+  await window.capture(startOn ? 'mode-jeu-allume-depart' : 'mode-jeu-eteint');
+
+  const checkTitle = async (on) => {
+    const now = await read();
+    if (on && !(shows(now.title, 'veille') || shows(now.title, 'En jeu'))) {
+      fail(`allumé, l’en-tête devait dire que Shinku veille : « ${now.title} »`);
+    }
+    if (!on && !shows(now.title, 'éteint')) {
+      fail(`éteint, l’en-tête devait le dire : « ${now.title} »`);
+    }
+    return now;
+  };
 
   try {
-    await toggle(true);
-    if (before !== null) {
-      await until('l’agent tourne', 20_000, () => agentCount() >= 1, 500);
-      done('allumé : l’agent tourne');
-    }
-    // L'agent démarre, puis la page le revoit : le temps de deux sondages.
-    await sleep(4500);
-    const lit = await read();
-    if (lit.warning !== '') {
-      fail(`le mode jeu est allumé, mais la page avertit : « ${lit.warning} »`);
-    }
-    if (!shows(lit.title, 'veille')) {
-      fail(`allumé, l’en-tête devait dire que Shinku veille : « ${lit.title} »`);
-    }
-    done(`allumé : plus d’avertissement, l’en-tête dit « ${lit.title} »`);
-    await window.capture('mode-jeu-allume');
-
-    await toggle(false);
-    if (before !== null) {
-      // L'agent se voit éteint à son prochain pas (2 s) : il n'a plus de raison de veiller.
-      await until('l’agent sort', 20_000, () => agentCount() === 0, 500);
-      done('éteint : l’agent sort');
-    }
-    const off = await read();
-    if (!shows(off.title, 'éteint')) {
-      fail(`éteint, l’en-tête devait le dire : « ${off.title} »`);
+    for (const on of startOn ? [false, true] : [true, false]) {
+      await (on ? turnOn() : turnOff());
+      if (on) {
+        // L'agent démarre, puis la page le revoit : le temps de deux sondages.
+        await sleep(4500);
+      }
+      const now = await checkTitle(on);
+      if (on) {
+        if (now.warning !== '') {
+          fail(`le mode jeu est allumé, mais la page avertit : « ${now.warning} »`);
+        }
+        // Une indication, pas une preuve : l'avertissement n'apparaît qu'après 15 s d'arrêt.
+        done(`allumé : aucun avertissement affiché (indication seulement), l’en-tête dit « ${now.title} »`);
+        await window.capture('mode-jeu-allume');
+      }
     }
   } finally {
-    // L'état de départ, quoi qu'il arrive : éteint, et sans agent.
+    // L'état de départ, quoi qu'il arrive.
     try {
-      if ((await read()).on === true) {
-        await toggle(false);
+      if ((await read()).on !== startOn) {
+        await (startOn ? turnOn() : turnOff());
       }
     } catch {
       // La fenêtre a pu se fermer ; l'essai a déjà dit pourquoi il échoue.
     }
-    if (before !== null && agentCount() > 0) {
+    if (!startOn && controlled && agentCount() > 0) {
       spawnSync('taskkill', ['/F', '/IM', 'shinku-agent.exe'], { stdio: 'ignore' });
     }
   }
-  done('l’état de départ est restauré (mode jeu éteint, plus d’agent)');
+  done(startOn ? 'l’état de départ est restauré (mode jeu allumé)' : 'l’état de départ est restauré (mode jeu éteint, plus d’agent)');
 }
 
 /** Le mode d'affichage enregistré, lu dans le fichier de réglages. */

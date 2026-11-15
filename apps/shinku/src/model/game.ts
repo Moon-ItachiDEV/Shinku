@@ -20,6 +20,16 @@ export const STOPPED_GRACE = 15_000;
 /** Délai entre deux demandes de la vue pendant que la page est affichée, en millisecondes. */
 export const GAME_POLL_DELAY = 2000;
 
+/**
+ * Après « Tout remettre maintenant », l'agent n'a pas encore réécrit son
+ * journal : la page garde la partie « remise en place » ce temps-là, même si
+ * une vue dit le contraire, en millisecondes.
+ */
+export const RELEASE_GRACE = 6000;
+
+/** Les échecs de suite de `game_view` après lesquels la page le dit, au lieu de « Chargement… ». */
+export const VIEW_FAILURES = 3;
+
 // ── L'en-tête ──────────────────────────────────────────────────────────────
 
 /**
@@ -47,9 +57,18 @@ export function headerState(view: GameView): HeaderState {
   return session.released ? 'released' : 'playing';
 }
 
-/** Une partie est notée au journal : l'en-tête porte son nom. */
+/**
+ * La partie est en cours : l'en-tête porte son nom. Une remise en place en
+ * attente est une partie finie, dont Shinku n'a pas pu tout remettre : son
+ * en-tête a un titre à part.
+ */
 export function inGame(state: HeaderState): boolean {
-  return state === 'playing' || state === 'released' || state === 'pending';
+  return state === 'playing' || state === 'released';
+}
+
+/** Les boutons de l'en-tête : seulement pendant une partie, pas pendant une remise en place en attente. */
+export function showsButtons(state: HeaderState): boolean {
+  return inGame(state);
 }
 
 /** « Tout remettre maintenant » n'a plus rien à faire une fois la partie remise en place. */
@@ -91,6 +110,15 @@ export type GameWarning = 'agentMissing' | 'agentStopped' | 'startupDisabled';
  */
 export function stoppedSince(previous: number | null, agent: AgentState, now: number): number | null {
   return agent === 'stopped' ? (previous ?? now) : null;
+}
+
+/**
+ * La date d'arrêt de l'agent, à noter à chaque vue reçue. Un agent arrêté alors
+ * que le mode automatique est éteint est son état normal : on ne le note pas,
+ * pour que le délai de grâce ne commence qu'une fois le mode allumé.
+ */
+export function noteStop(previous: number | null, view: GameView, now: number): number | null {
+  return stoppedSince(previous, view.auto ? view.agent : 'running', now);
 }
 
 /**
@@ -162,9 +190,74 @@ export function withQuietApp(view: GameView, exe: string, on: boolean): GameView
   return { ...view, apps: view.apps.map((app) => (app.exe === exe ? { ...app, on } : app)) };
 }
 
+/** La vue telle qu'elle sera quand l'agent aura tout remis en place pour la partie en cours. */
+export function withReleased(view: GameView, released: boolean): GameView {
+  return view.session === null ? view : { ...view, session: { ...view.session, released } };
+}
+
+/** La partie dont « Tout remettre maintenant » est parti, et jusqu'à quand la page la tient pour remise en place. */
+export interface Releasing {
+  path: string;
+  until: number;
+}
+
+/** La vue dément-elle encore, dans le délai de grâce, une partie que la personne a fait remettre en place ? */
+export function releaseExpected(view: GameView, expected: Releasing | null, now: number): boolean {
+  return (
+    expected !== null &&
+    now < expected.until &&
+    view.session !== null &&
+    !view.session.released &&
+    view.session.path === expected.path
+  );
+}
+
+/** La vue, avec la partie « remise en place » tant que l'agent n'a pas rattrapé la demande. */
+export function withExpectedRelease(view: GameView, expected: Releasing | null, now: number): GameView {
+  return releaseExpected(view, expected, now) ? withReleased(view, true) : view;
+}
+
 // ── Les jeux ───────────────────────────────────────────────────────────────
 
 /** Un jeu ajouté par la personne se retire ; un jeu reconnu seul se refuse. */
 export function isRemovable(game: KnownGame): boolean {
   return game.source === 'added';
+}
+
+/** Une app ajoutée par la personne se retire (sa ligne n'a pas de case) ; une app intégrée se coche. */
+export function isRemovableApp(app: QuietApp): boolean {
+  return !app.builtIn;
+}
+
+// ── Les gestes en vol et le focus ──────────────────────────────────────────
+
+/** Ce qui identifie un geste en vol : son bouton est désactivé tant qu'il n'a pas de réponse. */
+export const busyKey = {
+  release: 'release',
+  pick: 'pick',
+  status: (path: string): string => `status:${path}`,
+  quiet: (exe: string): string => `quiet:${exe}`,
+};
+
+/** Ce qui identifie un bouton où le focus peut être rendu (`data-fk` dans la page). */
+export const focusKey = {
+  headerNotGame: 'header-notgame',
+  addGame: 'add-game',
+  addApp: 'add-app',
+  game: (path: string): string => `game:${path}`,
+  never: (path: string): string => `never:${path}`,
+  quiet: (exe: string): string => `quiet:${exe}`,
+};
+
+/**
+ * Où va le focus quand une ligne disparaît : la ligne qui la suivait, sinon
+ * celle qui la précédait, sinon `null`. `keys` : les lignes avant la
+ * disparition, dans l'ordre affiché.
+ */
+export function neighbour(keys: readonly string[], removed: string): string | null {
+  const index = keys.indexOf(removed);
+  if (index < 0) {
+    return null;
+  }
+  return keys[index + 1] ?? keys[index - 1] ?? null;
 }

@@ -84,6 +84,22 @@
   background: var(--knob-on);
 }
 
+/* Un interrupteur peut aussi être un bouton `role="switch"` (mode jeu) : même dessin. */
+button.sw {
+  padding: 0;
+  border: 0;
+  font: inherit;
+}
+
+.sw[aria-checked='true'] {
+  background: var(--peach);
+}
+
+.sw[aria-checked='true']::before {
+  transform: translateX(16px);
+  background: var(--knob-on);
+}
+
 .sw:focus-visible {
   outline: 2px solid var(--text);
   outline-offset: 2px;
