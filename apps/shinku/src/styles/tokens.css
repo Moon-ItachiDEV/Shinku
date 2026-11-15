@@ -1,0 +1,130 @@
+/*
+ * Les couleurs de Shinku, en deux modes d'affichage :
+ * « Crépuscule » (sombre) et « Brume » (clair).
+ *
+ * Le mode est porté par l'attribut data-theme de <html>. Le réglage
+ * « Système » est résolu par le code (theme.ts), pas ici.
+ */
+:root {
+  /* Courbes d'animation. */
+  --e: cubic-bezier(0.23, 1, 0.32, 1);
+  --io: cubic-bezier(0.77, 0, 0.175, 1);
+
+  /* Accents : les mêmes dans les deux modes. */
+  --peach: #f0a77e;
+  --rose: #d98bb0;
+  --violet: #9d93e8;
+  --cream: #fbe3c8;
+  --mauve: #c98bc0;
+  --coral: #e8826f;
+  --seg-1: #f2c9a0;
+  --seg-2: #d98bb0;
+  --seg-3: #7f76d6;
+  --danger: #c42b1c;
+  --on-danger: #ffffff;
+  --hole: #050407;
+  --knob-on: #1a1418;
+}
+
+/* Crépuscule : le mode sombre, et le mode par défaut. */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #2f2842;
+  --surface-solid: #3a3152;
+  --text: #f4f1f8;
+  --text-soft: #e6e1ec;
+  --text-soft-2: #d9d3e3;
+  --text-2: #d6cfe4;
+  --text-3: #bdb5d0;
+
+  --strong: #f4ece4;
+  --strong-hover: #ffffff;
+  --on-strong: #17131c;
+  --link: #f2c3a2;
+  --link-hover: #fbebdd;
+  --kanji: #e8a27c;
+  --accent-text: #f0a77e;
+  --badge-text: #f2aa9a;
+  --badge-dot: #e8826f;
+
+  --orb-a: #55497a;
+  --orb-b: #352d4c;
+  --orb-text: #fbf3ec;
+  --orb-shadow: 0 0 0 7px rgba(240, 167, 126, 0.05), 0 20px 44px -20px rgba(240, 167, 126, 0.55);
+  --orb-shadow-hover: 0 0 0 10px rgba(240, 167, 126, 0.08), 0 22px 50px -18px rgba(240, 167, 126, 0.7);
+  --core-a: #4a3f6a;
+  --core-b: #30294a;
+
+  /* Voiles : une encre blanche, dosée par --ov-k. */
+  --ov: 255 255 255;
+  --ov-k: 1.9;
+
+  --app-image:
+    radial-gradient(900px 640px at 68% 34%, rgba(176, 150, 230, 0.3), rgba(176, 150, 230, 0) 70%),
+    radial-gradient(620px 420px at 70% 100%, rgba(240, 167, 126, 0.16), rgba(240, 167, 126, 0) 70%),
+    linear-gradient(135deg, #4a3f68 0%, #372f52 48%, #2a243c 100%);
+  --side-bg: rgba(255, 255, 255, 0.09);
+  --side-border: rgba(255, 255, 255, 0.12);
+  --side-shadow: 0 30px 60px -44px rgba(20, 12, 40, 0.5);
+  --list-bg: rgb(var(--ov) / calc(0.028 * var(--ov-k)));
+  --disk-bg: rgb(var(--ov) / calc(0.03 * var(--ov-k)));
+  --box-border: rgb(var(--ov) / calc(0.26 * var(--ov-k)));
+  --check-bg: var(--peach);
+
+  /* Illustrations. */
+  --ill-fill: #3a3152;
+  --ill-stroke: #ffffff;
+  --ill-cream: #fbe3c8;
+}
+
+/* Brume : le mode clair. */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #f4f1ee;
+  --surface-solid: #ffffff;
+  --text: #1f1a26;
+  --text-soft: #3a3442;
+  --text-soft-2: #3a3442;
+  --text-2: #5b5566;
+  --text-3: #6b6575;
+
+  --strong: #1f1a26;
+  --strong-hover: #3a3442;
+  --on-strong: #f7f3f0;
+  --link: #a8542c;
+  --link-hover: #7e3a18;
+  --kanji: #b8693c;
+  --accent-text: #a8542c;
+  --badge-text: #a9443a;
+  --badge-dot: #d2604c;
+
+  --orb-a: #ffffff;
+  --orb-b: #f1ecee;
+  --orb-text: #1f1a26;
+  --orb-shadow: 0 0 0 7px rgba(240, 167, 126, 0.12), 0 18px 40px -20px rgba(200, 110, 70, 0.45);
+  --orb-shadow-hover: 0 0 0 10px rgba(240, 167, 126, 0.16), 0 20px 44px -18px rgba(200, 110, 70, 0.55);
+  --core-a: #ffffff;
+  --core-b: #f3eff1;
+
+  /* Voiles : une encre sombre. */
+  --ov: 38 30 52;
+  --ov-k: 1;
+
+  --app-image:
+    radial-gradient(880px 600px at 66% 38%, rgba(157, 147, 232, 0.22), rgba(157, 147, 232, 0) 70%),
+    radial-gradient(520px 340px at 66% 92%, rgba(240, 167, 126, 0.16), rgba(240, 167, 126, 0) 70%);
+  --side-bg: rgba(255, 255, 255, 0.7);
+  --side-border: rgba(38, 30, 52, 0.07);
+  --side-shadow: 0 24px 50px -36px rgba(70, 50, 90, 0.35);
+  --list-bg: rgba(255, 255, 255, 0.72);
+  --disk-bg: rgba(255, 255, 255, 0.72);
+  --box-border: rgba(38, 30, 52, 0.3);
+  --check-bg: #1f1a26;
+
+  --ill-fill: #ffffff;
+  --ill-stroke: #2a2232;
+  --ill-cream: #c9703f;
+}

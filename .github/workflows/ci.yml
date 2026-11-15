@@ -1,0 +1,185 @@
+# Intégration continue de Shinku.
+#
+# Trois travaux, du moins cher au plus cher :
+#   - « Cœur et interface » (Linux) : format, lint, tests du cœur, tests et
+#     compilation de l'interface.
+#   - « Lint de la cible Windows » (Linux) : le code propre à Windows, que le
+#     premier travail ne compile pas, passe au lint par compilation croisée.
+#   - « Windows » : les tests du cœur sur un vrai NTFS, puis l'installeur,
+#     installé et essayé pour de bon avant d'être publié.
+#
+# Les minutes Windows comptent double sur un dépôt privé : tout ce qui peut
+# être vérifié sous Linux l'est sous Linux.
+
+name: Intégration continue
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  coeur-et-interface:
+    name: Cœur et interface
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/shinku/package-lock.json
+
+      # La version de Rust est fixée par rust-toolchain.toml.
+      - name: Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" \
+            --profile minimal --component rustfmt --component clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests du cœur
+        run: cargo test --workspace --locked
+
+      - name: Dépendances de l'interface
+        working-directory: apps/shinku
+        run: npm ci
+
+      - name: Types de l'interface
+        working-directory: apps/shinku
+        run: npm run check
+
+      - name: Tests de l'interface, du contrat et du câblage
+        working-directory: apps/shinku
+        run: npm test
+
+      - name: Compilation de l'interface
+        working-directory: apps/shinku
+        run: npm run build
+
+  lint-windows:
+    name: Lint de la cible Windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/shinku/package-lock.json
+
+      # La version de Rust est fixée par rust-toolchain.toml.
+      - name: Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" \
+            --profile minimal --component rustfmt --component clippy
+
+      - name: Compilateur croisé
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends mingw-w64
+          rustup target add x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-gnu
+
+      # L'application embarque l'interface : elle doit être compilée d'abord.
+      - name: Interface
+        working-directory: apps/shinku
+        run: |
+          npm ci
+          npm run build
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/shinku/package-lock.json
+
+      # La version de Rust est fixée par rust-toolchain.toml.
+      - name: Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" \
+            --profile minimal --component rustfmt --component clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests du cœur sur un vrai NTFS
+        run: cargo test --locked -p shinku-core -p shinku-helper -p shinku-agent
+
+      - name: Dépendances de l'interface
+        working-directory: apps/shinku
+        run: npm ci
+
+      # Compile l'interface, puis shinku.exe en version finale, puis
+      # l'installeur NSIS (non signé : la signature vient avant la version
+      # publique).
+      - name: Installeur
+        working-directory: apps/shinku
+        run: npm run tauri build
+
+      # L'installeur est essayé comme le ferait quelqu'un : installé, puis
+      # lancé. La fenêtre doit s'ouvrir, analyser le disque et montrer chacun
+      # de ses écrans. Sans cela, l'installeur n'est pas publié.
+      - name: Installation
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "L'installeur s'arrête avec le code $($install.ExitCode)." }
+
+      - name: Essai de la fenêtre
+        working-directory: apps/shinku
+        run: node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures"
+
+      - name: Publier les captures de la fenêtre
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-de-la-fenetre
+          path: ${{ runner.temp }}/captures
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Publier l'installeur
+        uses: actions/upload-artifact@v4
+        with:
+          name: shinku-installeur-x64
+          path: target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14

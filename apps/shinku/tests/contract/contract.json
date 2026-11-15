@@ -1,0 +1,285 @@
+{
+  "enums": {
+    "autoScan": [
+      "never",
+      "weekly",
+      "monthly"
+    ],
+    "backendError": [
+      "folderRefused",
+      "scanNotStarted",
+      "settingsNotSaved",
+      "settingsUnchecked"
+    ],
+    "categoryState": [
+      "ready",
+      "pending",
+      "unavailable"
+    ],
+    "duplicatesState": [
+      "done",
+      "pending",
+      "off"
+    ],
+    "folderRefusal": [
+      "notAbsolute",
+      "notAFolder",
+      "notUnicode"
+    ],
+    "junkCategory": [
+      "appCaches",
+      "tempFiles",
+      "updateLeftovers",
+      "logsAndReports"
+    ],
+    "language": [
+      "fr",
+      "en"
+    ],
+    "loadIssue": [
+      "partial",
+      "unreadable"
+    ],
+    "lot": [
+      "auto",
+      "review"
+    ],
+    "moduleId": [
+      "junkFiles",
+      "duplicates",
+      "largeFiles",
+      "recycleBin",
+      "startup",
+      "gameMode",
+      "uninstall",
+      "privacy"
+    ],
+    "phase": [
+      "preparing",
+      "walking",
+      "duplicatesQuick",
+      "duplicatesFull",
+      "done",
+      "cancelled"
+    ],
+    "risk": [
+      "A",
+      "B",
+      "C",
+      "D"
+    ],
+    "sessionState": [
+      "idle",
+      "scanning",
+      "results",
+      "failed"
+    ],
+    "theme": [
+      "system",
+      "light",
+      "dark"
+    ]
+  },
+  "shapes": {
+    "duplicates": {
+      "bytes": "number",
+      "candidates": "number",
+      "copies": "number",
+      "groupCount": "number",
+      "groups": [
+        {
+          "digest": "string",
+          "files": [
+            {
+              "created": "number",
+              "keep": "boolean",
+              "modified": "number",
+              "onDisk": "number",
+              "path": "string",
+              "synced": "boolean"
+            }
+          ],
+          "reclaimable": "number",
+          "size": "number"
+        }
+      ],
+      "hardLinks": "number",
+      "offset": "number",
+      "skippedFiles": "number",
+      "state": "string"
+    },
+    "error.folderRefused": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "error.scanNotStarted": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "error.settingsNotSaved": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "error.settingsUnchecked": {
+      "kind": "string"
+    },
+    "junk": {
+      "bytes": "number",
+      "categories": [
+        {
+          "bytes": "number",
+          "category": "string",
+          "files": "number",
+          "label": "string",
+          "lines": [
+            {
+              "bytes": "number",
+              "closeFirst": [
+                "string"
+              ],
+              "files": "number",
+              "label": "string",
+              "rules": [
+                "string"
+              ]
+            }
+          ]
+        }
+      ],
+      "files": "number",
+      "sparedBytes": "number",
+      "sparedFiles": "number"
+    },
+    "largeFiles": {
+      "bytes": "number",
+      "count": "number",
+      "files": [
+        {
+          "modified": "number",
+          "onDisk": "number",
+          "path": "string",
+          "size": "number",
+          "synced": "boolean"
+        }
+      ],
+      "listed": "number",
+      "offset": "number",
+      "threshold": "number"
+    },
+    "loadIssue.partial": {
+      "fields": [
+        "string"
+      ],
+      "kind": "string"
+    },
+    "loadIssue.unreadable": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "overview": {
+      "recycleBin": {
+        "bytes": "number",
+        "items": "number"
+      },
+      "scanBlocked": "boolean",
+      "settings": {
+        "alwaysAsk": "boolean",
+        "autoScan": "string",
+        "excludedFolders": [
+          "string"
+        ],
+        "gameModeOnLaunch": "boolean",
+        "language": "string",
+        "launchWithWindows": "boolean",
+        "notifyFromGb": "number",
+        "recycleBinAlert": "boolean",
+        "recycleBinAutoEmptyDays": "null",
+        "recycleBinThresholdGb": "number",
+        "shaderCacheLimitGb": "number",
+        "theme": "string",
+        "useRecycleBin": "boolean",
+        "version": "number"
+      },
+      "settingsIssue": "null",
+      "version": "string",
+      "volumes": [
+        {
+          "fileSystem": "string",
+          "fixed": "boolean",
+          "free": "number",
+          "label": "string",
+          "root": "string",
+          "seekPenalty": "boolean",
+          "system": "boolean",
+          "total": "number"
+        }
+      ]
+    },
+    "sessionView.idle": {
+      "progress": {
+        "files": "number",
+        "folders": "number",
+        "foundBytes": "number",
+        "phase": "string",
+        "workDone": "number",
+        "workTotal": "number"
+      },
+      "skipped": {
+        "folders": "number",
+        "refusedRoots": "number"
+      },
+      "stale": "boolean",
+      "state": "string",
+      "summary": "null"
+    },
+    "sessionView.results": {
+      "progress": {
+        "files": "number",
+        "folders": "number",
+        "foundBytes": "number",
+        "phase": "string",
+        "workDone": "number",
+        "workTotal": "number"
+      },
+      "skipped": {
+        "folders": "number",
+        "refusedRoots": "number"
+      },
+      "stale": "boolean",
+      "state": "string",
+      "summary": {
+        "autoBytes": "number",
+        "categories": [
+          {
+            "bytes": "number",
+            "items": "number",
+            "lot": "string",
+            "module": "string",
+            "risk": "string",
+            "state": "string"
+          }
+        ],
+        "complete": "boolean",
+        "finished": "number"
+      }
+    },
+    "settings": {
+      "alwaysAsk": "boolean",
+      "autoScan": "string",
+      "excludedFolders": [
+        "string"
+      ],
+      "gameModeOnLaunch": "boolean",
+      "language": "string",
+      "launchWithWindows": "boolean",
+      "notifyFromGb": "number",
+      "recycleBinAlert": "boolean",
+      "recycleBinAutoEmptyDays": "null",
+      "recycleBinThresholdGb": "number",
+      "shaderCacheLimitGb": "number",
+      "theme": "string",
+      "useRecycleBin": "boolean",
+      "version": "number"
+    }
+  }
+}

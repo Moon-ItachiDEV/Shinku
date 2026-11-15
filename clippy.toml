@@ -1,0 +1,3 @@
+# Dans un test, un `unwrap` qui échoue est un test qui échoue : c'est voulu.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

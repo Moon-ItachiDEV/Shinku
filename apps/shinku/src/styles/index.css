@@ -1,0 +1,6 @@
+/* Les styles de Shinku, dans l'ordre où ils s'appliquent. */
+@import './fonts.css';
+@import './tokens.css';
+@import './base.css';
+@import './forms.css';
+@import './app.css';

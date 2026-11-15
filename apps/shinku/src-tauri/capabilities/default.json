@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Ce que la fenêtre de Shinku a le droit de demander : ses onze commandes, et les gestes de sa barre de titre (déplacer, réduire, agrandir, fermer). Rien d'autre : ni fichiers, ni réseau, ni lancement de programmes.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "allow-overview",
+    "allow-acknowledge-settings-issue",
+    "allow-start-scan",
+    "allow-cancel-scan",
+    "allow-session-view",
+    "allow-junk-details",
+    "allow-large-files-page",
+    "allow-duplicates-page",
+    "allow-set-theme",
+    "allow-add-excluded-folder",
+    "allow-remove-excluded-folder"
+  ]
+}
