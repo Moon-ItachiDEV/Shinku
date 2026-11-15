@@ -233,6 +233,9 @@ function Start-AsUser([string]$Program, [string]$Arguments = '') {
     Remove-Item -Force $out -ErrorAction SilentlyContinue
     $parameters = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $Launcher, '-Programme', $Program)
     if ($Arguments) { $parameters += @('-Arguments', $Arguments) }
+    # Start-Process recolle la liste avec des espaces, sans guillemets : un
+    # chemin ou une ligne de commande qui en contient doit porter les siens.
+    $parameters = @($parameters | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
     $launcher = Start-Process -FilePath 'powershell' -ArgumentList $parameters -PassThru `
         -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError "$out.err"
     $deadline = (Get-Date).AddSeconds(30)
@@ -341,7 +344,7 @@ try {
     Done "réglages d'essai écrits : mode automatique, jeu $GameProgram, ping.exe en veilleuse"
 
     # 3. Le ping, l'agent, puis le jeu.
-    $pingId = Start-AsUser (Join-Path $env:SystemRoot 'System32\PING.EXE') '-t 127.0.0.1'
+    $pingId = Start-AsUser (Join-Path $env:SystemRoot 'System32\PING.EXE') '127.0.0.1 -t'
     Done "ping lancé (processus $pingId), priorité $(Priority-Of $pingId)"
     if ((Priority-Of $pingId) -ne 'Normal') { Fail "le ping devait partir en priorité normale" }
 
