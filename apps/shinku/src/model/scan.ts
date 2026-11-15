@@ -3,7 +3,7 @@
 // Ces fonctions sont pures : elles ne font que lire la vue rendue par le cœur.
 // Elles sont testées sans navigateur (tests/scan.test.ts).
 
-import type { CategorySummary, Lot, ModuleId, SessionView, Summary } from '../backend/types.ts';
+import type { CategorySummary, Lot, ModuleId, SessionView, Summary, Volume } from '../backend/types.ts';
 import { percent } from '../format.ts';
 
 /** Les lignes de l'écran Analyse, dans l'ordre de l'écran. */
@@ -177,6 +177,11 @@ export function segments(summary: Summary | null, selection: Selection): number[
 /** Une clé qui change dès que le rapport publié change. */
 export function reportKey(view: SessionView): string {
   return view.summary === null ? '' : `${view.summary.finished}:${view.summary.complete}`;
+}
+
+/** Le disque à montrer : celui de Windows, sinon le premier disque interne. */
+export function mainVolume(volumes: readonly Volume[]): Volume | undefined {
+  return volumes.find((volume) => volume.system) ?? volumes.find((volume) => volume.fixed) ?? volumes[0];
 }
 
 /**

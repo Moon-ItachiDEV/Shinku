@@ -16,21 +16,28 @@ use std::path::{Component, Path, PathBuf, Prefix, PrefixComponent};
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO, FILE_FULL_DIR_INFO, FILE_ID_BOTH_DIR_INFO,
+    FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
+    FILE_DISPOSITION_FLAG_DO_NOT_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+    FILE_DISPOSITION_INFO_EX_FLAGS, FILE_FULL_DIR_INFO, FILE_ID_BOTH_DIR_INFO,
     FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FileAttributeTagInfo,
-    FileBasicInfo, FileFullDirectoryInfo, FileIdBothDirectoryInfo, FileIdExtdDirectoryInfo,
-    FileIdInfo, FileStandardInfo, GetFileInformationByHandleEx,
+    FileBasicInfo, FileDispositionInfo, FileDispositionInfoEx, FileFullDirectoryInfo,
+    FileIdBothDirectoryInfo, FileIdExtdDirectoryInfo, FileIdInfo, FileStandardInfo,
+    GetFileInformationByHandleEx, SetFileInformationByHandle,
 };
 
 use super::attributes::{ATTR_REPARSE_POINT, classify};
 use super::{
-    EntryFlags, EntryKind, EntryMeta, Fingerprint, Identity, OpenError, ReadDirError, same_file_id,
+    EntryFlags, EntryKind, EntryMeta, Expected, Fingerprint, Identity, OpenError, ReadDirError,
+    RemoveError, same_file_id,
 };
 use crate::model::{FileId, Timestamp};
 
 // Droits d'accès et options de `CreateFileW` (valeurs documentées).
 const FILE_LIST_DIRECTORY: u32 = 0x0001;
 const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+/// Le droit de supprimer ou de renommer l'entrée ouverte.
+const DELETE: u32 = 0x0001_0000;
 const SYNCHRONIZE: u32 = 0x0010_0000;
 const FILE_SHARE_READ: u32 = 0x1;
 const FILE_SHARE_WRITE: u32 = 0x2;
@@ -54,6 +61,7 @@ const ERROR_NOT_SUPPORTED: i32 = 50;
 const ERROR_INVALID_PARAMETER: i32 = 87;
 const ERROR_CALL_NOT_IMPLEMENTED: i32 = 120;
 const ERROR_INVALID_LEVEL: i32 = 124;
+const ERROR_DIR_NOT_EMPTY: i32 = 145;
 
 /// Taille du tampon de lecture d'un dossier : un gros tampon ramène des
 /// centaines d'entrées par appel au système.
@@ -115,8 +123,19 @@ fn query<T: HandleInfo>(file: &File) -> io::Result<T> {
 /// Ce que `FileStandardInfo` dit d'un fichier ouvert.
 struct StandardInfo {
     size: u64,
+    /// Nombre de noms que porte encore l'entrée. Zéro : elle a été supprimée,
+    /// et ne survit que par les handles encore ouverts.
+    links: u32,
     delete_pending: bool,
     directory: bool,
+}
+
+impl StandardInfo {
+    /// Vrai si l'entrée n'existe plus pour personne d'autre : sa suppression
+    /// est demandée, ou déjà faite.
+    fn is_gone(&self) -> bool {
+        self.delete_pending || self.links == 0
+    }
 }
 
 /// Lit `FILE_STANDARD_INFO` dans un tampon brut : la structure contient deux
@@ -141,6 +160,7 @@ fn query_standard(file: &File) -> io::Result<StandardInfo> {
     let flags = raw[2].to_le_bytes();
     Ok(StandardInfo {
         size: (raw[1] as i64).max(0) as u64,
+        links: u32::from_le_bytes([flags[0], flags[1], flags[2], flags[3]]),
         delete_pending: flags[4] != 0,
         directory: flags[5] != 0,
     })
@@ -162,9 +182,20 @@ fn is_unsupported(error: &io::Error) -> bool {
 /// Ouvre un handle sur ce que désigne `path` (fichier ou dossier), sans
 /// suivre un lien final, avec les droits d'accès demandés.
 fn open_no_follow(path: &Path, access: u32, extra_flags: u32) -> io::Result<File> {
+    open_no_follow_sharing(path, access, SHARE_ALL, extra_flags)
+}
+
+/// Comme [`open_no_follow`], en choisissant ce que les autres programmes
+/// peuvent faire de l'entrée pendant ce temps (`share`).
+fn open_no_follow_sharing(
+    path: &Path,
+    access: u32,
+    share: u32,
+    extra_flags: u32,
+) -> io::Result<File> {
     OpenOptions::new()
         .access_mode(access)
-        .share_mode(SHARE_ALL)
+        .share_mode(share)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | extra_flags)
         .open(path)
 }
@@ -416,7 +447,7 @@ pub(super) fn check_open_file(file: &File, expected: &Fingerprint) -> Result<(),
     if standard.directory {
         return Err(OpenError::NotRegular);
     }
-    if standard.delete_pending {
+    if standard.is_gone() {
         return Err(OpenError::NotFound);
     }
     if standard.size != expected.size {
@@ -441,6 +472,168 @@ pub(super) fn check_open_file(file: &File, expected: &Fingerprint) -> Result<(),
         }
     }
     Ok(())
+}
+
+fn remove_error(error: io::Error) -> RemoveError {
+    match error.raw_os_error() {
+        Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => RemoveError::Locked,
+        Some(ERROR_DIR_NOT_EMPTY) => RemoveError::NotEmpty,
+        _ => match error.kind() {
+            io::ErrorKind::PermissionDenied => RemoveError::AccessDenied,
+            io::ErrorKind::NotFound => RemoveError::NotFound,
+            io::ErrorKind::DirectoryNotEmpty => RemoveError::NotEmpty,
+            _ => RemoveError::Io(error),
+        },
+    }
+}
+
+/// Demande au système de supprimer l'entrée ouverte quand son handle se
+/// fermera (`delete` vrai), ou retire cette demande (`delete` faux).
+fn set_disposition(file: &File, delete: bool) -> io::Result<()> {
+    // La forme moderne supprime le nom dès la fermeture de ce handle, même si
+    // une autre app garde l'entrée ouverte, et accepte un fichier en lecture
+    // seule sans toucher à ses attributs. Elle ne force rien pour autant : un
+    // programme en cours d'exécution ou un fichier projeté en mémoire restent
+    // refusés par le système.
+    let flags = if delete {
+        FILE_DISPOSITION_INFO_EX_FLAGS(
+            FILE_DISPOSITION_FLAG_DELETE.0
+                | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
+                | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0,
+        )
+    } else {
+        FILE_DISPOSITION_FLAG_DO_NOT_DELETE
+    };
+    let modern = FILE_DISPOSITION_INFO_EX { Flags: flags };
+    // SAFETY: le handle appartient à `file`, vivant pendant l'appel. `modern`
+    // est une structure locale du type attendu pour cette classe, dont on
+    // annonce exactement la taille.
+    let outcome = unsafe {
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileDispositionInfoEx,
+            (&raw const modern).cast::<c_void>(),
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    }
+    .map_err(to_io);
+    match outcome {
+        // Système de fichiers qui ne connaît que la forme d'origine (FAT, exFAT).
+        Err(error) if is_unsupported(&error) => {
+            let classic = FILE_DISPOSITION_INFO { DeleteFile: delete };
+            // SAFETY: comme ci-dessus, avec la structure de la classe d'origine.
+            unsafe {
+                SetFileInformationByHandle(
+                    HANDLE(file.as_raw_handle()),
+                    FileDispositionInfo,
+                    (&raw const classic).cast::<c_void>(),
+                    size_of::<FILE_DISPOSITION_INFO>() as u32,
+                )
+            }
+            .map_err(to_io)
+        }
+        other => other,
+    }
+}
+
+/// Vérifie, sur l'entrée ouverte, que c'est celle que le parcours a vue.
+fn check_removal(file: &File, expected: &Expected) -> Result<(), RemoveError> {
+    let tag: FILE_ATTRIBUTE_TAG_INFO = query(file).map_err(remove_error)?;
+    let (kind, flags) = classify(tag.FileAttributes, tag.ReparseTag);
+    // Un fichier devenu lien, un lien devenu dossier : ce n'est plus la même entrée.
+    if kind != expected.kind || kind == EntryKind::Other {
+        return Err(RemoveError::Changed);
+    }
+    if kind == EntryKind::Dir && flags.contains(EntryFlags::SPECIAL) {
+        return Err(RemoveError::Changed);
+    }
+
+    let standard = query_standard(file).map_err(remove_error)?;
+    if standard.is_gone() {
+        return Err(RemoveError::NotFound);
+    }
+    if kind != EntryKind::Dir {
+        if standard.size != expected.size {
+            return Err(RemoveError::Changed);
+        }
+        let basic: FILE_BASIC_INFO = query(file).map_err(remove_error)?;
+        if Timestamp::from_filetime(basic.LastWriteTime) != expected.modified {
+            return Err(RemoveError::Changed);
+        }
+    }
+
+    if let Some(expected_id) = expected.file_id {
+        match query::<FILE_ID_INFO>(file) {
+            Ok(info) => {
+                let actual = valid_id(u128::from_le_bytes(info.FileId.Identifier));
+                if actual.is_some_and(|actual| !same_file_id(actual, expected_id)) {
+                    return Err(RemoveError::Changed);
+                }
+            }
+            Err(error) if is_unsupported(&error) => {}
+            Err(error) => return Err(remove_error(error)),
+        }
+    }
+    Ok(())
+}
+
+/// Une entrée ouverte avec le droit de la supprimer.
+pub(super) struct Removal {
+    file: File,
+    /// La suppression est demandée et pas encore confirmée.
+    marked: bool,
+}
+
+impl Removal {
+    pub(super) fn open(path: &Path, expected: &Expected) -> Result<Self, RemoveError> {
+        // Un fichier est ouvert sans aucun partage : si un autre programme le
+        // tient, pour le lire, l'écrire ou le supprimer, l'ouverture échoue
+        // ici et le fichier est laissé. Beaucoup d'apps ouvrent leurs fichiers
+        // en autorisant leur suppression : sans cela, ils partiraient sous
+        // elles. Un dossier ou un lien garde un partage entier : l'Explorateur
+        // et les antivirus les tiennent sans s'en servir, et un dossier ne
+        // part de toute façon que vide.
+        let share = if expected.kind == EntryKind::File { 0 } else { SHARE_ALL };
+        let file = open_no_follow_sharing(
+            path,
+            DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            share,
+            FILE_FLAG_BACKUP_SEMANTICS,
+        )
+        .map_err(remove_error)?;
+        check_removal(&file, expected)?;
+        Ok(Self { file, marked: false })
+    }
+
+    pub(super) fn modified(&self) -> Result<Timestamp, RemoveError> {
+        let basic: FILE_BASIC_INFO = query(&self.file).map_err(remove_error)?;
+        Ok(Timestamp::from_filetime(basic.LastWriteTime))
+    }
+
+    pub(super) fn mark(&mut self) -> Result<(), RemoveError> {
+        set_disposition(&self.file, true).map_err(remove_error)?;
+        self.marked = true;
+        Ok(())
+    }
+
+    pub(super) fn commit(mut self) -> Result<(), RemoveError> {
+        if !self.marked {
+            self.mark()?;
+        }
+        // La demande reste posée : l'entrée disparaît à la fermeture du
+        // handle, c'est-à-dire à la fin de cette fonction.
+        self.marked = false;
+        Ok(())
+    }
+}
+
+impl Drop for Removal {
+    fn drop(&mut self) {
+        // Lâchée sans confirmation : la demande est retirée, l'entrée reste.
+        if self.marked {
+            let _ = set_disposition(&self.file, false);
+        }
+    }
 }
 
 /// Vrai si `path` désigne un vrai dossier (ni lien, ni fichier, ni point

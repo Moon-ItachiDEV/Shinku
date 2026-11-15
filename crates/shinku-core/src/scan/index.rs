@@ -9,9 +9,13 @@
 //! Rien n'est lu ici à part les listes de dossiers. Un fichier inutile est
 //! compté, un gros fichier est relevé, un candidat aux doublons est noté :
 //! les contenus ne sont ouverts que plus tard, et seulement pour les doublons.
+//!
+//! Le grand vide refait ce même parcours avant de supprimer, en demandant en
+//! plus la liste de ce qu'il a compté ([`Index::recording`]) : ce qui part est
+//! décidé par le code qui a produit les chiffres affichés, pas par une copie.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -19,7 +23,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use super::Progress;
 use super::plan::{Mark, Plan};
 use super::report::LargeFile;
-use crate::fs::{EntryFlags, EntryKind, EntryMeta, ReadDirError, fold_name, same_file_id};
+use crate::fs::{
+    EntryFlags, EntryKind, EntryMeta, Expected, ReadDirError, fold_name, same_file_id,
+};
 use crate::model::{FileId, Timestamp};
 use crate::rules::Target;
 use crate::scope::{NodeId, ScopeTree, glob_match};
@@ -82,17 +88,58 @@ pub(crate) struct RuleTotals {
     pub spared_files: u64,
 }
 
-/// Date d'un élément jugé en bloc qu'il ne faut pas nettoyer, quel que soit
-/// son âge : elle n'est jamais antérieure à la limite d'une règle.
-const NEVER_OLD: Timestamp = Timestamp::from_ticks(i64::MAX);
-
-/// Totaux d'un élément jugé en bloc : il n'est nettoyé que si rien n'y est récent.
+/// Totaux d'un élément jugé en bloc : il n'est nettoyé que si rien n'y est
+/// récent, et s'il peut partir en entier.
 #[derive(Clone, Copy, Debug)]
 struct UnitTotals {
     rule: u16,
     bytes: u64,
     files: u64,
+    /// Date la plus récente rencontrée dans l'élément, dossiers compris.
     newest: Timestamp,
+    /// L'élément contient quelque chose que Shinku ne supprimera pas (dossier
+    /// exclu ou illisible, fichier géré par un service de synchronisation…).
+    /// En retirer le reste n'en laisserait qu'un morceau : il est épargné.
+    kept_whole: bool,
+}
+
+impl UnitTotals {
+    fn new(rule: u16) -> Self {
+        Self {
+            rule,
+            bytes: 0,
+            files: 0,
+            newest: Timestamp::from_ticks(i64::MIN),
+            kept_whole: false,
+        }
+    }
+}
+
+/// Un fichier (ou un lien) que le parcours a compté « à nettoyer ».
+#[derive(Clone, Debug)]
+pub(crate) struct SweptFile {
+    /// Indice de la règle dans le plan.
+    pub rule: u16,
+    /// Élément jugé en bloc auquel il appartient. 0 : aucun, il part seul.
+    pub unit: u32,
+    pub path: PathBuf,
+    /// Ce qu'il faudra retrouver sur le fichier ouvert pour le supprimer.
+    pub expected: Expected,
+    /// Place qu'il occupe sur le disque.
+    pub bytes: u64,
+}
+
+/// Un dossier d'un élément jugé en bloc : il part avec lui, une fois vide.
+#[derive(Clone, Debug)]
+pub(crate) struct SweptDir {
+    /// Indice de la règle dans le plan.
+    pub rule: u16,
+    pub unit: u32,
+    pub path: PathBuf,
+    pub expected: Expected,
+    /// Profondeur sous le point de départ du parcours : les plus profonds
+    /// se retirent d'abord.
+    pub depth: u32,
 }
 
 /// Un fichier dont on comparera peut-être le contenu.
@@ -180,6 +227,9 @@ pub(crate) struct Sink {
     denied_examples: Vec<PathBuf>,
     unreadable: u64,
     replaced: u64,
+    /// Ce qui a été compté « à nettoyer », si le parcours le relève.
+    swept_files: Vec<SweptFile>,
+    swept_dirs: Vec<SweptDir>,
     // État du dossier en cours de lecture.
     /// Candidats aux doublons du dossier, en attente de savoir s'il est un projet.
     pending: Vec<Candidate>,
@@ -204,6 +254,13 @@ pub(crate) struct Indexed {
     pub denied_examples: Vec<PathBuf>,
     pub unreadable: u64,
     pub replaced: u64,
+    /// Ce que le parcours a relevé pour le grand vide. Un fichier qui
+    /// appartient à un élément jugé en bloc ne part que si cet élément est
+    /// dans `clean_units`.
+    pub swept_files: Vec<SweptFile>,
+    pub swept_dirs: Vec<SweptDir>,
+    /// Les éléments jugés en bloc qui sont à nettoyer.
+    pub clean_units: HashSet<u32>,
 }
 
 impl Indexed {
@@ -222,10 +279,11 @@ impl Indexed {
                 total.spared_files += part.spared_files;
             }
             for (id, part) in sink.units {
-                let unit = units.entry(id).or_insert(UnitTotals { bytes: 0, files: 0, ..part });
+                let unit = units.entry(id).or_insert(UnitTotals::new(part.rule));
                 unit.bytes += part.bytes;
                 unit.files += part.files;
                 unit.newest = unit.newest.max(part.newest);
+                unit.kept_whole |= part.kept_whole;
             }
             self.large.merge(sink.large);
             self.candidates.extend(sink.candidates);
@@ -239,15 +297,19 @@ impl Indexed {
             }
             self.unreadable += sink.unreadable;
             self.replaced += sink.replaced;
+            self.swept_files.extend(sink.swept_files);
+            self.swept_dirs.extend(sink.swept_dirs);
         }
         // Un élément jugé en bloc n'est compté « à nettoyer » que si tout ce
-        // qu'il contient est plus vieux que l'âge minimal de sa règle.
-        for unit in units.into_values() {
+        // qu'il contient est plus vieux que l'âge minimal de sa règle, et
+        // s'il peut partir en entier.
+        for (id, unit) in units {
             let rule = plan.rules[unit.rule as usize];
             let total = &mut self.junk[unit.rule as usize];
-            if unit.newest <= rule.cutoff {
+            if !unit.kept_whole && unit.newest <= rule.cutoff {
                 total.bytes += unit.bytes;
                 total.files += unit.files;
+                self.clean_units.insert(id);
             } else {
                 total.spared_bytes += unit.bytes;
                 total.spared_files += unit.files;
@@ -264,6 +326,8 @@ pub(crate) struct Index<'a> {
     volume: u64,
     /// Compteur des éléments jugés en bloc, commun à tous les parcours d'une analyse.
     units: &'a AtomicU32,
+    /// Relever ce qui est compté « à nettoyer », pour le grand vide.
+    record: bool,
 }
 
 /// Instant qui date un élément : sa création ou sa modification, au plus
@@ -275,6 +339,27 @@ fn stamp(meta: &EntryMeta) -> Timestamp {
 
 fn is_hidden(meta: &EntryMeta) -> bool {
     meta.flags.contains(EntryFlags::HIDDEN) || meta.flags.contains(EntryFlags::SYSTEM)
+}
+
+/// Vrai pour ce qu'un service de synchronisation gère : le supprimer ici le
+/// supprimerait aussi en ligne. Ce n'est jamais un fichier inutile.
+fn is_cloud_managed(meta: &EntryMeta) -> bool {
+    meta.flags.contains(EntryFlags::CLOUD) || meta.flags.contains(EntryFlags::ONLINE_ONLY)
+}
+
+impl Sink {
+    /// Les totaux de l'élément jugé en bloc où se trouve `inside`.
+    fn unit(&mut self, inside: JunkCtx) -> &mut UnitTotals {
+        self.units.entry(inside.unit).or_insert(UnitTotals::new(inside.rule))
+    }
+
+    /// L'élément jugé en bloc où se trouve `inside`, s'il y en a un, contient
+    /// quelque chose qui restera : il est épargné en entier.
+    fn keep_whole(&mut self, inside: Option<JunkCtx>) {
+        if let Some(inside) = inside.filter(|inside| inside.unit != 0) {
+            self.unit(inside).kept_whole = true;
+        }
+    }
 }
 
 fn ends_with_ignoring_case(name: &OsStr, suffix: &[u8]) -> bool {
@@ -294,7 +379,13 @@ impl<'a> Index<'a> {
         volume: u64,
         units: &'a AtomicU32,
     ) -> Self {
-        Self { plan, progress, volume, units }
+        Self { plan, progress, volume, units, record: false }
+    }
+
+    /// Le même parcours, qui relève en plus ce qu'il compte « à nettoyer ».
+    pub(crate) fn recording(mut self) -> Self {
+        self.record = true;
+        self
     }
 
     /// Contexte d'un point de départ, comme si on était descendu jusqu'à lui
@@ -423,13 +514,25 @@ impl<'a> Index<'a> {
         (!ctx.is_idle()).then_some((ctx, needs_unit))
     }
 
-    fn junk_entry(&self, sink: &mut Sink, inside: JunkCtx, name: &OsStr, meta: &EntryMeta) {
+    fn junk_entry(
+        &self,
+        sink: &mut Sink,
+        parent: &Dir<'_, Ctx>,
+        inside: JunkCtx,
+        name: &OsStr,
+        meta: &EntryMeta,
+    ) {
         let planned = self.plan.rules[inside.rule as usize];
         let rule = planned.rule;
         match meta.kind {
             // Un lien est supprimé en tant que lien, sans toucher à sa cible.
             EntryKind::File | EntryKind::Link => {}
-            EntryKind::Dir | EntryKind::Other => return,
+            // Un dossier où le parcours n'entre pas, ou autre chose qu'un
+            // fichier : il restera en place.
+            EntryKind::Dir | EntryKind::Other => {
+                sink.keep_whole(Some(inside));
+                return;
+            }
         }
         if let Target::FilesHere(patterns) = rule.target {
             let folded = fold_name(name);
@@ -439,25 +542,40 @@ impl<'a> Index<'a> {
                 return;
             }
         }
+        if is_cloud_managed(meta) || meta.flags.contains(EntryFlags::SPECIAL) {
+            sink.keep_whole(Some(inside));
+            return;
+        }
 
         let bytes = meta.allocated;
+        let swept = |unit: u32| SweptFile {
+            rule: inside.rule,
+            unit,
+            path: parent.path.join(name),
+            expected: meta.expected(),
+            bytes,
+        };
         if inside.unit != 0 {
-            let unit = sink.units.entry(inside.unit).or_insert(UnitTotals {
-                rule: inside.rule,
-                bytes: 0,
-                files: 0,
-                newest: stamp(meta),
-            });
+            let unit = sink.unit(inside);
             unit.bytes += bytes;
             unit.files += 1;
             unit.newest = unit.newest.max(stamp(meta));
+            if self.record {
+                sink.swept_files.push(swept(inside.unit));
+            }
             return;
         }
         let totals = &mut sink.junk[inside.rule as usize];
-        if rule.min_age_days == 0 || stamp(meta) <= planned.cutoff {
+        // Rien de plus récent que le début de l'analyse n'est compté, même
+        // pour une règle sans âge minimal : ce qui est proposé existait déjà,
+        // tel quel, quand l'analyse a commencé.
+        if stamp(meta) <= planned.cutoff {
             totals.bytes += bytes;
             totals.files += 1;
             sink.dir_bytes += bytes;
+            if self.record {
+                sink.swept_files.push(swept(0));
+            }
         } else {
             totals.spared_bytes += bytes;
             totals.spared_files += 1;
@@ -485,50 +603,57 @@ impl Visitor for Index<'_> {
         }
         let folded = fold_name(name);
         let mut step = std::mem::take(&mut sink.step);
-        let outcome = self.descend(
-            parent.ctx,
-            &folded,
-            is_hidden(meta),
-            meta.flags.contains(EntryFlags::CLOUD),
-            meta.file_id,
-            &mut step,
-        );
+        // Dans le territoire d'une règle, un dossier qu'un service de
+        // synchronisation gère n'est pas un dossier de fichiers inutiles.
+        let outcome = if parent.ctx.junk.is_some() && is_cloud_managed(meta) {
+            None
+        } else {
+            self.descend(
+                parent.ctx,
+                &folded,
+                is_hidden(meta),
+                meta.flags.contains(EntryFlags::CLOUD),
+                meta.file_id,
+                &mut step,
+            )
+        };
         sink.step = step;
 
         let (mut ctx, needs_unit) = match outcome {
             Some(found) => found,
             None => {
-                // On n'y entre pas : c'est un dossier que l'utilisateur a
-                // exclu, atteint ici par un autre chemin. L'élément jugé en
-                // bloc qui le contient ne sera donc pas nettoyé.
-                if let Some(JunkCtx { unit, rule }) = parent.ctx.junk.filter(|j| j.unit != 0) {
-                    let known = sink.units.entry(unit).or_insert(UnitTotals {
-                        rule,
-                        bytes: 0,
-                        files: 0,
-                        newest: NEVER_OLD,
-                    });
-                    known.newest = NEVER_OLD;
-                }
+                // On n'y entre pas : c'est par exemple un dossier que
+                // l'utilisateur a exclu, atteint ici par un autre chemin.
+                // L'élément jugé en bloc qui le contient ne sera pas nettoyé.
+                sink.keep_whole(parent.ctx.junk);
                 return None;
             }
         };
-        if let Some(inside) = ctx.junk.as_mut() {
-            if needs_unit {
-                // Les identifiants commencent à 1 : 0 veut dire « aucun ».
-                inside.unit = self.units.fetch_add(1, Ordering::Relaxed) + 1;
+        match ctx.junk.as_mut() {
+            Some(inside) => {
+                if needs_unit {
+                    // Les identifiants commencent à 1 : 0 veut dire « aucun ».
+                    inside.unit = self.units.fetch_add(1, Ordering::Relaxed) + 1;
+                }
+                if inside.unit != 0 {
+                    // Les dates du dossier lui-même comptent : y ajouter ou en
+                    // retirer un fichier change sa date de modification.
+                    let unit = sink.unit(*inside);
+                    unit.newest = unit.newest.max(stamp(meta));
+                    if self.record {
+                        sink.swept_dirs.push(SweptDir {
+                            rule: inside.rule,
+                            unit: inside.unit,
+                            path: parent.path.join(name),
+                            expected: meta.expected(),
+                            depth: parent.depth + 1,
+                        });
+                    }
+                }
             }
-            if inside.unit != 0 {
-                // Les dates du dossier lui-même comptent : y ajouter ou en
-                // retirer un fichier change sa date de modification.
-                let unit = sink.units.entry(inside.unit).or_insert(UnitTotals {
-                    rule: inside.rule,
-                    bytes: 0,
-                    files: 0,
-                    newest: stamp(meta),
-                });
-                unit.newest = unit.newest.max(stamp(meta));
-            }
+            // Le parcours continue ici sans la règle : ce dossier mène à un
+            // endroit protégé, et restera en place.
+            None => sink.keep_whole(parent.ctx.junk),
         }
         Some(ctx)
     }
@@ -549,11 +674,12 @@ impl Visitor for Index<'_> {
                 marks.iter().any(|mark| matches!(mark, Mark::Excluded | Mark::Forbidden))
             });
             if off_limits {
+                sink.keep_whole(parent.ctx.junk);
                 return;
             }
         }
         if let Some(inside) = parent.ctx.junk {
-            self.junk_entry(sink, inside, name, meta);
+            self.junk_entry(sink, parent, inside, name, meta);
             return;
         }
         let flags = parent.ctx.flags;
@@ -622,6 +748,11 @@ impl Visitor for Index<'_> {
             }
             Err(ReadDirError::NotADirectory | ReadDirError::Changed) => sink.replaced += 1,
             Err(ReadDirError::Io(_)) => sink.unreadable += 1,
+        }
+        // Un dossier qu'on n'a pas pu lire garde ce qu'il contient : l'élément
+        // jugé en bloc auquel il appartient ne peut plus partir en entier.
+        if !matches!(outcome, Ok(()) | Err(ReadDirError::NotFound)) {
+            sink.keep_whole(dir.ctx.junk);
         }
 
         if sink.managed {

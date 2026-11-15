@@ -280,8 +280,7 @@ impl SettingsStore {
     /// Le fichier des réglages de cette machine : `%APPDATA%\Shinku\settings.json`.
     /// `None` si Windows ne donne pas le dossier `AppData\Roaming`.
     pub fn for_machine(environment: &dyn Environment) -> Option<Self> {
-        let roaming = environment.known_folder(KnownFolder::RoamingAppData)?;
-        Some(Self::at(roaming.join(APP_DIR).join(FILE_NAME)))
+        Some(Self::at(app_dir(environment)?.join(FILE_NAME)))
     }
 
     /// Un fichier de réglages à cet emplacement.
@@ -339,20 +338,35 @@ impl SettingsStore {
             let _ = fs::rename(&self.path, dir.join(UNREADABLE_NAME));
         }
 
-        let temporary = self.path.with_extension("json.tmp");
-        let written = (|| {
-            let mut file = fs::File::create(&temporary)?;
-            file.write_all(json.as_bytes())?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&temporary, &self.path)
-        })();
-        if written.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        written
+        write_replacing(&self.path, json.as_bytes())
     }
+}
+
+/// Le dossier de Shinku dans `AppData\Roaming`, où il garde ses réglages et
+/// son journal. `None` si Windows ne donne pas ce dossier.
+pub(crate) fn app_dir(environment: &dyn Environment) -> Option<PathBuf> {
+    Some(environment.known_folder(KnownFolder::RoamingAppData)?.join(APP_DIR))
+}
+
+/// Écrit un petit fichier de Shinku d'un seul geste : le contenu est écrit à
+/// côté, puis mis en place. Une coupure de courant laisse l'ancien fichier ou
+/// le nouveau, jamais un mélange.
+pub(crate) fn write_replacing(path: &Path, content: &[u8]) -> io::Result<()> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let temporary = path.with_file_name(name);
+    let written = (|| {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(content)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    written
 }
 
 fn unreadable(reason: String) -> Loaded {

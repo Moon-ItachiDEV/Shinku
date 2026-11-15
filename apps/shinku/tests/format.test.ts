@@ -13,6 +13,7 @@ import {
   formatCount,
   formatLimit,
   frenchSpacing,
+  listOf,
   percent,
   plural,
   splitPath,
@@ -105,4 +106,11 @@ test('la ponctuation double ne se retrouve jamais seule en début de ligne', () 
   assert.equal(frenchSpacing('Vraiment ? Oui !'), `Vraiment${NNBSP}? Oui${NNBSP}!`);
   // Un chemin Windows n'a pas d'espace avant ses deux-points : il reste intact.
   assert.equal(frenchSpacing('Retirer C:\\Jeux'), 'Retirer C:\\Jeux');
+});
+
+test('une énumération se termine par « et »', () => {
+  assert.equal(listOf([]), '');
+  assert.equal(listOf(['Discord']), 'Discord');
+  assert.equal(listOf(['Google Chrome', 'Discord']), 'Google Chrome et Discord');
+  assert.equal(listOf(['Google Chrome', 'Discord', 'Steam']), 'Google Chrome, Discord et Steam');
 });

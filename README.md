@@ -13,14 +13,17 @@ Ce qui fonctionne :
 
 - le moteur d'analyse, en lecture seule : fichiers inutiles (42 règles),
   doublons, gros fichiers, état de la corbeille ;
+- le grand vide : après confirmation, il vide la corbeille, supprime les
+  fichiers inutiles et envoie à la corbeille les copies en double que la
+  personne a cochées. Un exemplaire de chaque doublon est toujours gardé ;
 - l'interface complète, en deux modes d'affichage (Crépuscule et Brume),
   branchée sur le moteur ;
 - la fenêtre de l'application (`shinku.exe`) et son installeur pour Windows.
 
 Ce qui n'existe pas encore :
 
-- toute suppression. Les boutons d'action sont visibles mais inactifs, et
-  l'interface le dit ;
+- les actions des modules (supprimer un seul doublon, un gros fichier…).
+  Leurs boutons sont visibles mais inactifs, et l'interface le dit ;
 - l'assistant élevé (`shinku-helper.exe`) et l'agent lancé avec Windows
   (`shinku-agent.exe`), dont il n'existe que le squelette ;
 - les modules Démarrage, Mode jeu, Désinstallation et Confidentialité.
@@ -88,7 +91,10 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
 ## Les tests
 
 - Le cœur se teste sur de petits PC fabriqués dans un dossier temporaire :
-  aucune analyse de test ne touche aux vrais dossiers de la machine.
+  aucun test ne lit ni ne supprime dans les vrais dossiers de la machine, et
+  leur corbeille est un simple dossier. La vraie corbeille de Windows n'est
+  essayée que sur demande (`SHINKU_ESSAI_CORBEILLE=1`), sur des fichiers
+  fabriqués pour l'occasion.
 - Le contrat entre le cœur et l'interface est un fichier de référence,
   `apps/shinku/tests/contract/contract.json`. Le cœur vérifie qu'il produit
   bien ces formes de JSON, l'interface vérifie qu'elle attend les mêmes. Après
@@ -104,7 +110,8 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
 - La fenêtre elle-même est essayée sur un vrai Windows, une fois installée :
   `apps/shinku/scripts/essai-fenetre.mjs` lance `shinku.exe`, lit ce qu'il
   affiche et clique comme le ferait quelqu'un (analyse, résultats et cases
-  cochées d'office, chaque module, réglages, fermeture). Sur un PC d'essai,
+  cochées d'office, confirmation du grand vide, chaque module, réglages,
+  fermeture). Sur un PC d'essai,
   depuis `apps/shinku` :
 
   ```sh
@@ -112,7 +119,9 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   ```
 
   Il mène une vraie analyse du disque et change un instant le mode
-  d'affichage enregistré.
+  d'affichage enregistré. Il annule la confirmation du grand vide : rien
+  n'est supprimé. L'option `--grand-vide` le fait aller au bout, pour de
+  bon : elle est réservée à une machine jetable.
 - L'intégration continue (`.github/workflows/ci.yml`) rejoue le tout sous
   Linux, passe le code propre à Windows au lint, puis, sur un vrai Windows,
   lance les tests du cœur, fabrique l'installeur, l'installe et essaie la

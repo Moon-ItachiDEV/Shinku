@@ -15,14 +15,21 @@
 //
 // À lancer sur une machine d'essai (celle de l'intégration continue) : il
 // mène une vraie analyse du disque et change un instant le mode d'affichage
-// enregistré.
+// enregistré. Il ouvre la confirmation du grand vide, puis l'annule : rien
+// n'est supprimé.
 //
 //   node scripts/essai-fenetre.mjs --programme "C:\Program Files\Shinku\shinku.exe" --captures captures
+//
+// Avec --grand-vide, il va au bout : il confirme, et Shinku vide la corbeille,
+// supprime les fichiers inutiles et envoie les doublons à la corbeille, pour
+// de bon. À réserver à une machine jetable (celle de l'intégration continue).
+// L'essai y dépose d'abord un faux fichier inutile et deux fichiers
+// identiques, et vérifie sur le disque ce qu'ils sont devenus.
 //
 // Sans dépendance : Node 22 suffit.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,6 +47,8 @@ const { values: options } = parseArgs({
     'attente-analyse': { type: 'string', default: '600' },
     /** Début de l'adresse de la page (pour mettre l'essai au point hors de Windows). */
     adresse: { type: 'string' },
+    /** Va au bout du grand vide : des fichiers sont réellement supprimés. */
+    'grand-vide': { type: 'boolean', default: false },
   },
 });
 
@@ -512,6 +521,35 @@ function readChoices() {
   });
 }
 
+/** La confirmation du grand vide, si elle est ouverte. */
+function readDialog() {
+  const text = (element) => (element?.innerText ?? '').replace(/[ \u00a0\u202f]+/g, ' ').trim();
+  const dialog = document.querySelector('dialog.ask[open]');
+  if (dialog === null) {
+    return null;
+  }
+  return {
+    whole: text(dialog),
+    rows: [...dialog.querySelectorAll('li.row')].map((row) => ({
+      name: text(row.querySelector('.t1')),
+      value: text(row.querySelector('.val')),
+    })),
+    focus: text(document.activeElement),
+  };
+}
+
+/** Le grand vide en cours, ou son bilan. */
+function readClean() {
+  const text = (element) => (element?.innerText ?? '').replace(/[ \u00a0\u202f]+/g, ' ').trim();
+  const bilan = document.querySelector('.main .bilan');
+  return {
+    running: document.querySelector('.dock .core') !== null,
+    status: text(document.querySelector('.main [role=status]')),
+    report: bilan === null ? null : text(bilan),
+    alerts: bilan === null ? '' : text(bilan.querySelector('.alert')),
+  };
+}
+
 // ── L'essai ────────────────────────────────────────────────────────────────
 
 /** La fenêtre en cours d'essai. */
@@ -706,6 +744,7 @@ async function checkScan(window) {
   quote(results.main);
   await window.healthy('sur les résultats');
   await checkChoices(window);
+  await checkConfirmation(window);
 }
 
 /**
@@ -746,22 +785,185 @@ async function checkChoices(window) {
   done('la case « Doublons » se coche et se décoche à la main');
 }
 
+/** Ouvre la confirmation du grand vide. Rend `null` s'il n'y a rien à nettoyer. */
+async function openConfirmation(window) {
+  const button = await window.session.run(locate, '.dock .orb', 'Faire le vide');
+  if (button === null || button.disabled) {
+    return null;
+  }
+  await window.click('Faire le vide', '.dock .orb', 'Faire le vide');
+  return until('la confirmation est ouverte', 30_000, () => window.session.run(readDialog));
+}
+
+/**
+ * « Faire le vide » ne fait rien partir : il demande d'abord, en listant ce
+ * qui partirait. Annuler referme la demande et laisse tout en place.
+ */
+async function checkConfirmation(window) {
+  const dialog = await openConfirmation(window);
+  if (dialog === null) {
+    say('  le bouton « Faire le vide » est fermé : rien à nettoyer sur cette machine');
+    return;
+  }
+  quote(dialog.whole);
+  const names = dialog.rows.map((row) => row.name);
+  if (!names.includes('Fichiers inutiles')) {
+    fail('la confirmation ne liste pas les fichiers inutiles, pourtant cochés');
+  }
+  if (names.includes('Doublons')) {
+    fail('la confirmation liste les doublons, que personne n’a cochés');
+  }
+  if (dialog.focus !== 'Annuler') {
+    fail(`à l’ouverture de la confirmation, le bouton actif est « ${dialog.focus} » au lieu de « Annuler »`);
+  }
+  await window.capture('confirmation');
+  await window.click('Annuler', 'dialog.ask button', 'Annuler');
+  await until('la confirmation est refermée', 10_000, async () => (await window.session.run(readDialog)) === null);
+  const screen = await window.healthy('après avoir annulé le grand vide');
+  if (!shows(screen.main, 'Le grand vide peut libérer')) {
+    fail(`après « Annuler », les résultats ne sont plus affichés :\n${screen.main}`);
+  }
+  done('« Faire le vide » demande confirmation, et « Annuler » ne touche à rien');
+}
+
+/** Les fichiers que l'essai dépose avant un vrai grand vide (sous Windows). */
+function plantedFiles() {
+  if (!onWindows || process.env.LOCALAPPDATA === undefined || process.env.USERPROFILE === undefined) {
+    return null;
+  }
+  const folder = path.join(process.env.USERPROFILE, 'Documents', 'Essai Shinku');
+  return {
+    // Une miniature de l'Explorateur : la règle « windows.thumbnails » la compte.
+    junk: path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Windows', 'Explorer', 'thumbcache_essai-shinku.db'),
+    folder,
+    twins: [path.join(folder, 'film.bin'), path.join(folder, 'film - Copie.bin')],
+  };
+}
+
+function plant(files) {
+  mkdirSync(path.dirname(files.junk), { recursive: true });
+  writeFileSync(files.junk, Buffer.alloc(256 * 1024, 7));
+  mkdirSync(files.folder, { recursive: true });
+  // Deux fichiers identiques, assez gros pour compter comme doublons.
+  const content = Buffer.alloc(2 * 1024 * 1024);
+  for (let index = 0; index < content.length; index += 4) {
+    content.writeUInt32LE((index * 2654435761) >>> 0, index);
+  }
+  for (const twin of files.twins) {
+    writeFileSync(twin, content);
+  }
+  say(`  fichiers déposés : ${files.junk}, et deux fichiers identiques dans ${files.folder}`);
+}
+
+/**
+ * Le grand vide, pour de bon : confirmer, suivre l'avancement, lire le bilan,
+ * puis regarder sur le disque ce que les fichiers déposés sont devenus.
+ */
+async function checkClean(window, planted) {
+  await window.click('Grand vide', 'button.nav', 'Grand vide');
+  await until('les résultats sont de nouveau affichés', 20_000, async () =>
+    shows((await window.screen()).main, 'Le grand vide peut libérer'),
+  );
+  const choice = async (name) => (await window.session.run(readChoices)).find((row) => row.name === name);
+  const duplicates = await choice('Doublons');
+  const withDuplicates = duplicates !== undefined && !duplicates.locked;
+  if (planted !== null && !withDuplicates) {
+    fail('deux fichiers identiques ont été déposés, mais la case « Doublons » est fermée');
+  }
+  if (withDuplicates && !duplicates.checked) {
+    await window.click('Doublons', '.main label.row', 'Doublons');
+    await until('la case « Doublons » est cochée', 10_000, async () => (await choice('Doublons'))?.checked === true);
+  }
+
+  const dialog = await openConfirmation(window);
+  if (dialog === null) {
+    fail('le bouton « Faire le vide » est fermé : le grand vide ne peut pas être essayé');
+  }
+  quote(dialog.whole);
+  const names = dialog.rows.map((row) => row.name);
+  if (withDuplicates && !names.includes('Doublons')) {
+    fail('la confirmation ne liste pas les doublons, pourtant cochés');
+  }
+  await window.capture('confirmation-grand-vide');
+  await window.click('Faire le vide', 'dialog.ask button', 'Faire le vide');
+
+  const begun = Date.now();
+  let pictured = false;
+  let told = Date.now();
+  const end = await until('le grand vide est terminé', SCAN_BUDGET, async () => {
+    const clean = await window.session.run(readClean);
+    if (clean.report !== null) {
+      return clean;
+    }
+    if (!clean.running) {
+      // Ni avancement ni bilan : la demande a été refusée, ou la fenêtre est revenue ailleurs.
+      const screen = await window.screen();
+      if (screen.toast !== '') {
+        fail(`le grand vide n’a pas démarré : « ${screen.toast} »`);
+      }
+      return null;
+    }
+    if (!pictured) {
+      pictured = true;
+      await window.capture('grand-vide');
+    }
+    if (Date.now() - told >= 15_000) {
+      told = Date.now();
+      say(`  ${clean.status}`);
+    }
+    return null;
+  }, 300);
+  done(`le grand vide se termine en ${Math.round((Date.now() - begun) / 1000)} s`);
+  quote(end.report);
+  await window.capture('bilan');
+  await window.healthy('après le grand vide');
+  if (!shows(end.report, 'Grand vide terminé')) {
+    fail('le bilan n’annonce pas « Grand vide terminé »');
+  }
+  if (end.alerts !== '') {
+    fail(`le bilan signale un problème : ${end.alerts}`);
+  }
+
+  if (planted !== null) {
+    if (existsSync(planted.junk)) {
+      fail(`le faux fichier inutile est toujours là : ${planted.junk}`);
+    }
+    const left = planted.twins.filter((twin) => existsSync(twin));
+    if (left.length !== 1) {
+      fail(`des deux fichiers identiques, il devait en rester un seul ; il en reste ${left.length}`);
+    }
+    if (!shows(end.report, 'dans la corbeille')) {
+      fail('le bilan ne dit pas que la copie attend dans la corbeille');
+    }
+    done(`sur le disque : le fichier inutile est parti, et il reste un exemplaire du doublon (${path.basename(left[0])})`);
+    rmSync(planted.folder, { recursive: true, force: true });
+  }
+
+  await window.click('Terminé', '.dock button', 'Terminé');
+  await until('l’Accueil est revenu', 20_000, async () => shows((await window.screen()).main, 'Analyser'));
+  await window.healthy('après avoir refermé le bilan');
+  done('« Terminé » referme le bilan et revient à l’Accueil');
+}
+
 async function checkModules(window) {
-  /** Chaque module, et un texte que son écran montre quand le cœur a répondu. */
+  /**
+   * Chaque module, et un texte que son écran montre quand le cœur a répondu.
+   * Deux textes : le second est celui d'une machine où il n'y a rien à retirer.
+   */
   const modules = [
     ['Fichiers inutiles', 'Ces fichiers se recréent tout seuls'],
-    ['Doublons', 'Le nettoyage arrive dans une prochaine version'],
+    ['Doublons', 'Coche Doublons dans le grand vide', 'Aucune copie à retirer'],
     ['Gros fichiers', 'de plus de'],
-    ['Corbeille', 'Le vidage arrive dans une prochaine version'],
+    ['Corbeille', 'la corbeille se vide avec le grand vide', 'Rien à vider'],
     ['Démarrage', 'Ce module arrive dans une prochaine version'],
     ['Mode jeu', 'Ce module arrive dans une prochaine version'],
     ['Désinstallation', 'Ce module arrive dans une prochaine version'],
     ['Confidentialité', 'Ce module arrive dans une prochaine version'],
   ];
-  for (const [label, expected] of modules) {
+  for (const [label, ...expected] of modules) {
     const screen = await window.open(label);
-    if (!shows(screen.main, expected)) {
-      fail(`l’écran « ${label} » ne montre pas « ${expected} » :\n${screen.main}`);
+    if (!expected.some((text) => shows(screen.main, text))) {
+      fail(`l’écran « ${label} » ne montre pas « ${expected.join(' » ni « ')} » :\n${screen.main}`);
     }
     done(`écran « ${label} »`);
     quote(screen.main, 14);
@@ -862,6 +1064,10 @@ async function main() {
   const asUser = elevated();
   say(`sur ${os.version()} (${os.release()})`);
   say(`lancement de ${options.programme}${asUser ? ', avec les droits ordinaires d’un utilisateur' : ''}`);
+  const planted = options['grand-vide'] ? plantedFiles() : null;
+  if (planted !== null) {
+    plant(planted);
+  }
   const run = launch(options.programme, port, asUser);
   let window = null;
   try {
@@ -877,6 +1083,9 @@ async function main() {
     await checkScan(window);
     await checkModules(window);
     await checkSettings(window);
+    if (options['grand-vide']) {
+      await checkClean(window, planted);
+    }
     if (onWindows) {
       await checkSingleWindow(port, asUser);
     }

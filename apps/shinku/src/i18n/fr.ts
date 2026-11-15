@@ -15,6 +15,10 @@ import {
   plural,
 } from '../format.ts';
 
+/** « 9 utilisés par une app » : un nombre et ce qui lui est arrivé, accordé. */
+const some = (count: number, one: string, many: string): string =>
+  `${formatCount(count)}${NBSP}${plural(count, one, many)}`;
+
 /** Les mêmes textes, une fois les espaces insécables posées. */
 type Typeset<T> = T extends string
   ? string
@@ -103,6 +107,19 @@ export const fr = typeset({
     follow: 'Suivre l’analyse',
     reviewResults: (finished: number) => `Revoir les résultats de ${formatClock(finished)}`,
     failed: 'La dernière analyse s’est arrêtée sur une erreur. Tu peux la relancer.',
+    cleanFailed: 'Le dernier grand vide s’est arrêté sur une erreur. Relance une analyse pour voir ce qui reste.',
+    interrupted: (ago: string, freed: number, recycled: number) => {
+      // Le journal est tenu de loin en loin : ses chiffres sont un minimum.
+      const gone =
+        freed > 0 && recycled > 0
+          ? ` Au moins ${formatBytes(freed)} étaient déjà libérés, et ${formatBytes(recycled)} partis à la corbeille.`
+          : freed > 0
+            ? ` Au moins ${formatBytes(freed)} étaient déjà libérés.`
+            : recycled > 0
+              ? ` Au moins ${formatBytes(recycled)} étaient déjà partis à la corbeille.`
+              : '';
+      return `Le grand vide lancé ${ago} a été coupé avant la fin : Shinku a été fermé, ou le PC éteint.${gone} Relance une analyse pour voir ce qui reste.`;
+    },
     checkFirst: 'Vérifie d’abord tes réglages',
     issueUnreadable:
       'Tes réglages n’ont pas pu être relus. Shinku repart des valeurs par défaut, et ta liste de dossiers jamais touchés est vide. Vérifie-la avant d’analyser.',
@@ -133,7 +150,7 @@ export const fr = typeset({
   results: {
     canFree: 'Le grand vide peut libérer',
     junkHint: 'Caches, fichiers temporaires et journaux',
-    duplicatesHint: 'Gardés dans la corbeille, récupérables',
+    duplicatesHint: 'Les copies vont à la corbeille, un exemplaire reste',
     duplicatesChoice: 'Copies de tes fichiers : à toi de les cocher',
     duplicatesPending: (done: number) => `Recherche en cours… ${done}${NBSP}%`,
     duplicatesNone: 'Aucun doublon trouvé',
@@ -148,7 +165,10 @@ export const fr = typeset({
         ? `Aucun fichier de plus de ${formatLimit(threshold)}`
         : `${countOf(count, 'fichier', 'fichiers')} de plus de ${formatLimit(threshold)}`,
     clean: 'Faire le vide',
-    cleanSoon: 'Le nettoyage arrive dans une prochaine version : rien n’est supprimé.',
+    cleanConfirm: 'Rien ne part avant ta confirmation',
+    cleanPending: 'Disponible dès la fin de l’analyse',
+    cleanUnchecked: 'Coche au moins une ligne pour faire le vide',
+    cleanEmpty: 'Rien à nettoyer pour l’instant',
     stale: (finished: number) => `Résultats de ${formatClock(finished)}. Relance une analyse pour des chiffres à jour.`,
     rescan: 'Réanalyser',
     skipped: (folders: number) =>
@@ -170,8 +190,8 @@ export const fr = typeset({
     spared: (files: number, bytes: number) =>
       `${countOf(files, 'fichier trop récent est laissé', 'fichiers trop récents sont laissés')} de côté (${formatBytes(bytes)}).`,
     remove: 'Supprimer',
-    soon: (bytes: number) => `${formatBytes(bytes)} trouvés. Le nettoyage arrive dans une prochaine version.`,
-    soonEmpty: 'Le nettoyage arrive dans une prochaine version.',
+    viaClean: (bytes: number) => `${formatBytes(bytes)} trouvés. Pour les supprimer, passe par le grand vide.`,
+    nothing: 'Rien à supprimer.',
   },
 
   duplicates: {
@@ -190,8 +210,9 @@ export const fr = typeset({
     skipped: (files: number) =>
       `${countOf(files, 'fichier n’a pas pu être comparé', 'fichiers n’ont pas pu être comparés')} (verrouillé ou modifié pendant l’analyse).`,
     remove: 'Supprimer',
-    soon: (bytes: number) => `${formatBytes(bytes)} de copies. Le nettoyage arrive dans une prochaine version.`,
-    soonEmpty: 'Le nettoyage arrive dans une prochaine version.',
+    viaClean: (bytes: number) =>
+      `${formatBytes(bytes)} de copies. Coche Doublons dans le grand vide pour les retirer.`,
+    nothing: 'Aucune copie à retirer.',
   },
 
   large: {
@@ -221,7 +242,81 @@ export const fr = typeset({
     empty: 'Ta corbeille est vide.',
     unknown: 'La corbeille n’a pas pu être mesurée.',
     emptyIt: 'Vider la corbeille',
-    soon: 'Le vidage arrive dans une prochaine version.',
+    viaClean: 'Pour l’instant, la corbeille se vide avec le grand vide.',
+    nothing: 'Rien à vider.',
+  },
+
+  confirm: {
+    title: 'Faire le vide ?',
+    intro: 'Voici ce qui part si tu confirmes, dans cet ordre.',
+    bin: (items: number) => `${countOf(items, 'élément supprimé', 'éléments supprimés')} définitivement`,
+    junk: (files: number) => `${countOf(files, 'fichier supprimé', 'fichiers supprimés')} sans passer par la corbeille`,
+    duplicates: (copies: number) =>
+      `${countOf(copies, 'copie envoyée', 'copies envoyées')} à la corbeille, un exemplaire reste`,
+    openApps: (names: string, count: number, bytes: number) =>
+      `${names} ${plural(count, 'est ouvert', 'sont ouverts')} : ${plural(count, 'ses', 'leurs')} fichiers (${formatBytes(bytes)}) resteront en place. Ferme-${plural(count, 'le', 'les')} d’abord pour tout nettoyer.`,
+    syncedCopies: (copies: number) =>
+      `${countOf(copies, 'copie est rangée', 'copies sont rangées')} dans un dossier synchronisé : ${plural(copies, 'elle partira', 'elles partiront')} aussi de ton espace en ligne.`,
+    otherDiskCopies: (copies: number) =>
+      `${countOf(copies, 'copie est rangée', 'copies sont rangées')} sur un autre disque que l’exemplaire gardé : vérifie que ce n’est pas une sauvegarde.`,
+    cancel: 'Annuler',
+    confirm: 'Faire le vide',
+  },
+
+  clean: {
+    title: 'Grand vide en cours',
+    preparing: 'Préparation…',
+    recycleBin: 'Vidage de la corbeille…',
+    junkFiles: 'Suppression des fichiers inutiles…',
+    duplicates: 'Envoi des doublons à la corbeille…',
+    finishing: 'Dernières vérifications…',
+    at: (done: number) => `${done}${NBSP}%`,
+    soFar: (freed: number, recycled: number) =>
+      freed > 0 && recycled > 0
+        ? `${formatBytes(freed)} libérés, ${formatBytes(recycled)} à la corbeille`
+        : freed > 0
+          ? `${formatBytes(freed)} libérés`
+          : recycled > 0
+            ? `${formatBytes(recycled)} à la corbeille`
+            : '',
+    stopping: 'Arrêt demandé : Shinku termine ce qui est en cours.',
+  },
+
+  done: {
+    finished: 'Grand vide terminé',
+    stopped: 'Grand vide arrêté',
+    freed: 'libérés',
+    recycled: 'à la corbeille',
+    recoverable: (bytes: number) => `+ ${formatBytes(bytes)} récupérables dans la corbeille`,
+    recycledHint: 'Récupérables tant que tu ne vides pas la corbeille',
+    nothing: 'Rien n’a été supprimé',
+    duplicatesPart: 'Doublons, récupérables',
+    diskNow: (drive: string, free: number) => `Ton disque ${drive} a maintenant ${formatBytes(free)} d’espace libre.`,
+    cancelled: 'Tu as arrêté le grand vide en route. Ce qui est déjà parti reste parti.',
+    binFailed: 'La corbeille n’a pas pu être vidée en entier.',
+    junkFailed:
+      'Les fichiers inutiles sont restés en place : un de tes dossiers jamais touchés n’a pas pu être appliqué, et dans le doute Shinku ne supprime rien.',
+    duplicatesFailed:
+      'Les doublons sont restés en place : un de tes dossiers jamais touchés n’a pas pu être appliqué, et dans le doute Shinku n’y touche pas.',
+    stopNotInBin: (name: string) =>
+      `Shinku s’est arrêté par sécurité : après avoir envoyé «${NBSP}${name}${NBSP}» à la corbeille, il ne l’y a pas retrouvé. Les copies suivantes n’ont pas été touchées.`,
+    stopKeptChanged: (name: string) =>
+      `Shinku s’est arrêté par sécurité : l’exemplaire gardé de «${NBSP}${name}${NBSP}» a changé pendant le grand vide. Sa copie est dans la corbeille, d’où tu peux la restaurer. Les copies suivantes n’ont pas été touchées.`,
+    leftOpen: (names: string, count: number, bytes: number) =>
+      `${names} ${plural(count, 'était ouvert', 'étaient ouverts')} : ${plural(count, 'ses', 'leurs')} fichiers sont restés (${formatBytes(bytes)}).`,
+    skipped: (files: number, detail: string) =>
+      `${countOf(files, 'fichier est resté', 'fichiers sont restés')} en place : ${detail}.`,
+    skippedInUse: (files: number) => `${some(files, 'utilisé', 'utilisés')} par une app`,
+    skippedChanged: (files: number) => `${some(files, 'modifié', 'modifiés')} depuis l’analyse`,
+    skippedDenied: (files: number) => `${some(files, 'refusé', 'refusés')} par Windows`,
+    skippedUnrecyclable: (files: number) => `${formatCount(files)} que la corbeille ne peut pas recevoir`,
+    skippedOther: (files: number) => `${formatCount(files)} pour une autre raison`,
+    binWasFull:
+      'Ta corbeille était pleine : elle a déjà abandonné une partie de son contenu pour faire de la place.',
+    gainedLess: (counted: number) =>
+      `Les fichiers supprimés occupaient ${formatBytes(counted)}, mais ton disque a gagné un peu moins : d’autres programmes écrivaient en même temps, ou certains fichiers existaient sous deux noms.`,
+    close: 'Terminé',
+    rescan: 'Analyser à nouveau',
   },
 
   soon: {
@@ -246,7 +341,7 @@ export const fr = typeset({
     system: 'Système',
     security: 'Sécurité',
     foldersLabel: 'Dossiers jamais touchés',
-    foldersHint: 'Shinku n’analyse pas ces dossiers.',
+    foldersHint: 'Shinku n’analyse pas ces dossiers, et n’y supprime rien.',
     foldersEmpty: 'Aucun dossier pour l’instant.',
     foldersNote: 'Changer cette liste efface les résultats en cours : relance ensuite une analyse.',
     addFolder: 'Ajouter un dossier',
@@ -260,6 +355,13 @@ export const fr = typeset({
     settingsNotSaved: 'Les réglages n’ont pas pu être enregistrés. Rien n’a changé.',
     scanNotStarted: 'L’analyse n’a pas pu démarrer.',
     scanFailed: 'L’analyse s’est arrêtée sur une erreur.',
+    cleanFailed: 'Le grand vide s’est arrêté sur une erreur.',
+    cleanRunning: 'Un grand vide est en cours : attends qu’il se termine.',
+    cleanNotStarted: 'Le grand vide n’a pas pu démarrer. Rien n’a été supprimé.',
+    noResults: 'L’analyse n’est pas terminée : le grand vide attend ses résultats.',
+    staleResults: 'Ces résultats ont plus de dix minutes : relance une analyse avant de faire le vide.',
+    otherAnalysis: 'Les résultats ont changé entre-temps : vérifie-les avant de faire le vide.',
+    nothingToClean: 'Il n’y a plus rien à nettoyer dans ce que tu as coché.',
     settingsUnchecked: 'Vérifie d’abord tes réglages.',
     notAFolder: 'Ce chemin ne désigne pas un dossier lisible.',
     notAbsolute: 'Ce chemin n’est pas valide.',

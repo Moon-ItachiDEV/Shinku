@@ -266,6 +266,8 @@ fn build_group(
                 modified: candidate.modified,
                 keep: position == 0,
                 synced: candidate.synced,
+                file_id: candidate.file_id,
+                volume: candidate.volume,
             }
         })
         .collect();

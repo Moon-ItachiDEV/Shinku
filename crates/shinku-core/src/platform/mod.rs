@@ -1,12 +1,18 @@
-//! Ce que le moteur demande à la machine : dossiers connus, disques, corbeille.
+//! Ce que le moteur demande à la machine : dossiers connus, disques,
+//! corbeille, programmes en cours.
 //!
 //! Tout passe par le trait [`Environment`]. Le moteur ne lit jamais une
 //! variable d'environnement ni une API de Windows directement : les tests lui
 //! donnent ainsi un PC fabriqué de toutes pièces ([`StaticEnvironment`]), et
 //! la vraie implémentation reste petite et isolée.
+//!
+//! Deux demandes modifient la machine, et seul le grand vide les fait : vider
+//! la corbeille et y envoyer un fichier.
 
 use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::Serialize;
 
@@ -141,6 +147,38 @@ pub struct RecycleBin {
     pub items: u64,
 }
 
+/// Pourquoi un fichier n'est pas parti à la corbeille. Dans tous les cas, il
+/// est resté à sa place.
+#[derive(Debug)]
+pub enum RecycleError {
+    /// La corbeille ne peut pas le recevoir : elle est désactivée, trop petite
+    /// pour lui, ou son disque n'en a pas. Windows l'aurait supprimé
+    /// définitivement : Shinku a refusé.
+    Refused,
+    /// Cette machine n'a pas de corbeille que Shinku sache utiliser.
+    Unavailable,
+    /// Un programme utilise le fichier.
+    Locked,
+    /// Windows refuse l'accès au fichier.
+    AccessDenied,
+    /// La corbeille a échoué pour une autre raison.
+    Failed(String),
+}
+
+impl fmt::Display for RecycleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused => f.write_str("la corbeille ne peut pas recevoir ce fichier"),
+            Self::Unavailable => f.write_str("la corbeille n'est pas disponible"),
+            Self::Locked => f.write_str("un programme utilise ce fichier"),
+            Self::AccessDenied => f.write_str("accès refusé"),
+            Self::Failed(reason) => write!(f, "la corbeille a échoué : {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for RecycleError {}
+
 /// La machine, vue par le moteur.
 ///
 /// Tous les chemins rendus sont absolus et sous forme interne
@@ -165,6 +203,29 @@ pub trait Environment: Send + Sync + fmt::Debug {
     /// Nombre de fils d'exécution utilisables.
     fn parallelism(&self) -> usize {
         std::thread::available_parallelism().map_or(1, usize::from)
+    }
+
+    /// Noms des programmes en cours d'exécution (`chrome.exe`…), tous
+    /// comptes confondus. `None` si la machine ne sait pas le dire : le
+    /// moteur considère alors que n'importe quelle app peut être ouverte.
+    fn running_processes(&self) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Vide la corbeille des disques que [`Environment::recycle_bin`] mesure.
+    /// Sans retour possible.
+    fn empty_recycle_bin(&self) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "pas de corbeille sur cette machine"))
+    }
+
+    /// Envoie un fichier à la corbeille, d'où l'utilisateur peut le
+    /// restaurer. `path` est sous forme interne.
+    ///
+    /// Ne supprime jamais définitivement : si la corbeille ne peut pas
+    /// recevoir le fichier, il reste à sa place et l'appel échoue.
+    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
+        let _ = path;
+        Err(RecycleError::Unavailable)
     }
 }
 
@@ -259,6 +320,10 @@ impl Drop for BackgroundPriority {
 
 /// Une machine décrite à la main : pour les tests, et pour essayer le moteur
 /// sur un dossier quelconque.
+///
+/// Sa corbeille est un simple dossier ([`StaticEnvironment::with_recycle_folder`]) :
+/// y « envoyer » un fichier l'y déplace, la « vider » supprime ce qu'elle a
+/// elle-même reçu. Les copies d'une même machine partagent cette corbeille.
 #[derive(Clone, Debug, Default)]
 pub struct StaticEnvironment {
     now: Option<Timestamp>,
@@ -267,6 +332,22 @@ pub struct StaticEnvironment {
     sync_roots: Vec<PathBuf>,
     recycle_bin: Option<RecycleBin>,
     parallelism: Option<usize>,
+    processes: Vec<String>,
+    processes_unknown: bool,
+    recycle_folder: Option<PathBuf>,
+    recycle_limit: Option<u64>,
+    bin: Arc<Mutex<StaticBin>>,
+}
+
+/// Ce qui est arrivé à la corbeille d'une machine décrite à la main.
+#[derive(Debug, Default)]
+struct StaticBin {
+    /// La corbeille a été vidée : son contenu de départ n'existe plus.
+    emptied: bool,
+    /// Fichiers reçus depuis, et leur taille.
+    held: Vec<(PathBuf, u64)>,
+    /// Numérote les fichiers reçus : deux fichiers de même nom ne se gênent pas.
+    received: u64,
 }
 
 impl StaticEnvironment {
@@ -311,6 +392,36 @@ impl StaticEnvironment {
         self.parallelism = Some(threads.max(1));
         self
     }
+
+    /// Déclare un programme en cours d'exécution (`chrome.exe`).
+    pub fn with_process(mut self, name: impl Into<String>) -> Self {
+        self.processes.push(name.into());
+        self
+    }
+
+    /// La machine ne sait pas dire quels programmes tournent.
+    pub fn without_process_list(mut self) -> Self {
+        self.processes_unknown = true;
+        self
+    }
+
+    /// Donne à la machine une corbeille : un dossier existant, sur le même
+    /// disque que les fichiers qu'on y enverra.
+    pub fn with_recycle_folder(mut self, folder: impl Into<PathBuf>) -> Self {
+        self.recycle_folder = Some(folder.into());
+        self
+    }
+
+    /// La corbeille refuse les fichiers plus gros que `bytes`, comme celle de
+    /// Windows refuse un fichier plus gros qu'elle.
+    pub fn with_recycle_limit(mut self, bytes: u64) -> Self {
+        self.recycle_limit = Some(bytes);
+        self
+    }
+
+    fn bin(&self) -> std::sync::MutexGuard<'_, StaticBin> {
+        self.bin.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 impl Environment for StaticEnvironment {
@@ -331,12 +442,69 @@ impl Environment for StaticEnvironment {
     }
 
     fn recycle_bin(&self) -> Option<RecycleBin> {
-        self.recycle_bin
+        if self.recycle_bin.is_none() && self.recycle_folder.is_none() {
+            return None;
+        }
+        let bin = self.bin();
+        let mut total = match self.recycle_bin {
+            Some(initial) if !bin.emptied => initial,
+            _ => RecycleBin::default(),
+        };
+        for (_, bytes) in &bin.held {
+            total.bytes += bytes;
+            total.items += 1;
+        }
+        Some(total)
     }
 
     fn parallelism(&self) -> usize {
         self.parallelism
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from))
+    }
+
+    fn running_processes(&self) -> Option<Vec<String>> {
+        (!self.processes_unknown).then(|| self.processes.clone())
+    }
+
+    fn empty_recycle_bin(&self) -> io::Result<()> {
+        if self.recycle_bin.is_none() && self.recycle_folder.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "cette machine n'a pas de corbeille",
+            ));
+        }
+        let mut bin = self.bin();
+        bin.emptied = true;
+        // Seulement ce que cette corbeille a reçu : rien d'autre ne part.
+        let mut failure = None;
+        bin.held.retain(|(path, _)| match std::fs::remove_file(path) {
+            Ok(()) => false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => {
+                failure = Some(error);
+                true
+            }
+        });
+        failure.map_or(Ok(()), Err)
+    }
+
+    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
+        let Some(folder) = &self.recycle_folder else { return Err(RecycleError::Unavailable) };
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| RecycleError::Failed(error.to_string()))?;
+        if !metadata.is_file() {
+            return Err(RecycleError::Failed("ce n'est pas un fichier".to_owned()));
+        }
+        if self.recycle_limit.is_some_and(|limit| metadata.len() > limit) {
+            return Err(RecycleError::Refused);
+        }
+        let mut bin = self.bin();
+        bin.received += 1;
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let kept = folder.join(format!("{:06}-{name}", bin.received));
+        std::fs::rename(path, &kept).map_err(|error| RecycleError::Failed(error.to_string()))?;
+        bin.held.push((kept, metadata.len()));
+        Ok(())
     }
 }
 
@@ -397,6 +565,56 @@ mod tests {
         assert_eq!(environment.known_folder(KnownFolder::Pictures), None);
         assert_eq!(environment.recycle_bin(), Some(RecycleBin { bytes: 5, items: 1 }));
         assert_eq!(environment.parallelism(), 1);
+        assert_eq!(environment.running_processes(), Some(Vec::new()));
+        let busy = environment.clone().with_process("chrome.exe");
+        assert_eq!(busy.running_processes(), Some(vec!["chrome.exe".to_owned()]));
+        assert_eq!(busy.without_process_list().running_processes(), None);
+    }
+
+    #[test]
+    fn a_machine_without_a_recycle_bin_refuses_politely() {
+        let environment = StaticEnvironment::new();
+        assert_eq!(environment.recycle_bin(), None);
+        assert!(environment.empty_recycle_bin().is_err());
+        assert!(matches!(
+            environment.recycle(Path::new("/nulle/part")),
+            Err(RecycleError::Unavailable)
+        ));
+    }
+
+    #[test]
+    fn the_hand_made_recycle_bin_receives_and_empties() {
+        let workspace = tempfile::tempdir().unwrap();
+        let bin = workspace.path().join("corbeille");
+        std::fs::create_dir(&bin).unwrap();
+        let photo = workspace.path().join("photo.jpg");
+        let film = workspace.path().join("film.mkv");
+        let stranger = bin.join("pas-à-moi.txt");
+        std::fs::write(&photo, [1u8; 300]).unwrap();
+        std::fs::write(&film, [2u8; 5000]).unwrap();
+        std::fs::write(&stranger, b"x").unwrap();
+
+        let environment = StaticEnvironment::new()
+            .with_recycle_bin(RecycleBin { bytes: 1000, items: 2 })
+            .with_recycle_folder(&bin)
+            .with_recycle_limit(4096);
+        // Une copie de la machine voit la même corbeille.
+        let twin = environment.clone();
+
+        environment.recycle(&photo).unwrap();
+        assert!(!photo.exists(), "le fichier a quitté sa place");
+        assert_eq!(twin.recycle_bin(), Some(RecycleBin { bytes: 1300, items: 3 }));
+
+        // Trop gros pour la corbeille : refusé, et laissé à sa place.
+        assert!(matches!(environment.recycle(&film), Err(RecycleError::Refused)));
+        assert!(film.exists());
+        // Un dossier ne s'y envoie pas.
+        assert!(matches!(environment.recycle(workspace.path()), Err(RecycleError::Failed(_))));
+
+        twin.empty_recycle_bin().unwrap();
+        assert_eq!(environment.recycle_bin(), Some(RecycleBin::default()));
+        assert!(stranger.exists(), "vider ne supprime que ce que la corbeille a reçu");
+        assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 1);
     }
 
     #[test]

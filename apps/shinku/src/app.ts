@@ -2,20 +2,23 @@
 //
 // Un seul sens de circulation : un geste appelle une action, l'action
 // interroge le cœur puis change l'état, et l'état redessine tout. Pendant une
-// analyse, l'application redemande une vue de la session quelques fois par
-// seconde ; le cœur ne pousse jamais rien vers la fenêtre.
+// analyse ou un grand vide, l'application redemande une vue de la session
+// quelques fois par seconde ; le cœur ne pousse jamais rien vers la fenêtre.
 
 import { render } from 'lit-html';
 
 import type { Backend, BackendError, SessionView, Settings, Theme } from './backend/types.ts';
 import { fr } from './i18n/fr.ts';
+import { cleanRequest, confirmedRequest, readiness, requestedSteps } from './model/clean.ts';
 import { reportKey, toggled } from './model/scan.ts';
 import { type Actions, type AppState, initialState, type Route } from './state.ts';
 import { applyTheme } from './theme.ts';
 import { appView } from './views/shell.ts';
 
-/** Délai entre deux vues de session pendant une analyse, en millisecondes. */
+/** Délai entre deux vues de session pendant une analyse ou un grand vide, en millisecondes. */
 const POLL_DELAY = 150;
+/** Délai entre deux rafraîchissements de l'heure et de l'âge des résultats affichés. */
+const CLOCK_DELAY = 30_000;
 /** Taille d'une page de résultats. */
 const PAGE_SIZE = 50;
 /** Durée d'affichage d'un message bref. */
@@ -38,6 +41,12 @@ function errorMessage(error: unknown): string {
       return fr.toast.settingsNotSaved;
     case 'folderRefused':
       return fr.toast[error.reason];
+    case 'cleanRunning':
+      return fr.toast.cleanRunning;
+    case 'cleanRefused':
+      return fr.toast[error.reason];
+    case 'cleanNotStarted':
+      return fr.toast.cleanNotStarted;
     default:
       return fr.toast.unexpected;
   }
@@ -51,6 +60,11 @@ const NO_ACTIONS: Actions = {
   showResults: () => {},
   showHome: () => {},
   toggle: () => {},
+  askClean: () => {},
+  confirmClean: () => {},
+  dismissClean: () => {},
+  stopClean: () => {},
+  closeReport: () => {},
   loadMore: () => {},
   setTheme: () => {},
   addFolder: () => {},
@@ -74,8 +88,8 @@ export class App {
   private polling = false;
   private toastTimer: number | undefined;
   /**
-   * Change à chaque geste qui lance ou arrête une analyse. Une vue de session
-   * demandée avant ce geste et arrivée après lui est ignorée.
+   * Change à chaque geste qui lance ou arrête une analyse ou un grand vide.
+   * Une vue de session demandée avant ce geste et arrivée après lui est ignorée.
    */
   private sessionEpoch = 0;
   /** Change à chaque nouveau rapport : les listes d'un ancien rapport sont ignorées. */
@@ -122,20 +136,57 @@ export class App {
       this.set({ boot: 'failed' });
       return;
     }
-    // L'heure avance, et le disque change pendant que la fenêtre n'est pas regardée.
-    window.setInterval(() => this.set({ now: Date.now() }), 30_000);
+    // L'heure avance, les résultats vieillissent, et le disque change pendant
+    // que la fenêtre n'est pas regardée.
+    window.setInterval(() => {
+      this.set({ now: Date.now() });
+      void this.refreshResults();
+    }, CLOCK_DELAY);
     window.addEventListener('focus', () => void this.refreshOverview(5000));
   }
 
-  private async refreshOverview(minimumAge = 0): Promise<void> {
+  /** Relit le disque, la corbeille et les réglages. Rend `false` si rien n'a été relu. */
+  private async refreshOverview(minimumAge = 0): Promise<boolean> {
     if (Date.now() - this.lastOverviewRefresh < minimumAge) {
-      return;
+      return false;
     }
     this.lastOverviewRefresh = Date.now();
     try {
       this.set({ overview: await this.backend.overview() });
+      return true;
     } catch {
       // La jauge garde ses derniers chiffres.
+      return false;
+    }
+  }
+
+  /**
+   * Des résultats affichés vieillissent sans que rien ne bouge : passé dix
+   * minutes, le cœur les dit trop anciens pour nettoyer. C'est lui qui tient
+   * l'horloge ; l'écran lui redemande donc sa vue de temps en temps.
+   */
+  private async refreshResults(): Promise<void> {
+    const { session } = this.state;
+    if (session.state !== 'results' || session.stale) {
+      return;
+    }
+    const epoch = this.sessionEpoch;
+    try {
+      const fresh = await this.backend.sessionView();
+      if (epoch === this.sessionEpoch) {
+        this.adopt(fresh);
+      }
+    } catch {
+      // La prochaine demande le dira.
+    }
+  }
+
+  /** Après une analyse ou un grand vide : la corbeille et le disque ont bougé. */
+  private async refreshAfterWork(): Promise<void> {
+    const fresh = await this.refreshOverview();
+    if (fresh && this.state.session.state === 'cleaned') {
+      // Le bilan peut maintenant dire ce que le disque a de libre.
+      this.set({ diskAfterClean: true });
     }
   }
 
@@ -158,22 +209,38 @@ export class App {
       patch.loadingMore = false;
     }
 
-    if (session.state === 'idle' || session.state === 'failed') {
-      // Ni analyse à suivre, ni résultats à montrer.
+    if (session.state === 'idle' || session.state === 'failed' || session.clean !== null) {
+      // Ni analyse à suivre, ni résultats à montrer. Un grand vide en cours et
+      // son bilan s'affichent d'eux-mêmes (voir `shownPane`).
       patch.pane = 'home';
     } else if (this.state.pane === 'results' && session.summary === null) {
       patch.pane = 'scan';
     }
+    if (session.state !== 'results' || session.stale) {
+      // La confirmation ne vaut que pour des résultats complets et récents.
+      patch.confirm = null;
+    }
+    if (session.state !== 'cleaning') {
+      patch.stopping = false;
+    }
+    if (session.state !== 'cleaned') {
+      patch.diskAfterClean = false;
+    }
     if (session.state === 'failed' && previous.state !== 'failed') {
-      this.toast(fr.toast.scanFailed);
+      this.toast(session.clean === null ? fr.toast.scanFailed : fr.toast.cleanFailed);
     }
     this.set(patch);
 
-    if (session.state === 'scanning') {
+    if (session.state === 'scanning' || session.state === 'cleaning') {
       void this.poll();
-    } else if (previous.state === 'scanning') {
-      // L'analyse vient de finir : la corbeille et le disque ont pu bouger.
-      void this.refreshOverview();
+    }
+    const scanEnded = previous.state === 'scanning' && session.state !== 'scanning';
+    // Un grand vide très court peut être déjà terminé à la première vue reçue.
+    const cleanEnded =
+      (previous.state === 'cleaning' && session.state !== 'cleaning') ||
+      (session.state === 'cleaned' && previous.state !== 'cleaned');
+    if (scanEnded || cleanEnded) {
+      void this.refreshAfterWork();
     }
     this.ensureData();
   }
@@ -184,7 +251,7 @@ export class App {
     }
     this.polling = true;
     try {
-      while (this.state.session.state === 'scanning') {
+      while (this.state.session.state === 'scanning' || this.state.session.state === 'cleaning') {
         await new Promise((resolve) => window.setTimeout(resolve, POLL_DELAY));
         const epoch = this.sessionEpoch;
         const session = await this.backend.sessionView();
@@ -290,14 +357,105 @@ export class App {
 
   private async startScan(): Promise<void> {
     const session = await this.command(() => this.backend.startScan());
-    if (session?.state === 'scanning') {
+    if (session === null) {
+      return;
+    }
+    if (session.state === 'scanning') {
       // « Grand vide » montre désormais l'analyse, d'où qu'elle ait été lancée.
       this.set({ pane: 'scan' });
     }
+    // Dès qu'une analyse démarre, le cœur cesse d'annoncer un grand vide interrompu.
+    const overview = this.state.overview;
+    if (overview !== null && overview.interruptedClean !== null) {
+      this.set({ overview: { ...overview, interruptedClean: null } });
+    }
   }
 
+  /** Arrête l'analyse et oublie ses résultats ; referme aussi le bilan d'un grand vide terminé. */
   private async cancelScan(): Promise<void> {
     await this.command(() => this.backend.cancelScan());
+  }
+
+  // ── Grand vide ───────────────────────────────────────────────────────────
+
+  /**
+   * « Faire le vide » : rien ne part encore. Le cœur dit ce que le grand vide
+   * ferait du disque tel qu'il est maintenant, et la confirmation l'affiche.
+   */
+  private async askClean(): Promise<void> {
+    if (this.state.cleanBusy || this.state.confirm !== null) {
+      return;
+    }
+    if (readiness(this.state.session, this.state.selection) !== 'ready') {
+      return;
+    }
+    const epoch = this.sessionEpoch;
+    this.set({ cleanBusy: true });
+    try {
+      const preview = await this.backend.cleanPreview();
+      const { session, selection } = this.state;
+      if (epoch !== this.sessionEpoch || session.summary === null || readiness(session, selection) !== 'ready') {
+        // Un autre geste est passé entre-temps : cette réponse ne vaut plus.
+        return;
+      }
+      if (preview.analysis !== session.summary.started) {
+        this.toast(fr.toast.otherAnalysis);
+        void this.refreshResults();
+        return;
+      }
+      const request = confirmedRequest(preview, cleanRequest(session.summary, selection));
+      if (requestedSteps(request).length === 0) {
+        // Ce qui était coché s'est vidé depuis l'analyse.
+        this.toast(fr.toast.nothingToClean);
+        void this.refreshOverview();
+        return;
+      }
+      this.set({ confirm: { preview, request } });
+    } catch (error) {
+      this.toast(errorMessage(error));
+      // L'écran apprend pourquoi : des résultats devenus trop anciens, par exemple.
+      void this.refreshResults();
+    } finally {
+      this.set({ cleanBusy: false });
+    }
+  }
+
+  /** La personne a confirmé : la demande part telle que la confirmation l'affichait. */
+  private async confirmClean(): Promise<void> {
+    const confirmation = this.state.confirm;
+    if (confirmation === null || this.state.cleanBusy) {
+      return;
+    }
+    this.set({ cleanBusy: true });
+    try {
+      const session = await this.command(() => this.backend.startClean(confirmation.request));
+      if (session === null) {
+        // Refusé : rien n'est parti. L'écran reprend ce que le cœur a vraiment.
+        await this.command(() => this.backend.sessionView());
+      }
+    } finally {
+      this.set({ cleanBusy: false, confirm: null });
+    }
+  }
+
+  private dismissClean(): void {
+    // Une fois la demande partie, refermer la confirmation ne l'annulerait pas.
+    if (!this.state.cleanBusy) {
+      this.set({ confirm: null });
+    }
+  }
+
+  /** Demande l'arrêt : le cœur finit le fichier en cours, puis rend un bilan partiel. */
+  private async stopClean(): Promise<void> {
+    if (this.state.session.state !== 'cleaning' || this.state.stopping) {
+      return;
+    }
+    this.set({ stopping: true });
+    const session = await this.command(() => this.backend.cancelClean());
+    if (session === null && this.state.session.state === 'cleaning') {
+      // La demande n'a pas abouti : le bouton redevient disponible.
+      this.set({ stopping: false });
+    }
   }
 
   // ── Réglages ─────────────────────────────────────────────────────────────
@@ -393,6 +551,11 @@ export class App {
     },
     showHome: () => this.set({ route: 'home', pane: 'home' }),
     toggle: (row) => this.set({ selection: toggled(this.state.session.summary, this.state.selection, row) }),
+    askClean: () => void this.askClean(),
+    confirmClean: () => void this.confirmClean(),
+    dismissClean: () => this.dismissClean(),
+    stopClean: () => void this.stopClean(),
+    closeReport: () => void this.cancelScan(),
     loadMore: (list) => void this.loadMore(list),
     setTheme: (theme) => void this.setTheme(theme),
     addFolder: () => void this.addFolder(),

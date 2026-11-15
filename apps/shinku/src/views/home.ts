@@ -2,9 +2,10 @@
 
 import { html, nothing, type TemplateResult } from 'lit-html';
 
-import type { LoadIssue } from '../backend/types.ts';
-import { formatBytes } from '../format.ts';
+import type { CleanRun, LoadIssue } from '../backend/types.ts';
+import { formatAgo, formatBytes } from '../format.ts';
 import { fr } from '../i18n/fr.ts';
+import { readiness } from '../model/clean.ts';
 import {
   binOverThreshold,
   category,
@@ -21,9 +22,10 @@ import {
   selected,
   selectedBytes,
 } from '../model/scan.ts';
-import type { Actions, AppState } from '../state.ts';
+import type { Actions, AppState, HomePane } from '../state.ts';
 import { checkIcon, chevronIcon, hole, navIcon, ring } from './art.ts';
-import { backButton, orb, stage } from './parts.ts';
+import { cleanPane } from './clean.ts';
+import { backButton, orb, SEGMENT_CLASS, stage } from './parts.ts';
 import { styles } from './style.ts';
 
 const ROW_NAMES: Record<ScanRowId, string> = {
@@ -34,7 +36,21 @@ const ROW_NAMES: Record<ScanRowId, string> = {
   startup: fr.nav.startup,
 };
 
+/**
+ * Ce que l'entrée « Grand vide » montre. Un grand vide en cours, ou son bilan
+ * tant qu'il n'est pas refermé, passe devant ce que la personne regardait :
+ * il n'y a alors plus ni analyse à suivre, ni résultats à montrer.
+ */
+export function shownPane(state: AppState): HomePane | 'clean' {
+  const { session } = state;
+  return session.clean !== null && (session.state === 'cleaning' || session.state === 'cleaned') ? 'clean' : state.pane;
+}
+
 export function homeView(state: AppState, actions: Actions): TemplateResult {
+  const clean = state.session.clean;
+  if (clean !== null && shownPane(state) === 'clean') {
+    return cleanPane(state, actions, clean);
+  }
   switch (state.pane) {
     case 'scan':
       return scanPane(state, actions);
@@ -71,6 +87,13 @@ function issueAlert(issue: LoadIssue, actions: Actions): TemplateResult {
   </div>`;
 }
 
+/** Le dernier grand vide a été coupé avant la fin : l'Accueil le dit jusqu'à la prochaine analyse. */
+function interruptedAlert(run: CleanRun, now: number): TemplateResult {
+  return html`<div class="alert" role="status">
+    <p>${fr.home.interrupted(formatAgo(run.startedMs, now), run.freedBytes, run.recoverableBytes)}</p>
+  </div>`;
+}
+
 function welcomePane(state: AppState, actions: Actions): TemplateResult {
   const overview = state.overview;
   const bin = overview?.recycleBin ?? null;
@@ -91,6 +114,8 @@ function welcomePane(state: AppState, actions: Actions): TemplateResult {
       : nothing;
 
   const issue = overview?.settingsIssue ?? null;
+  // Un seul avertissement à la fois : les réglages d'abord, ils bloquent l'analyse.
+  const interrupted = issue === null ? (overview?.interruptedClean ?? null) : null;
   const blocked = overview?.scanBlocked ?? false;
   const scanning = state.session.state === 'scanning';
   const summary = state.session.summary;
@@ -105,7 +130,7 @@ function welcomePane(state: AppState, actions: Actions): TemplateResult {
   } else {
     const below =
       state.session.state === 'failed'
-        ? html`<p class="cap">${fr.home.failed}</p>`
+        ? html`<p class="cap">${state.session.clean === null ? fr.home.failed : fr.home.cleanFailed}</p>`
         : summary !== null
           ? html`<button type="button" class="back" @click=${actions.showResults}>
               ${fr.home.reviewResults(summary.finished)}
@@ -116,11 +141,12 @@ function welcomePane(state: AppState, actions: Actions): TemplateResult {
 
   return html`<div class="stage enter">
     <div class="bar center" data-tauri-drag-region="deep">${bar}</div>
-    <div class="hero ${issue !== null ? 'tight' : ''}">
+    <div class="hero ${issue !== null || interrupted !== null ? 'tight' : ''}">
       ${hole('ac', 250)}
       <h1>${fr.home.title}</h1>
       <p>${fr.home.intro}</p>
       ${issue !== null ? issueAlert(issue, actions) : nothing}
+      ${interrupted !== null ? interruptedAlert(interrupted, state.now) : nothing}
     </div>
     <div class="dock">${dock}</div>
   </div>`;
@@ -207,12 +233,6 @@ function scanPane(state: AppState, actions: Actions): TemplateResult {
 
 // ── Résultats ──────────────────────────────────────────────────────────────
 
-const SEGMENT_CLASS: Record<CleanRowId, string> = {
-  junkFiles: 'seg-1',
-  duplicates: 'seg-2',
-  recycleBin: 'seg-3',
-};
-
 function rowHint(state: AppState, id: CleanRowId, checked: boolean): string {
   const entry = category(state.session.summary, id);
   switch (id) {
@@ -247,8 +267,30 @@ function rowHint(state: AppState, id: CleanRowId, checked: boolean): string {
   }
 }
 
+/** Le socle des Résultats : « Faire le vide », ou ce qui l'empêche pour l'instant. */
+function resultsDock(state: AppState, actions: Actions): TemplateResult {
+  switch (readiness(state.session, state.selection)) {
+    case 'stale':
+      return html`${orb(fr.results.rescan, actions.startScan)}
+        <p class="cap">${fr.results.stale(state.session.summary?.finished ?? state.now)}</p>`;
+    case 'pending':
+      return html`${orb(fr.results.clean, null)}
+        <p class="cap">${fr.results.cleanPending}</p>`;
+    case 'empty':
+      return html`${orb(fr.results.clean, null)}
+        <p class="cap">${fr.results.cleanEmpty}</p>`;
+    case 'unchecked':
+      return html`${orb(fr.results.clean, null)}
+        <p class="cap">${fr.results.cleanUnchecked}</p>`;
+    case 'ready':
+      // Rien ne part ici : le bouton ouvre la confirmation.
+      return html`${orb(fr.results.clean, actions.askClean)}
+        <p class="cap">${fr.results.cleanConfirm}</p>`;
+  }
+}
+
 function resultsPane(state: AppState, actions: Actions): TemplateResult {
-  const { summary, skipped, stale } = state.session;
+  const { summary, skipped } = state.session;
   const grow = segments(summary, state.selection);
 
   const cleanRows = CLEAN_ROWS.map((id) => {
@@ -296,13 +338,6 @@ function resultsPane(state: AppState, actions: Actions): TemplateResult {
     skipped.refusedRoots > 0 ? fr.results.refused(skipped.refusedRoots) : null,
   ].filter((note): note is string => note !== null);
 
-  const dock =
-    stale && summary !== null
-      ? html`${orb(fr.results.rescan, actions.startScan)}
-          <p class="cap">${fr.results.stale(summary.finished)}</p>`
-      : html`${orb(fr.results.clean, null)}
-          <p class="cap">${fr.results.cleanSoon}</p>`;
-
   return stage({
     bar: backButton(actions.showHome),
     body: html`<div class="scroll centered">
@@ -325,6 +360,6 @@ function resultsPane(state: AppState, actions: Actions): TemplateResult {
         ${notes.length > 0 ? html`<p class="note">${notes.join(' ')}</p>` : nothing}
       </div>
     </div>`,
-    dock: html`<div class="dock">${dock}</div>`,
+    dock: html`<div class="dock">${resultsDock(state, actions)}</div>`,
   });
 }

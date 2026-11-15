@@ -7,7 +7,7 @@ use shinku_core::platform;
 use shinku_core::settings::Theme;
 use tauri::webview::{Color, NewWindowResponse};
 use tauri::{
-    AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 use crate::commands;
@@ -68,7 +68,7 @@ pub fn run() -> ExitCode {
         return ExitCode::from(WEBVIEW_MISSING);
     }
 
-    let started = tauri::Builder::default()
+    let built = tauri::Builder::default()
         // Une seule fenêtre à la fois : un second lancement ramène la première
         // au premier plan. Les arguments du second lancement sont ignorés.
         .plugin(tauri_plugin_single_instance::init(|app, _arguments, _folder| {
@@ -81,6 +81,9 @@ pub fn run() -> ExitCode {
             commands::start_scan,
             commands::cancel_scan,
             commands::session_view,
+            commands::clean_preview,
+            commands::start_clean,
+            commands::cancel_clean,
             commands::junk_details,
             commands::large_files_page,
             commands::duplicates_page,
@@ -96,14 +99,22 @@ pub fn run() -> ExitCode {
             }
             Ok(())
         })
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!());
 
-    // On n'arrive ici que si l'application n'a pas pu se construire : une
-    // fois la fenêtre ouverte, le processus se termine à sa fermeture.
-    match started {
-        Ok(()) => ExitCode::SUCCESS,
+    let app = match built {
+        Ok(app) => app,
         Err(error) => could_not_start(&error),
-    }
+    };
+    // Une fois la fenêtre ouverte, le processus se termine à sa fermeture :
+    // on ne revient pas de cet appel.
+    app.run(|app, event| {
+        if matches!(event, RunEvent::Exit) {
+            // La fenêtre vient de se fermer. Un grand vide en cours finit son
+            // fichier et note son bilan au journal avant que Shinku s'arrête.
+            app.state::<Backend>().shutdown();
+        }
+    });
+    ExitCode::SUCCESS
 }
 
 /// Explique que Shinku n'a pas pu s'ouvrir, puis quitte.

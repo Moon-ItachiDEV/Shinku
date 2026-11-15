@@ -209,6 +209,11 @@ option {
   transition: background-color 160ms ease, color 160ms ease;
 }
 
+.icb:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .icb:focus-visible {
   outline: 2px solid var(--text);
   outline-offset: 1px;
@@ -221,7 +226,7 @@ option {
   .segc button:hover {
     color: var(--text);
   }
-  .icb:hover {
+  .icb:hover:not(:disabled) {
     background: rgb(var(--ov) / calc(0.06 * var(--ov-k)));
     color: var(--text);
   }
