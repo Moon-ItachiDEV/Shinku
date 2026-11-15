@@ -57,8 +57,11 @@ changer un réglage, faire le vide.
   noms que la page renvoie sont ceux que le cœur lui a donnés (un dossier à
   retirer de la liste des exclusions, un jeu ou une app du mode jeu), et ils
   ne sont que comparés à ce que le cœur connaît déjà : un texte inconnu est
-  refusé. Pour ajouter un jeu ou une app, la page ne choisit qu'un numéro dans
-  la dernière liste d'apps ouvertes que le cœur lui a rendue. Le grand vide
+  refusé. Pour ajouter un jeu ou une app, la page choisit un numéro dans
+  la dernière liste d'apps ouvertes que le cœur lui a rendue, et rend aussi le
+  chemin qu'elle y a lu : le cœur vérifie que ce chemin est exactement celui de
+  ce numéro dans *sa* dernière liste, sinon la liste a changé et la demande est
+  refusée (`unknownApp`). Le chemin n'est jamais utilisé, seulement comparé. Le grand vide
   lui-même ne reçoit que trois cases cochées et la date de l'analyse
   affichée.
 - Les pages de résultats sont plafonnées côté cœur (`PAGE_LIMIT`), quelle que
@@ -335,7 +338,12 @@ un jeu à ajouter à la main qu'un navigateur traité comme un jeu.
   une vidéo ou y passer un appel ; plus les apps ajoutées). On ne fait que
   baisser : un processus déjà bas garde sa classe. L'app que la personne regarde
   n'est jamais ralentie. Les processus du système, de Shinku et du jeu sont
-  protégés.
+  protégés. **Les lanceurs de jeux** (Steam, Epic, GOG Galaxy, Battle.net,
+  EA app, Ubisoft Connect, Rockstar…) ne sont jamais mis en veilleuse, même
+  ajoutés à la main : c'est eux qui lancent les jeux, et un jeu né d'un
+  processus en veilleuse en hériterait. Le bureau à distance (`mstsc.exe`) est
+  protégé de même. Le nom d'une app ajoutée est la description de son fichier,
+  lue quand elle tourne (sinon le nom du fichier sans `.exe`).
 
 Ce qui n'est pas fait : fermer des apps, vider de la mémoire, changer des
 priorités vers le haut, toucher au registre ou aux services.
@@ -353,9 +361,44 @@ Au démarrage de l'agent (`recover`), une session trouvée au journal est repris
 si le jeu vit encore, sinon terminée normalement : c'est ce qui remet l'ordre
 après un plantage ou une coupure de courant. Un processus n'est remis que s'il
 vit encore (numéro **et** date de création : un numéro se recycle) ; sa priorité
-n'est remise que si elle vaut encore ce que Shinku a posé. Un processus créé par
-un processus en veilleuse en hérite : à la remise en place, ses descendants
-trouvés en priorité basse y sont remis aussi.
+n'est remise que si elle vaut encore ce que Shinku a posé.
+
+**Les racines et les descendants.** Un processus créé par un processus en
+veilleuse hérite de sa priorité. La session note donc ses *racines* (`roots` :
+numéro, date de création, et `goneMs`, l'instant où la racine a disparu ; 512 au
+plus, la plus ancienne morte part la première) : tout ce qui est en veilleuse
+ou l'a été. À la remise en place, les descendants des racines (né après son
+parent, né après `opened`, et, si la racine est morte, né dans les trente
+secondes qui suivent sa mort : au-delà, c'est un numéro recyclé) trouvés en
+priorité basse y sont remis aussi. Un descendant de la liste, trouvé déjà bas
+parce qu'il a hérité, est noté « normale » comme état d'avant. Un descendant qui
+est le jeu (ou un ancêtre du jeu) n'est jamais ralenti, et est remis « normale »
+à chaque pas s'il l'a été. Cela ne dépend pas du journal des processus en
+veilleuse : un orphelin dont le parent a quitté le journal est toujours remis.
+
+**Les dates de la session.** `opened` est l'ouverture de la partie : elle ne
+change jamais, et c'est elle qui borne ce qui peut être remis (rien de plus
+ancien, rien d'avant le démarrage de Windows). `since` est le début du jeu
+affiché : un changement de jeu en cours de partie le déplace sans toucher à
+`opened` ni aux racines. Un journal d'avant ces champs se lit avec
+`opened = since`.
+
+**L'horloge.** Tous les délais (deux pas pour confirmer un jeu, dix minutes
+d'arrière-plan, trente secondes de relevé, soixante secondes avant de réessayer
+une écriture, les deux minutes de l'agent lancé par Windows) se comptent avec
+l'horloge monotone (`GetTickCount64`), jamais avec l'heure murale, qui peut
+sauter. L'heure murale ne sert qu'aux dates écrites et affichées. Au
+démarrage de l'agent, si Windows a démarré *après* `opened` (heure murale moins
+temps écoulé depuis le démarrage), le PC a redémarré : la partie est close, seul
+le mode d'alimentation est remis, aucun processus n'est touché (les numéros ne
+désignent plus les mêmes).
+
+**Les échecs.** Un processus dont la priorité a changé mais pas le mode
+efficacité est remis tel qu'il était (`SetPriorityClass`), et le cœur relit son
+état avant de le laisser de côté ; si l'état a bougé, l'entrée reste au journal.
+Un journal qui ne s'écrit pas est marqué sale et réécrit au début de chaque pas :
+dès que l'écriture passe, le disque dit la vérité. Les tentatives de remise sont
+cumulées sur toute la partie (relâchement compris).
 
 Une session se termine quand plus aucun processus du jeu ne vit, quand le jeu
 n'a pas été au premier plan depuis dix minutes (un lanceur resté ouvert ne garde
@@ -367,7 +410,16 @@ tout n'a pas pu être remis.
 
 `game.json` peut être écrit par n'importe quel programme du compte : sa lecture
 est méfiante (classes de priorité connues seulement, jamais « temps réel »,
-chaînes bornées, identifiants d'alimentation au format exact).
+chaînes bornées, identifiants d'alimentation au format exact, fichier de plus
+de 1 Mio traité comme illisible, vingt jeux vus au plus). Il en va de même de
+`settings.json` : plus de 1 Mio, il est illisible, et un chemin de jeu de plus
+de 1 024 signes est écarté.
+
+**À la désinstallation.** Sans agent qui réponde à `--quitter` ou `--retirer`,
+le programme qui envoie l'ordre fait lui-même la reprise : il lit le journal et
+remet ce qui y est noté. Pour `--retirer`, si quelque chose résiste, quelques
+essais rapprochés (cinq, à 200 ms) suivent, car après la désinstallation plus
+rien ne le reprendrait. La valeur `Run` est effacée dans tous les cas.
 
 ### Limites connues
 

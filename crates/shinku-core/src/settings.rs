@@ -18,7 +18,7 @@
 //! compte peut aussi l'écrire : tout ce qui vient de lui est donc contrôlé.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -49,6 +49,11 @@ pub const MAX_EXE_NAMES: usize = 64;
 pub const MAX_EXE_NAME_LEN: usize = 64;
 /// Nombre maximal de chemins dans une liste du mode jeu.
 pub const MAX_GAME_PATHS: usize = 256;
+/// Longueur maximale d'un chemin d'une liste du mode jeu, en caractères.
+pub const MAX_GAME_PATH_LEN: usize = 1024;
+/// Taille maximale du fichier des réglages : au-delà, il est traité comme
+/// illisible (n'importe quel programme du compte peut l'écrire).
+pub const MAX_FILE_BYTES: u64 = 1 << 20;
 
 /// Langue de l'interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,8 +178,8 @@ impl Settings {
     /// (un disque débranché reviendra) : seuls les doublons sont retirés.
     ///
     /// Les listes du mode jeu ne gardent que des noms d'exécutables valides
-    /// (voir [`clean_exe_name`]) et des chemins non vides, sans doublon, en
-    /// nombre borné.
+    /// (voir [`clean_exe_name`], et jamais un lanceur de jeux) et des chemins
+    /// non vides, de longueur bornée, sans doublon, en nombre borné.
     pub fn sanitize(&mut self) -> Vec<&'static str> {
         let defaults = Self::default();
         let mut fixed = Vec::new();
@@ -212,6 +217,12 @@ impl Settings {
             if clean_exe_names(list) {
                 fixed.push(name);
             }
+        }
+        // Un lanceur de jeux n'est jamais mis en veilleuse : il en est le parent.
+        let before = self.game_mode_quiet_added.len();
+        self.game_mode_quiet_added.retain(|name| !crate::game::detect::is_launcher(name));
+        if self.game_mode_quiet_added.len() != before && !fixed.contains(&"gameModeQuietAdded") {
+            fixed.push("gameModeQuietAdded");
         }
         for (list, name) in [
             (&mut self.game_mode_games, "gameModeGames"),
@@ -365,15 +376,22 @@ fn clean_exe_names(list: &mut Vec<String>) -> bool {
     dropped
 }
 
-/// Nettoie une liste de chemins : non vides, sans doublon (la casse ne compte
-/// pas), [`MAX_GAME_PATHS`] au plus. Vrai si une entrée a dû être écartée pour
-/// une autre raison qu'un doublon.
+/// Nettoie une liste de chemins : non vides, d'au plus [`MAX_GAME_PATH_LEN`]
+/// caractères, sans doublon (la casse ne compte pas), [`MAX_GAME_PATHS`] au
+/// plus. Vrai si une entrée a dû être écartée pour une autre raison qu'un
+/// doublon.
 fn clean_game_paths(list: &mut Vec<PathBuf>) -> bool {
     let mut kept: Vec<PathBuf> = Vec::with_capacity(list.len());
     let mut keys: Vec<String> = Vec::with_capacity(list.len());
     let mut dropped = false;
     for path in list.drain(..) {
-        let key = crate::game::detect::key(&path.to_string_lossy());
+        let text = path.to_string_lossy();
+        // Mesuré avant de mettre en minuscules : un chemin énorme n'est pas copié.
+        if text.chars().take(MAX_GAME_PATH_LEN + 1).count() > MAX_GAME_PATH_LEN {
+            dropped = true;
+            continue;
+        }
+        let key = crate::game::detect::key(&text);
         if key.is_empty() {
             dropped = true;
         } else if keys.contains(&key) {
@@ -441,7 +459,7 @@ impl SettingsStore {
 
     /// Lit les réglages. Un fichier absent donne les réglages par défaut.
     pub fn load(&self) -> Loaded {
-        let text = match fs::read_to_string(&self.path) {
+        let text = match read_bounded(&self.path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Loaded { settings: Settings::default(), issue: None };
@@ -513,6 +531,17 @@ pub(crate) fn write_replacing(path: &Path, content: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&temporary);
     }
     written
+}
+
+/// Lit le fichier en entier, à condition qu'il tienne dans [`MAX_FILE_BYTES`].
+fn read_bounded(path: &Path) -> io::Result<String> {
+    let file = fs::File::open(path)?;
+    let mut text = String::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_string(&mut text)?;
+    if u64::try_from(text.len()).map_or(true, |len| len > MAX_FILE_BYTES) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "le fichier fait plus de 1 Mo"));
+    }
+    Ok(text)
 }
 
 fn unreadable(reason: String) -> Loaded {
@@ -801,12 +830,50 @@ mod tests {
     }
 
     #[test]
-    fn game_mode_settings_never_block_a_scan() {
-        // `blocks_scan` ne regarde que les dossiers exclus : voir backend.rs.
+    fn unreadable_game_mode_fields_are_reported_as_partial_and_not_as_excluded_folders() {
+        // Ce test ne prouve que le rapport des champs ; que ces champs ne bloquent
+        // pas l'analyse est prouvé par `only_the_excluded_folders_block_a_scan` (backend.rs).
         let (_temp, store) = store();
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();
         fs::write(store.path(), r#"{ "gameModeGames": 3, "gameModeQuietAdded": [1] }"#).unwrap();
         let Some(LoadIssue::Partial { fields }) = store.load().issue else { panic!() };
         assert_eq!(fields, ["gameModeQuietAdded", "gameModeGames"]);
+    }
+
+    #[test]
+    fn a_settings_file_over_one_mebibyte_is_unreadable() {
+        let (_temp, store) = store();
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), " ".repeat(usize::try_from(MAX_FILE_BYTES).unwrap() + 10)).unwrap();
+        let loaded = store.load();
+        assert!(matches!(loaded.issue, Some(LoadIssue::Unreadable { .. })));
+        assert_eq!(loaded.settings, Settings::default());
+    }
+
+    #[test]
+    fn a_hostile_game_path_is_dropped_and_a_long_one_is_kept_up_to_the_limit() {
+        let mut settings = Settings {
+            game_mode_games: vec![
+                PathBuf::from("x".repeat(5_000_000)),
+                PathBuf::from(format!(r"D:\{}", "y".repeat(MAX_GAME_PATH_LEN - 3))),
+                PathBuf::from(format!(r"D:\{}", "z".repeat(MAX_GAME_PATH_LEN - 2))),
+            ],
+            ..Settings::default()
+        };
+        let fixed = settings.sanitize();
+        assert_eq!(settings.game_mode_games.len(), 1, "seul le chemin de 1024 signes reste");
+        assert_eq!(settings.game_mode_games[0].as_os_str().len(), MAX_GAME_PATH_LEN);
+        assert!(fixed.contains(&"gameModeGames"));
+    }
+
+    #[test]
+    fn game_launchers_are_removed_from_the_quiet_list() {
+        let mut settings = Settings {
+            game_mode_quiet_added: vec!["steam.exe".to_owned(), "itch.exe".to_owned()],
+            ..Settings::default()
+        };
+        let fixed = settings.sanitize();
+        assert_eq!(settings.game_mode_quiet_added, ["itch.exe"]);
+        assert!(fixed.contains(&"gameModeQuietAdded"));
     }
 }

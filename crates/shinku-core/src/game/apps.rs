@@ -10,7 +10,7 @@
 //! sont cochées d'office ; les navigateurs sont proposés, mais décochés (la
 //! personne y regarde peut-être une vidéo ou y passe un appel).
 
-use crate::game::detect::{SHINKU_PROGRAMS, WINDOWS_PROGRAMS};
+use crate::game::detect::{SHINKU_PROGRAMS, WINDOWS_PROGRAMS, is_launcher};
 use crate::settings::Settings;
 
 /// Une app connue de Shinku.
@@ -57,13 +57,16 @@ pub fn built_in(exe: &str) -> Option<&'static BuiltInApp> {
 }
 
 /// Vrai si cet exécutable n'est jamais mis en veilleuse, quelle que soit la
-/// liste : les programmes de Windows et de Shinku, et les processus du système.
+/// liste : les programmes de Windows et de Shinku, les processus du système et
+/// les lanceurs de jeux (ils sont les parents des jeux qu'ils démarrent, et un
+/// jeu démarré par un lanceur ralenti naîtrait ralenti).
 /// (Le processus du jeu en cours, lui, est écarté par la machine à états.)
 pub fn protected(exe_name: &str) -> bool {
     let name = exe_name.to_lowercase();
     [WINDOWS_PROGRAMS.as_slice(), SHINKU_PROGRAMS.as_slice(), SYSTEM_PROGRAMS.as_slice()]
         .iter()
         .any(|group| group.contains(&name.as_str()))
+        || is_launcher(&name)
 }
 
 /// Les noms d'exécutables mis en veilleuse avec ces réglages : les apps
@@ -117,6 +120,33 @@ mod tests {
     }
 
     #[test]
+    fn game_launchers_are_never_quieted_because_they_start_the_games() {
+        for name in [
+            "steam.exe",
+            "Steam.EXE",
+            "steamwebhelper.exe",
+            "epicgameslauncher.exe",
+            "galaxyclient.exe",
+            "riotclientux.exe",
+            "riotclientservices.exe",
+            "upc.exe",
+            "ubisoftconnect.exe",
+            "eadesktop.exe",
+            "origin.exe",
+            "battle.net.exe",
+            "rockstargameslauncher.exe",
+        ] {
+            assert!(protected(name), "{name}");
+        }
+        let settings = Settings {
+            game_mode_quiet_added: vec!["steam.exe".to_owned(), "itch.exe".to_owned()],
+            ..Settings::default()
+        };
+        assert!(!effective(&settings).contains(&"steam.exe".to_owned()));
+        assert!(effective(&settings).contains(&"itch.exe".to_owned()));
+    }
+
+    #[test]
     fn protected_programs_are_never_in_the_effective_list() {
         for name in [
             "explorer.exe",
@@ -134,11 +164,14 @@ mod tests {
             "sihost.exe",
             "ctfmon.exe",
             "runtimebroker.exe",
+            // Bureau à distance : un nom de Windows du veto.
+            "mstsc.exe",
+            "MSTSC.EXE",
         ] {
             assert!(protected(name), "{name}");
         }
-        // Les navigateurs et les lanceurs peuvent être mis en veilleuse.
-        for name in ["chrome.exe", "steam.exe", "discord.exe", "onedrive.exe"] {
+        // Les navigateurs et les applis de discussion peuvent être mis en veilleuse.
+        for name in ["chrome.exe", "discord.exe", "onedrive.exe"] {
             assert!(!protected(name), "{name}");
         }
         let settings = Settings {

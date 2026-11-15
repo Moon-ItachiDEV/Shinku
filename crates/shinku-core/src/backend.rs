@@ -219,6 +219,8 @@ pub struct Backend {
     desk: Mutex<Desk>,
     scan_defaults: ScanOptions,
     game: GameDesk,
+    /// Un seul `sync` du mode jeu à la fois, dans l'ordre d'arrivée.
+    sync_lock: Mutex<()>,
 }
 
 impl Backend {
@@ -269,6 +271,7 @@ impl Backend {
             journal: None,
             desk: Mutex::new(Desk { settings, issue, interrupted: None }),
             scan_defaults: ScanOptions::new(Trigger::Button),
+            sync_lock: Mutex::new(()),
         }
     }
 
@@ -549,15 +552,21 @@ impl Backend {
         self.game.open_apps()
     }
 
-    /// Ajoute aux jeux l'app de ce numéro de la dernière liste rendue.
-    pub fn add_game(&self, id: u32) -> Result<GameView, BackendError> {
-        let program = self.game.open_app(id).map_err(game_refused)?;
+    /// Ajoute aux jeux l'app de ce numéro de la dernière liste rendue. `path`
+    /// doit être exactement le chemin de cette app dans cette liste : il n'est
+    /// que comparé, jamais utilisé. Sinon la liste a changé, et la demande est
+    /// refusée (`unknownApp`).
+    pub fn add_game(&self, id: u32, path: &str) -> Result<GameView, BackendError> {
+        let program = self.game.open_app(id, path).map_err(game_refused)?;
         self.change_game(|settings| game_desk::add_game(settings, &program))
     }
 
-    /// Ajoute aux apps en veilleuse l'app de ce numéro de la dernière liste rendue.
-    pub fn add_quiet_app(&self, id: u32) -> Result<GameView, BackendError> {
-        let program = self.game.open_app(id).map_err(game_refused)?;
+    /// Ajoute aux apps en veilleuse l'app de ce numéro de la dernière liste
+    /// rendue. Même règle pour `path` que [`Backend::add_game`].
+    pub fn add_quiet_app(&self, id: u32, path: &str) -> Result<GameView, BackendError> {
+        let program = self.game.open_app(id, path).map_err(game_refused)?;
+        // L'app tourne : c'est le moment de lire son nom, qui restera.
+        self.game.remember_label(&program);
         self.change_game(|settings| game_desk::add_quiet_app(settings, &program))
     }
 
@@ -567,7 +576,10 @@ impl Backend {
         path: &str,
         status: GameStatus,
     ) -> Result<GameView, BackendError> {
-        let known = self.game.known_paths(&self.desk().settings);
+        // Les réglages sont copiés avant : `known_paths` lit `game.json`, et
+        // aucun verrou n'est tenu pendant une lecture de fichier.
+        let settings = self.desk().settings.clone();
+        let known = self.game.known_paths(&settings);
         self.change_game(|settings| game_desk::set_status(settings, &known, path, status))
     }
 
@@ -585,6 +597,17 @@ impl Backend {
     /// Met l'agent et la valeur `Run` d'accord avec les réglages. À appeler au
     /// démarrage de Shinku, hors du fil de la fenêtre.
     pub fn sync_agent(&self) {
+        self.sync();
+    }
+
+    /// Met l'agent et la valeur `Run` d'accord avec les réglages *d'à présent*.
+    ///
+    /// Les commandes tournent sur plusieurs fils : deux changements qui se
+    /// suivent de près pourraient se croiser, le plus ancien posant la valeur
+    /// `Run` après le plus récent. Un verrou dédié les met en file, et les
+    /// réglages sont relus sous ce verrou, pas reçus en argument.
+    fn sync(&self) {
+        let _turn = self.sync_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let settings = self.desk().settings.clone();
         self.game.sync(&settings);
     }
@@ -601,7 +624,7 @@ impl Backend {
             edit(&mut next).map_err(game_refused)?;
             self.save_settings(&mut desk, |settings| *settings = next)?
         };
-        self.game.sync(&settings);
+        self.sync();
         Ok(self.game.view(&settings))
     }
 
@@ -1341,7 +1364,7 @@ mod tests {
         let open = backend.open_apps();
         assert_eq!(open.len(), 5);
         assert_eq!(open[0].id, 0);
-        let view = backend.add_quiet_app(open[0].id).unwrap();
+        let view = backend.add_quiet_app(open[0].id, &open[0].path).unwrap();
         let added = view.apps.iter().find(|app| app.exe == "mycloud.exe").unwrap();
         assert!(added.on && !added.built_in);
         assert_eq!(added.label, "mycloud");
@@ -1356,17 +1379,17 @@ mod tests {
         let pc = pc();
         let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
         let open = backend.open_apps();
-        let explorer = open.iter().find(|app| app.path == EXPLORER).unwrap().id;
+        let explorer = open.iter().find(|app| app.path == EXPLORER).unwrap();
         assert_eq!(
-            backend.add_quiet_app(explorer).unwrap_err(),
+            backend.add_quiet_app(explorer.id, &explorer.path).unwrap_err(),
             BackendError::GameRefused { reason: GameRefusal::ProtectedApp }
         );
         assert_eq!(
-            backend.add_quiet_app(99).unwrap_err(),
+            backend.add_quiet_app(99, EXPLORER).unwrap_err(),
             BackendError::GameRefused { reason: GameRefusal::UnknownApp }
         );
         assert_eq!(
-            backend.add_game(99).unwrap_err(),
+            backend.add_game(99, FOO).unwrap_err(),
             BackendError::GameRefused { reason: GameRefusal::UnknownApp }
         );
     }
@@ -1377,7 +1400,7 @@ mod tests {
         let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
         // La page n'a encore rien demandé : aucun numéro ne vaut.
         assert_eq!(
-            backend.add_game(0).unwrap_err(),
+            backend.add_game(0, FOO).unwrap_err(),
             BackendError::GameRefused { reason: GameRefusal::UnknownApp }
         );
     }
@@ -1387,19 +1410,22 @@ mod tests {
         let pc = pc();
         let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
         let open = backend.open_apps();
-        let id = |path: &str| open.iter().find(|app| app.path == path).unwrap().id;
-        let view = backend.add_game(id(FOO)).unwrap();
+        let add = |path: &str| {
+            let app = open.iter().find(|app| app.path == path).unwrap();
+            backend.add_game(app.id, &app.path)
+        };
+        let view = add(FOO).unwrap();
         assert_eq!(view.games.len(), 1);
         assert_eq!(view.games[0].path, FOO);
         assert_eq!(view.games[0].name, "foo");
         assert_eq!(view.games[0].source, Source::Added);
         assert_eq!(
-            backend.add_game(id(CHROME)).unwrap_err(),
+            add(CHROME).unwrap_err(),
             BackendError::GameRefused { reason: GameRefusal::NotAGame }
         );
         // Deux fois le même jeu : une seule ligne ; le dernier ajouté d'abord.
-        backend.add_game(id(FOO)).unwrap();
-        let view = backend.add_game(id(BAR)).unwrap();
+        add(FOO).unwrap();
+        let view = add(BAR).unwrap();
         assert_eq!(
             view.games.iter().map(|game| game.path.as_str()).collect::<Vec<_>>(),
             [BAR, FOO]
@@ -1412,8 +1438,8 @@ mod tests {
         let pc = pc();
         let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
         let open = backend.open_apps();
-        let foo = open.iter().find(|app| app.path == FOO).unwrap().id;
-        backend.add_game(foo).unwrap();
+        let foo = open.iter().find(|app| app.path == FOO).unwrap();
+        backend.add_game(foo.id, &foo.path).unwrap();
         let view = backend.set_game_status(FOO, GameStatus::NotGame).unwrap();
         assert!(view.games.is_empty());
         assert_eq!(view.not_games.len(), 1);
@@ -1427,9 +1453,9 @@ mod tests {
         assert!(settings.game_mode_games.is_empty() && settings.game_mode_not_games.is_empty());
         // Un jeu ajouté de nouveau sort de « ce n'est pas un jeu ».
         backend.set_game_status(FOO, GameStatus::NotGame).unwrap_err();
-        backend.add_game(foo).unwrap();
+        backend.add_game(foo.id, &foo.path).unwrap();
         backend.set_game_status(FOO, GameStatus::NotGame).unwrap();
-        let view = backend.add_game(foo).unwrap();
+        let view = backend.add_game(foo.id, &foo.path).unwrap();
         assert!(view.not_games.is_empty());
         assert_eq!(view.games.len(), 1);
     }
@@ -1455,10 +1481,12 @@ mod tests {
         file.remember(r"D:\SteamLibrary\steamapps\common\Baz\baz.exe", "Baz", 1_700_000_000_000);
         file.session = Some(GameSession {
             game: GameRef { path: FOO.to_owned(), name: "Foo".to_owned(), source: Source::Added },
+            opened: 5,
             since: 5,
             released: false,
             power: PowerRecord::applied(PowerPlan::BALANCED),
             quieted: Vec::new(),
+            roots: Vec::new(),
             restore_pending: true,
         });
         file.last = Some(Last {
@@ -1492,7 +1520,7 @@ mod tests {
         let pc = pc();
         let (backend, arcade) = arcade(&pc, AgentState::Running);
         let open = backend.open_apps();
-        backend.add_game(open[1].id).unwrap();
+        backend.add_game(open[1].id, &open[1].path).unwrap();
         for _ in 0..4 {
             backend.game_view();
         }
@@ -1598,10 +1626,12 @@ mod tests {
                     name: "Foo".to_owned(),
                     source: Source::Added,
                 },
+                opened: 5,
                 since: 5,
                 released: false,
                 power: PowerRecord::of(PowerOutcome::Custom),
                 quieted: Vec::new(),
+                roots: Vec::new(),
                 restore_pending: false,
             }),
             ..GameFile::default()
@@ -1637,10 +1667,12 @@ mod tests {
                     name: "Foo".to_owned(),
                     source: Source::Added,
                 },
+                opened: 5,
                 since: 5,
                 released: false,
                 power: PowerRecord::of(PowerOutcome::Custom),
                 quieted: Vec::new(),
+                roots: Vec::new(),
                 restore_pending: false,
             }),
             ..GameFile::default()
@@ -1688,6 +1720,90 @@ mod tests {
         assert_eq!(
             BackendError::GameRefused { reason: GameRefusal::NotAGame }.to_string(),
             "mode jeu : ce programme n'est jamais un jeu"
+        );
+    }
+
+    #[test]
+    fn the_selector_refuses_a_path_that_is_not_the_one_of_the_number() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let open = backend.open_apps();
+        let foo = open.iter().find(|app| app.path == FOO).unwrap();
+        let unknown = BackendError::GameRefused { reason: GameRefusal::UnknownApp };
+        // Le bon numéro, le chemin d'une autre app.
+        assert_eq!(backend.add_game(foo.id, BAR).unwrap_err(), unknown);
+        assert_eq!(backend.add_quiet_app(foo.id, BAR).unwrap_err(), unknown);
+        // Le chemin n'est comparé qu'à l'identique : pas de différence de casse.
+        assert_eq!(backend.add_game(foo.id, &foo.path.to_uppercase()).unwrap_err(), unknown);
+        assert!(saved(&pc).game_mode_games.is_empty(), "rien n'a été ajouté");
+        // La liste change : le même numéro désigne une autre app.
+        arcade_apps_changed(&arcade);
+        let _ = backend.open_apps();
+        assert_eq!(backend.add_game(foo.id, &foo.path).unwrap_err(), unknown);
+    }
+
+    fn arcade_apps_changed(arcade: &Arcade) {
+        arcade.agent.set_open_apps(vec![program(MYCLOUD), program(BAR), program(FOO)]);
+    }
+
+    #[test]
+    fn a_game_launcher_cannot_be_added_to_the_quiet_apps() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        arcade.agent.set_open_apps(vec![program(r"C:\Program Files (x86)\Steam\steam.exe")]);
+        let open = backend.open_apps();
+        assert_eq!(
+            backend.add_quiet_app(open[0].id, &open[0].path).unwrap_err(),
+            BackendError::GameRefused { reason: GameRefusal::ProtectedApp }
+        );
+        assert!(saved(&pc).game_mode_quiet_added.is_empty());
+    }
+
+    #[test]
+    fn an_added_app_shows_the_name_of_its_file_description() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        arcade.host.set_display_name(MYCLOUD, "My Cloud");
+        let open = backend.open_apps();
+        let app = open.iter().find(|app| app.path == MYCLOUD).unwrap();
+        let view = backend.add_quiet_app(app.id, &app.path).unwrap();
+        let added = view.apps.iter().find(|app| app.exe == "mycloud.exe").unwrap();
+        assert_eq!(added.label, "My Cloud", "le nom est lu quand l'app est ouverte, et il reste");
+        // L'app se ferme : le nom noté reste.
+        arcade.agent.set_open_apps(Vec::new());
+        let view = backend.game_view();
+        let added = view.apps.iter().find(|app| app.exe == "mycloud.exe").unwrap();
+        assert_eq!(added.label, "My Cloud");
+    }
+
+    #[test]
+    fn only_the_excluded_folders_block_a_scan() {
+        let unreadable = LoadIssue::Unreadable { reason: "x".to_owned() };
+        assert!(blocks_scan(&unreadable));
+        assert!(blocks_scan(&LoadIssue::Partial { fields: vec![EXCLUDED_FIELD] }));
+        assert!(!blocks_scan(&LoadIssue::Partial {
+            fields: vec!["gameModeGames", "gameModeQuietAdded", "gameModeAuto"]
+        }));
+    }
+
+    #[test]
+    fn two_quick_changes_leave_the_autostart_as_the_latest_one_wants() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let backend = Arc::new(backend);
+        arcade.agent.set_autostart_delay(Duration::from_millis(150));
+        let first = {
+            let backend = Arc::clone(&backend);
+            std::thread::spawn(move || backend.set_game_option(GameOption::Auto, true).unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(40));
+        backend.set_game_option(GameOption::Auto, false).unwrap();
+        first.join().unwrap();
+        assert_eq!(
+            arcade.agent.autostart_calls().last(),
+            Some(&false),
+            "le plus récent des deux changements a le dernier mot : {:?}",
+            arcade.agent.autostart_calls()
         );
     }
 }

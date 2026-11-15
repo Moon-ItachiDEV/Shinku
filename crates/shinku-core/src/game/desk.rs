@@ -31,6 +31,8 @@ const RELAUNCHES: u32 = 3;
 const RELAUNCH_GAP: Duration = Duration::from_secs(10);
 /// Délai avant de revérifier qu'un PC sans « Performances élevées » n'en a toujours pas.
 const SUPPORT_RECHECK: Duration = Duration::from_secs(30);
+/// Délai avant de chercher à nouveau le nom d'une app ajoutée qu'on n'a pas su lire.
+const LABEL_RECHECK: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Default)]
 struct Cache {
@@ -38,6 +40,11 @@ struct Cache {
     names: HashMap<String, String>,
     /// Ce que l'alimentation permet, et quand on l'a su.
     support: Option<(PowerSupport, Instant)>,
+    /// Le nom à montrer d'une app ajoutée, par nom d'exécutable (en minuscules).
+    labels: HashMap<String, String>,
+    /// Quand on a cherché pour la dernière fois le nom d'une app ajoutée sans
+    /// le trouver : on ne rouvre pas tous les processus à chaque sondage.
+    label_misses: HashMap<String, Instant>,
     /// La dernière liste d'apps ouvertes rendue à la page.
     open: Vec<OpenProgram>,
     /// Relances de l'agent depuis l'ouverture de Shinku.
@@ -99,6 +106,45 @@ impl GameDesk {
         let name = self.host.display_name(path);
         self.cache().names.insert(wanted, name.clone());
         name
+    }
+
+    /// Le nom à montrer d'une app ajoutée par la personne : la description de
+    /// son fichier, quand un processus de ce nom tourne ou que le nom est déjà
+    /// en cache ; sinon le nom du fichier sans `.exe`.
+    fn quiet_label(&self, exe: &str, running: &HashSet<String>) -> String {
+        {
+            let cache = self.cache();
+            if let Some(label) = cache.labels.get(exe) {
+                return label.clone();
+            }
+            if cache.label_misses.get(exe).is_some_and(|miss| miss.elapsed() < LABEL_RECHECK) {
+                return stem(exe);
+            }
+        }
+        if running.contains(exe) {
+            // Lu hors du verrou : lister les processus et lire leurs ressources est long.
+            let path = self
+                .host
+                .processes()
+                .iter()
+                .filter(|process| process.exe_name == exe)
+                .find_map(|process| self.host.exe_path(process.process));
+            if let Some(path) = path {
+                let label = self.name_of(&path);
+                self.cache().labels.insert(exe.to_owned(), label.clone());
+                return label;
+            }
+            self.cache().label_misses.insert(exe.to_owned(), Instant::now());
+        }
+        stem(exe)
+    }
+
+    /// Note le nom à montrer d'une app ouverte que la personne ajoute : elle
+    /// tourne, on peut lire son fichier. Le nom reste quand elle se ferme.
+    pub fn remember_label(&self, program: &OpenProgram) {
+        let exe = detect::file_name(&program.path);
+        let label = self.name_of(&program.path);
+        self.cache().labels.insert(exe, label);
     }
 
     fn power_support(&self) -> PowerSupport {
@@ -165,7 +211,7 @@ impl GameDesk {
             if apps::built_in(added).is_none() {
                 quiet_apps.push(QuietApp {
                     exe: added.clone(),
-                    label: stem(added),
+                    label: self.quiet_label(added, &running),
                     on: effective.contains(added),
                     running: running.contains(added),
                     built_in: false,
@@ -277,10 +323,15 @@ impl GameDesk {
         apps
     }
 
-    /// L'app de ce numéro, dans la dernière liste rendue.
-    pub fn open_app(&self, id: u32) -> Result<OpenProgram, GameRefusal> {
+    /// L'app de ce numéro, dans la dernière liste rendue, à condition que
+    /// `path` soit exactement son chemin. Le chemin n'est que **comparé** : la
+    /// page ne désigne jamais autre chose que ce que le cœur lui a donné, et une
+    /// liste qui a changé entre-temps (le même numéro pour une autre app) est
+    /// refusée.
+    pub fn open_app(&self, id: u32, path: &str) -> Result<OpenProgram, GameRefusal> {
         let index = usize::try_from(id).map_err(|_| GameRefusal::UnknownApp)?;
-        self.cache().open.get(index).cloned().ok_or(GameRefusal::UnknownApp)
+        let program = self.cache().open.get(index).cloned().ok_or(GameRefusal::UnknownApp)?;
+        if program.path == path { Ok(program) } else { Err(GameRefusal::UnknownApp) }
     }
 
     /// Les chemins que la page peut désigner : jeux ajoutés, jeux vus, jeux
@@ -335,7 +386,8 @@ fn contains(list: &[String], exe: &str) -> bool {
 }
 
 /// Allume ou éteint une app. `exe` doit déjà être connu (intégrée ou ajoutée)
-/// sauf si `new_app` est vrai.
+/// sauf si `new_app` est vrai. Allumer une app protégée (lanceur de jeux,
+/// programme de Windows ou de Shinku) est refusé.
 ///
 /// Allumer : une app cochée d'office est retirée de ceux qu'on a décochés ; sinon
 /// elle est ajoutée aux cochés. Éteindre : une app ajoutée est retirée ; une
@@ -353,6 +405,11 @@ pub fn set_quiet(
         && !contains(&settings.game_mode_quiet_added, &exe)
     {
         return Err(GameRefusal::UnknownApp);
+    }
+    // Un lanceur de jeux, un programme de Windows : jamais mis en veilleuse.
+    // (Éteindre reste permis : c'est la façon de retirer un reste de la liste.)
+    if on && apps::protected(&exe) {
+        return Err(GameRefusal::ProtectedApp);
     }
     let mut next = settings.clone();
     if on {
@@ -539,5 +596,15 @@ mod tests {
             set_status(&mut settings, &known, "", GameStatus::NotGame),
             Err(GameRefusal::UnknownGame)
         );
+    }
+
+    #[test]
+    fn a_protected_app_cannot_be_ticked_even_from_the_open_list() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            set_quiet(&mut settings, "steam.exe", true, true),
+            Err(GameRefusal::ProtectedApp)
+        );
+        assert_eq!(settings, Settings::default());
     }
 }

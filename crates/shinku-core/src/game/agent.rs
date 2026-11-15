@@ -9,18 +9,52 @@
 use std::fmt;
 use std::fs;
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, SystemTime};
 
 use crate::game::STEP;
 use crate::game::host::GameHost;
 use crate::game::store::GameStore;
 use crate::game::watch::Watcher;
-use crate::model::Timestamp;
 use crate::settings::{LoadIssue, Settings, SettingsStore};
 
 /// Temps pendant lequel un agent lancé par Windows ne détecte rien : Windows
-/// ouvre sa session, le PC est chargé, personne ne joue encore.
+/// ouvre sa session, le PC est chargé, personne ne joue encore. Il se compte
+/// avec l'horloge monotone de la machine, pas avec l'heure murale.
 pub const START_DELAY: Duration = Duration::from_secs(120);
+/// Essais d'une remise en place restée à moitié avant de s'arrêter pour de bon
+/// (ordre « retirer » : après lui, plus rien ne la reprendra).
+pub const REMOVE_ATTEMPTS: u32 = 5;
+/// Pause entre deux de ces essais.
+pub const REMOVE_PAUSE: Duration = Duration::from_millis(200);
+
+/// Reprise unique, dans le processus courant, quand aucun agent ne répond à
+/// l'ordre « quitter » ou « retirer » (désinstallation, mise à jour) : ce que
+/// l'agent aurait fait en s'arrêtant. Une partie restée au journal est remise
+/// en place ; si quelque chose résiste et que `patient`, quelques essais
+/// rapprochés suivent, car après la désinstallation plus rien ne le reprendra.
+///
+/// Ce programme peut tourner élevé (c'est l'installeur qui l'appelle) : il ne
+/// détecte rien, il ne remet que ce que le journal dit.
+pub fn restore_without_agent(host: Arc<dyn GameHost>, game_store: GameStore, patient: bool) {
+    let mut watcher = Watcher::new(host, game_store);
+    watcher.recover();
+    watcher.suspend();
+    if patient {
+        settle_patiently(&mut watcher, REMOVE_PAUSE);
+    }
+}
+
+/// Quelques essais rapprochés d'une remise en place inachevée.
+fn settle_patiently(watcher: &mut Watcher, pause: Duration) {
+    for _ in 0..REMOVE_ATTEMPTS {
+        if !watcher.has_session() {
+            return;
+        }
+        thread::sleep(pause);
+        watcher.settle();
+    }
+}
 
 /// Ce qui arrive à l'agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,12 +98,14 @@ pub struct Agent {
     settings: Settings,
     /// La date du fichier des réglages à la dernière lecture.
     stamp: Option<Stamp>,
-    /// Pas de détection avant cet instant.
-    quiet_until: Option<Timestamp>,
+    /// Pas de détection avant cet instant de l'horloge monotone, en millisecondes.
+    quiet_until: Option<u64>,
     /// La session Windows est déconnectée ou se ferme : pas de détection.
     away: bool,
     /// Efface la valeur `Run` de Windows (ordre « retirer »).
     forget_autostart: Box<dyn Fn() + Send>,
+    /// Pause entre les essais d'une remise inachevée à l'ordre « retirer ».
+    remove_pause: Duration,
 }
 
 impl fmt::Debug for Agent {
@@ -101,19 +137,18 @@ impl Agent {
         if release_first {
             watcher.release();
         }
-        let now = host.now();
+        let now = host.uptime_ms();
         let mut agent = Self {
             host,
             watcher,
             settings_store,
             settings: Settings::default(),
             stamp: None,
-            quiet_until: delayed.then(|| {
-                let ticks = i64::try_from(START_DELAY.as_nanos() / 100).unwrap_or(i64::MAX);
-                Timestamp::from_ticks(now.ticks().saturating_add(ticks))
-            }),
+            quiet_until: delayed
+                .then(|| now.saturating_add(u64::try_from(START_DELAY.as_millis()).unwrap_or(0))),
             away: false,
             forget_autostart: Box::new(crate::platform::agent::forget_autostart),
+            remove_pause: REMOVE_PAUSE,
         };
         agent.reload_settings(true);
         let flow = agent.flow();
@@ -127,23 +162,46 @@ impl Agent {
         self
     }
 
+    /// Change la pause entre les essais d'une remise inachevée à l'ordre
+    /// « retirer ». Pour les tests : le vrai attend.
+    pub fn with_remove_pause(mut self, pause: Duration) -> Self {
+        self.remove_pause = pause;
+        self
+    }
+
     /// Traite un événement.
     pub fn handle(&mut self, event: AgentEvent) -> Flow {
         match event {
-            AgentEvent::Tick | AgentEvent::PowerChanged => {
+            AgentEvent::Tick => {
                 self.reload_settings(false);
                 let detect = !self.away && !self.in_start_delay();
                 self.watcher.tick_detecting(&self.settings, detect);
+                self.flow()
+            }
+            // Windows envoie cet événement à chaque variation de la batterie :
+            // ce n'est pas un pas, seule l'alimentation est réévaluée.
+            AgentEvent::PowerChanged => {
+                self.reload_settings(false);
+                self.watcher.power_changed(&self.settings);
                 self.flow()
             }
             AgentEvent::Release => {
                 self.watcher.release();
                 Flow::Continue
             }
-            AgentEvent::Disconnected | AgentEvent::SessionEnding => {
+            AgentEvent::Disconnected => {
                 self.watcher.suspend();
                 self.away = true;
                 Flow::Continue
+            }
+            // Tout est remis avant de rendre la main à Windows. Le gestionnaire
+            // de redémarrage envoie aussi cet événement pour fermer les apps
+            // pendant une mise à jour, sans fermer la session : l'agent s'arrête
+            // dans tous les cas (il serait resté sourd, sans `Reconnected`).
+            AgentEvent::SessionEnding => {
+                self.watcher.suspend();
+                self.away = true;
+                Flow::Stop
             }
             AgentEvent::Reconnected => {
                 self.away = false;
@@ -155,6 +213,7 @@ impl Agent {
             }
             AgentEvent::Remove => {
                 self.watcher.suspend();
+                settle_patiently(&mut self.watcher, self.remove_pause);
                 (self.forget_autostart)();
                 Flow::Stop
             }
@@ -167,7 +226,7 @@ impl Agent {
     }
 
     fn in_start_delay(&self) -> bool {
-        self.quiet_until.is_some_and(|until| self.host.now() < until)
+        self.quiet_until.is_some_and(|until| self.host.uptime_ms() < until)
     }
 
     /// Continuer tant que le mode automatique est allumé ou qu'une partie est ouverte.
@@ -180,7 +239,8 @@ impl Agent {
     }
 
     /// Relit `settings.json` si sa date de modification a changé. Un fichier
-    /// illisible ne remplace pas les derniers réglages valides.
+    /// illisible ne remplace pas les derniers réglages valides, et sera relu au
+    /// pas suivant.
     fn reload_settings(&mut self, first: bool) {
         let stamp = fs::metadata(self.settings_store.path())
             .ok()
@@ -188,11 +248,14 @@ impl Agent {
         if !first && stamp == self.stamp {
             return;
         }
-        self.stamp = stamp;
         let loaded = self.settings_store.load();
         if matches!(loaded.issue, Some(LoadIssue::Unreadable { .. })) {
+            // Une lecture ratée (fichier tenu par un antivirus, écriture en
+            // cours) ne doit pas faire oublier le changement : la date n'est pas
+            // notée, le fichier sera relu au pas suivant.
             return;
         }
+        self.stamp = stamp;
         self.settings = loaded.settings;
     }
 }
@@ -371,12 +434,14 @@ mod tests {
     }
 
     #[test]
-    fn a_closing_session_restores_before_returning() {
+    fn a_closing_session_restores_before_returning_and_stops_the_agent() {
         let bench = Bench::new(true);
         let onedrive = bench.host.spawn(200, 1, ONEDRIVE);
         let (mut agent, _) = bench.start(false, false);
         bench.play(&mut agent);
-        assert_eq!(agent.handle(AgentEvent::SessionEnding), Flow::Continue);
+        // Le gestionnaire de redémarrage envoie aussi cet événement sans fermer
+        // la session : l'agent s'arrête, il ne reste pas sourd.
+        assert_eq!(agent.handle(AgentEvent::SessionEnding), Flow::Stop);
         assert_eq!(
             bench.host.state_of(onedrive).unwrap().priority,
             crate::game::host::priority::NORMAL
@@ -445,5 +510,97 @@ mod tests {
         bench.write(false);
         let (_second, flow) = bench.start(false, false);
         assert_eq!(flow, Flow::Continue, "une partie ouverte garde l'agent en vie");
+    }
+    #[test]
+    fn two_power_events_without_a_step_never_open_a_session() {
+        let bench = Bench::new(true);
+        let (mut agent, _) = bench.start(false, false);
+        let game = bench.host.spawn(100, 1, GAME);
+        bench.host.set_foreground(Some(game));
+        assert_eq!(agent.handle(AgentEvent::PowerChanged), Flow::Continue);
+        assert_eq!(agent.handle(AgentEvent::PowerChanged), Flow::Continue);
+        assert!(bench.session().is_none(), "un événement n'est pas un pas");
+    }
+
+    #[test]
+    fn going_on_battery_gives_the_power_mode_back_at_once() {
+        let bench = Bench::new(true);
+        let (mut agent, _) = bench.start(false, false);
+        bench.play(&mut agent);
+        assert_eq!(bench.host.active_plan(), Some(crate::game::host::PowerPlan::HIGH_PERFORMANCE));
+        bench.host.set_on_battery(true);
+        agent.handle(AgentEvent::PowerChanged);
+        assert_eq!(bench.host.active_plan(), Some(crate::game::host::PowerPlan::BALANCED));
+    }
+
+    #[test]
+    fn the_start_delay_follows_the_monotonic_clock() {
+        let bench = Bench::new(true);
+        let (mut agent, _) = bench.start(true, false);
+        // L'heure murale recule de deux heures : le délai, lui, court toujours.
+        bench.host.jump_clock(-7_200_000);
+        bench.play(&mut agent);
+        assert!(bench.session().is_none(), "trop tôt");
+        bench.host.advance(START_DELAY);
+        for _ in 0..3 {
+            bench.tick(&mut agent);
+        }
+        assert!(bench.session().is_some());
+    }
+
+    #[test]
+    fn a_failed_read_is_not_noted_so_a_file_with_the_same_stamp_is_reloaded() {
+        let bench = Bench::new(true);
+        let (mut agent, _) = bench.start(false, false);
+        let path = bench.settings.path().to_path_buf();
+        // Le fichier est remplacé par un dossier : la lecture échoue.
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        let (modified, len) = (metadata.modified().unwrap(), metadata.len());
+        assert_eq!(bench.tick(&mut agent), Flow::Continue, "les derniers réglages restent");
+        // Un vrai fichier de même taille et de même date prend sa place : si la
+        // date de l'échec avait été retenue, il ne serait jamais relu.
+        fs::remove_dir(&path).unwrap();
+        let off = Settings { game_mode_auto: false, ..Settings::default() };
+        let mut text = serde_json::to_vec(&off).unwrap();
+        // (Sous Windows un dossier mesure 0 : la taille ne peut alors pas être égalée,
+        // le test ne prouve plus que la relecture simple.)
+        text.resize(usize::try_from(len).unwrap().max(text.len()), b' ');
+        fs::write(&path, text).unwrap();
+        fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+        assert_eq!(bench.tick(&mut agent), Flow::Stop, "le fichier est relu au pas suivant");
+    }
+
+    #[test]
+    fn the_remove_order_retries_a_refused_restore() {
+        let bench = Bench::new(true);
+        let (agent, _) = bench.start(false, false);
+        let mut agent = agent.with_remove_pause(Duration::ZERO);
+        bench.play(&mut agent);
+        bench.host.refuse_power_changes_for(3);
+        assert_eq!(agent.handle(AgentEvent::Remove), Flow::Stop);
+        assert!(bench.session().is_none(), "la partie est close après quelques essais");
+        assert_eq!(bench.host.active_plan(), Some(crate::game::host::PowerPlan::BALANCED));
+        assert_eq!(bench.removals.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn restoring_without_an_agent_closes_a_session_left_in_the_journal() {
+        let bench = Bench::new(true);
+        let onedrive = bench.host.spawn(200, 1, ONEDRIVE);
+        {
+            let (mut agent, _) = bench.start(false, false);
+            bench.play(&mut agent);
+        }
+        assert!(bench.session().is_some());
+        bench.host.refuse_power_changes_for(2);
+        restore_without_agent(Arc::new(bench.host.clone()), bench.game.clone(), true);
+        assert!(bench.session().is_none());
+        assert_eq!(bench.host.active_plan(), Some(crate::game::host::PowerPlan::BALANCED));
+        assert_eq!(
+            bench.host.state_of(onedrive).unwrap().priority,
+            crate::game::host::priority::NORMAL
+        );
     }
 }

@@ -214,9 +214,9 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     backend.set_quiet_app("onedrive.exe", false).expect("app décochée");
     let open = backend.open_apps();
     samples.insert("openApps", to_json(&open));
-    backend.add_quiet_app(open[0].id).expect("app ajoutée");
-    backend.add_game(open[1].id).expect("jeu ajouté");
-    backend.add_game(open[2].id).expect("jeu ajouté");
+    backend.add_quiet_app(open[0].id, &open[0].path).expect("app ajoutée");
+    backend.add_game(open[1].id, &open[1].path).expect("jeu ajouté");
+    backend.add_game(open[2].id, &open[2].path).expect("jeu ajouté");
     backend.set_game_status(&open[2].path, GameStatus::NotGame).expect("jeu écarté");
     let mut file = GameFile::default();
     file.remember(r"D:\SteamLibrary\steamapps\common\Baz\baz.exe", "Baz", 1_700_000_000_000);
@@ -227,6 +227,7 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     // Une partie en cours, et le bilan de la précédente.
     file.session = Some(Session {
         game: GameRef { path: open[1].path.clone(), name: "Foo".to_owned(), source: Source::Added },
+        opened: 1_700_000_150_000,
         since: 1_700_000_200_000,
         released: false,
         power: PowerRecord::applied(PowerPlan::BALANCED),
@@ -238,6 +239,7 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             throttle_control: 0,
             throttle_state: 0,
         }],
+        roots: Vec::new(),
         restore_pending: false,
     });
     file.last = Some(Last {

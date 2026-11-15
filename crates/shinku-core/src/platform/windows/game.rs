@@ -30,6 +30,7 @@ use windows::Win32::System::Power::{
 };
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, GetExitCodeProcess, GetPriorityClass, GetProcessInformation,
     GetProcessTimes, OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_CREATION_FLAGS,
@@ -200,6 +201,11 @@ impl GameHost for SystemHost {
         Timestamp::now()
     }
 
+    fn uptime_ms(&self) -> u64 {
+        // SAFETY: appel sans argument ni pointeur.
+        unsafe { GetTickCount64() }
+    }
+
     fn foreground(&self) -> Option<Foreground> {
         // SAFETY: appel sans argument ; rend un handle nul s'il n'y a pas de
         // fenêtre au premier plan.
@@ -295,7 +301,7 @@ impl GameHost for SystemHost {
     }
 
     fn has_power_plan(&self, plan: PowerPlan) -> bool {
-        (0..MAX_PLANS).any(|index| {
+        for index in 0..MAX_PLANS {
             let mut guid = [0u8; 16];
             let mut size = 16u32;
             // SAFETY: `guid` est un tampon local de 16 octets, taille annoncée
@@ -311,6 +317,7 @@ impl GameHost for SystemHost {
                     &raw mut size,
                 )
             };
+            // Plus de mode à lister (ou une erreur) : inutile d'interroger la suite.
             if result == ERROR_NO_MORE_ITEMS || result != ERROR_SUCCESS {
                 return false;
             }
@@ -323,8 +330,11 @@ impl GameHost for SystemHost {
                     guid[8], guid[9], guid[10], guid[11], guid[12], guid[13], guid[14], guid[15],
                 ],
             };
-            plan_of(&found) == plan
-        })
+            if plan_of(&found) == plan {
+                return true;
+            }
+        }
+        false
     }
 
     fn set_power_plan(&self, plan: PowerPlan) -> io::Result<()> {
@@ -369,14 +379,28 @@ impl GameHost for SystemHost {
             // SAFETY: le handle vit autant que `handle` et porte le droit de
             // modifier ce processus ; `info` est une structure locale dont on
             // annonce la taille exacte.
-            unsafe {
+            let result = unsafe {
                 SetProcessInformation(
                     raw(&handle),
                     ProcessPowerThrottling,
                     (&raw const info).cast(),
                     size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
                 )
-            }?;
+            };
+            if let Err(error) = result {
+                // Rien ne doit rester à moitié fait : la priorité, déjà changée,
+                // est remise avant de rendre l'erreur (sinon ce processus serait
+                // ralenti sans que personne ne le sache).
+                if current.priority != state.priority {
+                    // SAFETY: le handle vit autant que `handle` et porte le
+                    // droit de modifier ce processus ; la classe est celle que
+                    // Windows vient de lire.
+                    let _ = unsafe {
+                        SetPriorityClass(raw(&handle), PROCESS_CREATION_FLAGS(current.priority))
+                    };
+                }
+                return Err(error.into());
+            }
         }
         Ok(())
     }
@@ -561,6 +585,73 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_second_step_puts_the_priority_back() {
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/c", "pause"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("un processus fils");
+        let host = SystemHost::new();
+        let process = host
+            .processes()
+            .into_iter()
+            .find(|entry| entry.process.pid == child.id())
+            .map(|entry| entry.process);
+        let Some(process) = process else {
+            let _ = child.kill();
+            panic!("le fils n'est pas listé");
+        };
+        let Some(before) = host.inspect(process) else {
+            let _ = child.kill();
+            panic!("le fils ne s'inspecte pas");
+        };
+        // Priorité et mode efficacité à la fois : sous Wine, le second geste
+        // n'existe pas, et le premier ne doit rien laisser derrière lui.
+        let both = ProcessState {
+            priority: priority::BELOW_NORMAL,
+            throttle_control: 1,
+            throttle_state: 1,
+        };
+        let applied = host.apply(process, both);
+        let after = host.inspect(process);
+        match applied {
+            Ok(()) => {
+                assert_eq!(after, Some(both));
+                host.apply(process, before).expect("état d'avant remis");
+            }
+            Err(_) => assert_eq!(
+                after.map(|state| state.priority),
+                Some(before.priority),
+                "un échec ne laisse pas la priorité baissée"
+            ),
+        }
+        let back = host.inspect(process);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(back, Some(before));
+    }
+
+    #[test]
+    fn the_uptime_only_goes_forward() {
+        let host = SystemHost::new();
+        let first = host.uptime_ms();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = host.uptime_ms();
+        assert!(first > 0 && second >= first + 15, "{first} puis {second}");
+    }
+
+    #[test]
+    fn a_missing_power_plan_is_not_found() {
+        let host = SystemHost::new();
+        let nowhere = PowerPlan::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0);
+        assert!(!host.has_power_plan(nowhere));
+    }
+
+    #[test]
     fn unknown_priority_classes_are_refused() {
         let host = SystemHost::new();
         let me = me();
@@ -574,7 +665,7 @@ mod tests {
         // Sous Wine ou sans service d'alimentation, aucune réponse n'est une
         // réponse permise ; si Windows répond, ce mode doit exister.
         if let Some(plan) = host.power_plan() {
-            let _ = host.has_power_plan(plan);
+            assert!(host.has_power_plan(plan), "le mode actif {plan} doit exister");
         }
         let _ = host.on_battery();
         let first = host.processor_name();

@@ -14,7 +14,9 @@
 //!   journal ;
 //! - `--quitter` : demande à l'agent qui tourne de s'arrêter (installeur) ;
 //! - `--retirer` : lui demande de s'arrêter et de ne plus se lancer avec
-//!   Windows (désinstallation) ;
+//!   Windows (désinstallation). Sans agent qui réponde, ces deux ordres font
+//!   eux-mêmes une reprise unique : une partie restée au journal est remise
+//!   en place, même si ce programme tourne élevé ;
 //! - `--version`.
 //!
 //! Tout autre argument est refusé (code 2). Lancé avec des droits
@@ -25,7 +27,7 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use shinku_core::game::agent::{Agent, Flow};
+use shinku_core::game::agent::{Agent, Flow, restore_without_agent};
 use shinku_core::game::store::GameStore;
 use shinku_core::platform::agent::{
     Order, acquire_instance, forget_autostart, post_agent, run_agent, wait_agent_gone,
@@ -90,8 +92,15 @@ fn main() -> ExitCode {
 /// Donne un ordre à l'agent qui tourne et attend qu'il ait fini.
 fn give(order: Order) -> ExitCode {
     if !post_agent(order) {
-        // Personne à qui parler. Pour une désinstallation, la valeur `Run`
-        // ne doit pas rester pour autant.
+        // Personne à qui parler : l'agent a été tué ou s'est arrêté, peut-être
+        // en laissant une partie au journal (alimentation en « Performances
+        // élevées », processus en veilleuse). Rien ne la reprendrait plus : on
+        // la remet en place ici, une fois.
+        let environment = platform::system();
+        if let Some(game) = GameStore::for_machine(&environment) {
+            restore_without_agent(platform::game_host(), game, order == Order::Remove);
+        }
+        // Pour une désinstallation, la valeur `Run` ne doit pas rester non plus.
         if order == Order::Remove {
             forget_autostart();
         }

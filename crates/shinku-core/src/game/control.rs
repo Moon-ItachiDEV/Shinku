@@ -107,6 +107,8 @@ struct Fake {
     opened: Vec<WindowsPage>,
     /// Faire démarrer l'agent quand on le lance.
     spawn_works: bool,
+    /// Durée de l'écriture de la valeur `Run` quand on l'allume (hors verrou).
+    autostart_delay: std::time::Duration,
 }
 
 /// Un agent fabriqué, pour les tests : on lui dit dans quel état il est, et il
@@ -135,8 +137,15 @@ impl FakeAgent {
                 autostart_calls: Vec::new(),
                 opened: Vec::new(),
                 spawn_works: true,
+                autostart_delay: std::time::Duration::ZERO,
             })),
         }
+    }
+
+    /// L'écriture de la valeur `Run`, quand on l'allume, dure ce temps : un
+    /// changement plus récent peut alors la rattraper, si rien ne les met en file.
+    pub fn set_autostart_delay(&self, delay: std::time::Duration) {
+        self.fake().autostart_delay = delay;
     }
 
     fn fake(&self) -> MutexGuard<'_, Fake> {
@@ -212,6 +221,10 @@ impl AgentControl for FakeAgent {
     }
 
     fn set_autostart(&self, on: bool) -> io::Result<()> {
+        let delay = self.fake().autostart_delay;
+        if on && !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
         let mut fake = self.fake();
         fake.autostart_calls.push(on);
         fake.autostart = if on { Autostart::Enabled } else { Autostart::Absent };

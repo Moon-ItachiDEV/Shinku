@@ -6,11 +6,12 @@
 //! implémentation est dans `platform/windows/game.rs`. Les tests utilisent
 //! [`FakeHost`], une machine fabriquée de toutes pièces qui note chaque geste.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::{Serialize, Serializer};
 
@@ -160,8 +161,14 @@ impl Serialize for PowerPlan {
 /// La machine, vue par le mode jeu. Ne modifie que deux choses : le mode
 /// d'alimentation, et la priorité et le mode efficacité d'un processus.
 pub trait GameHost: Send + Sync + fmt::Debug {
-    /// L'instant présent.
+    /// L'heure murale. Elle sert aux dates qu'on écrit et qu'on affiche, jamais
+    /// à compter un délai : elle peut reculer ou sauter (synchronisation de
+    /// l'horloge, double démarrage avec Linux).
     fn now(&self) -> Timestamp;
+
+    /// Millisecondes écoulées depuis le démarrage de Windows : une horloge
+    /// monotone, qui ne recule jamais, avec laquelle se comptent tous les délais.
+    fn uptime_ms(&self) -> u64;
 
     /// La fenêtre au premier plan, si on peut connaître son processus.
     fn foreground(&self) -> Option<Foreground>;
@@ -210,6 +217,11 @@ pub struct InertHost;
 impl GameHost for InertHost {
     fn now(&self) -> Timestamp {
         Timestamp::now()
+    }
+
+    fn uptime_ms(&self) -> u64 {
+        static START: OnceLock<Instant> = OnceLock::new();
+        u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     fn foreground(&self) -> Option<Foreground> {
@@ -293,11 +305,14 @@ struct FakeProcess {
     state: ProcessState,
     readable: bool,
     writable: bool,
+    /// Le mode efficacité refuse de changer, après la priorité (comme sous Wine).
+    throttle_broken: bool,
 }
 
 #[derive(Debug)]
 struct Fake {
     now: Timestamp,
+    uptime: u64,
     created: i64,
     foreground: Option<ProcessRef>,
     processes: Vec<FakeProcess>,
@@ -306,9 +321,12 @@ struct Fake {
     plans: Vec<PowerPlan>,
     processor: String,
     power_refused: bool,
+    /// Nombre de changements d'alimentation encore refusés avant que Windows accepte.
+    power_refusals_left: u32,
     gestures: Vec<Gesture>,
     opened: Vec<u32>,
     name_reads: u32,
+    display_names: HashMap<String, String>,
     spy: Option<std::path::PathBuf>,
     spied: Vec<Option<String>>,
 }
@@ -338,6 +356,8 @@ impl FakeHost {
         Self {
             inner: Arc::new(Mutex::new(Fake {
                 now: Timestamp::from_unix(1_800_000_000, 0),
+                // Une heure depuis le démarrage de Windows.
+                uptime: 3_600_000,
                 created: 0,
                 foreground: None,
                 processes: Vec::new(),
@@ -350,9 +370,11 @@ impl FakeHost {
                 ],
                 processor: "Intel(R) Core(TM) i7-13700K".to_owned(),
                 power_refused: false,
+                power_refusals_left: 0,
                 gestures: Vec::new(),
                 opened: Vec::new(),
                 name_reads: 0,
+                display_names: HashMap::new(),
                 spy: None,
                 spied: Vec::new(),
             })),
@@ -363,12 +385,47 @@ impl FakeHost {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Fait avancer l'horloge.
+    /// Fait avancer les deux horloges : l'heure murale et l'horloge monotone.
     pub fn advance(&self, duration: Duration) {
         let mut fake = self.state();
         fake.now = Timestamp::from_ticks(
             fake.now.ticks() + i64::try_from(duration.as_nanos() / 100).unwrap_or(i64::MAX),
         );
+        fake.uptime += u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+    }
+
+    /// L'heure murale saute (synchronisation de l'horloge, changement de
+    /// fuseau), en avant ou en arrière, sans que l'horloge monotone bouge.
+    pub fn jump_clock(&self, millis: i64) {
+        let mut fake = self.state();
+        fake.now = Timestamp::from_ticks(fake.now.ticks().saturating_add(millis * 10_000));
+    }
+
+    /// Fixe le temps écoulé depuis le démarrage de Windows, en millisecondes.
+    pub fn set_uptime(&self, millis: u64) {
+        self.state().uptime = millis;
+    }
+
+    /// Windows redémarre : plus aucun processus, plus de premier plan, et
+    /// l'horloge monotone repart de trente secondes.
+    pub fn reboot(&self) {
+        let mut fake = self.state();
+        fake.processes.clear();
+        fake.foreground = None;
+        fake.uptime = 30_000;
+    }
+
+    /// Le nom à montrer pour ce chemin, au lieu du nom du fichier.
+    pub fn set_display_name(&self, path: &str, name: &str) {
+        self.state().display_names.insert(path.to_lowercase(), name.to_owned());
+    }
+
+    /// Le mode efficacité de ce processus refuse de changer : la priorité, elle,
+    /// change d'abord (comme `SetProcessInformation` sous Wine).
+    pub fn break_throttle(&self, process: ProcessRef, broken: bool) {
+        if let Some(known) = self.state().processes.iter_mut().find(|p| p.process == process) {
+            known.throttle_broken = broken;
+        }
     }
 
     /// Lance un processus de ce chemin. Les processus sont créés dans l'ordre
@@ -389,6 +446,7 @@ impl FakeHost {
             },
             readable: true,
             writable: true,
+            throttle_broken: false,
         });
         process
     }
@@ -464,6 +522,12 @@ impl FakeHost {
         self.state().power_refused = refused;
     }
 
+    /// Windows refuse les `count` prochains changements du mode d'alimentation,
+    /// puis les accepte à nouveau.
+    pub fn refuse_power_changes_for(&self, count: u32) {
+        self.state().power_refusals_left = count;
+    }
+
     /// Les gestes faits sur la machine, dans l'ordre.
     pub fn gestures(&self) -> Vec<Gesture> {
         self.state().gestures.clone()
@@ -509,6 +573,10 @@ impl GameHost for FakeHost {
         self.state().now
     }
 
+    fn uptime_ms(&self) -> u64 {
+        self.state().uptime
+    }
+
     fn foreground(&self) -> Option<Foreground> {
         let fake = self.state();
         let process = fake.foreground?;
@@ -536,8 +604,9 @@ impl GameHost for FakeHost {
     }
 
     fn display_name(&self, exe: &str) -> String {
-        self.state().name_reads += 1;
-        stem(exe)
+        let mut fake = self.state();
+        fake.name_reads += 1;
+        fake.display_names.get(&exe.to_lowercase()).cloned().unwrap_or_else(|| stem(exe))
     }
 
     fn on_battery(&self) -> bool {
@@ -554,6 +623,10 @@ impl GameHost for FakeHost {
 
     fn set_power_plan(&self, plan: PowerPlan) -> io::Result<()> {
         let mut fake = self.state();
+        if fake.power_refusals_left > 0 {
+            fake.power_refusals_left -= 1;
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "refusé"));
+        }
         if fake.power_refused || !fake.plans.contains(&plan) {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "refusé"));
         }
@@ -577,6 +650,16 @@ impl GameHost for FakeHost {
         };
         if !fake.processes[index].readable || !fake.processes[index].writable {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "accès refusé"));
+        }
+        let current = fake.processes[index].state;
+        let throttle_changes = (current.throttle_control, current.throttle_state)
+            != (state.throttle_control, state.throttle_state);
+        if fake.processes[index].throttle_broken && throttle_changes {
+            // La priorité a changé, le mode efficacité refuse : rien ne la remet.
+            let half = ProcessState { priority: state.priority, ..current };
+            fake.note(Gesture::Apply { process, state: half });
+            fake.processes[index].state = half;
+            return Err(io::Error::other("mode efficacité refusé"));
         }
         fake.note(Gesture::Apply { process, state });
         fake.processes[index].state = state;

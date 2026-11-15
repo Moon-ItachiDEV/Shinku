@@ -15,17 +15,18 @@ use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use windows::Win32::Foundation::{
     ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GetLastError, HINSTANCE, HWND,
     LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_BINARY, RegCloseKey,
-    RegDeleteValueW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
+    RegDeleteValueW, RegGetValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 use windows::Win32::System::RemoteDesktop::{
     NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
@@ -131,7 +132,14 @@ pub(in crate::platform) fn spawn_agent(release_first: bool) -> AgentState {
         command.arg("--relacher");
     }
     // Dossier de travail neutre : l'agent ne garde pas le dossier d'installation.
-    command.current_dir(std::env::temp_dir()).creation_flags(CREATE_NO_WINDOW);
+    // Ni entrée ni sorties héritées : si `shinku.exe` a été lancé avec des
+    // tubes (un essai, un script), l'agent ne doit pas les garder ouverts.
+    command
+        .current_dir(std::env::temp_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW);
     match command.spawn() {
         // Le processus n'est pas attendu : il vit sa vie.
         Ok(child) => {
@@ -386,6 +394,15 @@ fn wanted_run_value() -> Option<String> {
     Some(format!("\"{}\" --demarrage", file.display()))
 }
 
+/// Vrai si la valeur `Run` existe, quel que soit son type et sa taille.
+fn run_value_exists(key: &Key) -> bool {
+    // SAFETY: la clé est ouverte pour `key` ; aucun tampon n'est donné, Windows
+    // dit seulement si la valeur existe.
+    let result =
+        unsafe { RegQueryValueExW(key.0, &HSTRING::from(RUN_VALUE), None, None, None, None) };
+    result == ERROR_SUCCESS
+}
+
 /// Lit une valeur texte de `Run`.
 fn read_run_value(key: &Key) -> Option<String> {
     let mut buffer = vec![0u16; MAX_RUN_VALUE];
@@ -438,9 +455,8 @@ pub(in crate::platform) fn set_autostart(on: bool) -> io::Result<()> {
         };
     }
     let Some(key) = Key::open(RUN_KEY, KEY_READ | KEY_SET_VALUE) else { return Ok(()) };
-    if read_run_value(&key).is_none() {
-        return Ok(());
-    }
+    // Effacée sans la lire d'abord : une valeur d'un autre type ou trop longue
+    // pour `read_run_value` doit partir aussi. « Introuvable » est un succès.
     // SAFETY: la clé est ouverte pour `key`.
     let result = unsafe { RegDeleteValueW(key.0, &HSTRING::from(RUN_VALUE)) };
     if result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND {
@@ -452,7 +468,7 @@ pub(in crate::platform) fn set_autostart(on: bool) -> io::Result<()> {
 
 pub(in crate::platform) fn autostart() -> Autostart {
     let Some(key) = Key::open(RUN_KEY, KEY_READ) else { return Autostart::Absent };
-    if read_run_value(&key).is_none() {
+    if !run_value_exists(&key) {
         return Autostart::Absent;
     }
     // `StartupApproved` : douze octets ; un premier octet impair veut dire
@@ -492,34 +508,43 @@ unsafe extern "system" fn look_at(window: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: `lparam` est le pointeur vers `Found` donné par `open_apps`, qui
     // vit pendant toute l'énumération ; seul ce fil y touche.
     let found = unsafe { &mut *(lparam.0 as *mut Found) };
-    // SAFETY: les appels suivants ne reçoivent que `window` ou des variables locales.
-    unsafe {
-        if !IsWindowVisible(window).as_bool() || GetWindowTextLengthW(window) == 0 {
-            return BOOL(1);
-        }
-        if GetWindow(window, GW_OWNER).is_ok_and(|owner| !owner.is_invalid()) {
-            return BOOL(1);
-        }
-        let style = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
-        if style & WS_EX_TOOLWINDOW.0 != 0 {
-            return BOOL(1);
-        }
-        let mut cloaked = 0u32;
-        if DwmGetWindowAttribute(window, DWMWA_CLOAKED, (&raw mut cloaked).cast(), 4).is_ok()
-            && cloaked != 0
-        {
-            return BOOL(1);
-        }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(window, Some(&raw mut pid));
-        if pid == 0 || pid == found.own {
-            return BOOL(1);
-        }
-        if let Some(path) = path_of_pid(pid) {
-            let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_owned();
-            if !apps::protected(&name.to_lowercase()) {
-                found.programs.push(OpenProgram { name, path });
-            }
+    // SAFETY: appel sans pointeur, sur la fenêtre que Windows vient de donner.
+    let visible = unsafe { IsWindowVisible(window) }.as_bool();
+    // SAFETY: appel sans pointeur, sur la même fenêtre.
+    let titled = unsafe { GetWindowTextLengthW(window) } != 0;
+    if !visible || !titled {
+        return BOOL(1);
+    }
+    // SAFETY: appel sans pointeur, sur la même fenêtre.
+    let owned = unsafe { GetWindow(window, GW_OWNER) }.is_ok_and(|owner| !owner.is_invalid());
+    if owned {
+        return BOOL(1);
+    }
+    // SAFETY: appel sans pointeur, sur la même fenêtre.
+    let style = unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) };
+    // Un style étendu tient sur 32 bits : le reste est du remplissage.
+    let style = u32::try_from(style as usize & 0xFFFF_FFFF).unwrap_or(0);
+    if style & WS_EX_TOOLWINDOW.0 != 0 {
+        return BOOL(1);
+    }
+    let mut cloaked = 0u32;
+    // SAFETY: `cloaked` est une variable locale dont on annonce la taille
+    // exacte (4 octets), où Windows écrit.
+    let cloak =
+        unsafe { DwmGetWindowAttribute(window, DWMWA_CLOAKED, (&raw mut cloaked).cast(), 4) };
+    if cloak.is_ok() && cloaked != 0 {
+        return BOOL(1);
+    }
+    let mut pid = 0u32;
+    // SAFETY: `pid` est une variable locale où Windows écrit un nombre.
+    unsafe { GetWindowThreadProcessId(window, Some(&raw mut pid)) };
+    if pid == 0 || pid == found.own {
+        return BOOL(1);
+    }
+    if let Some(path) = path_of_pid(pid) {
+        let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_owned();
+        if !apps::protected(&name.to_lowercase()) {
+            found.programs.push(OpenProgram { name, path });
         }
     }
     BOOL(1)
@@ -547,20 +572,41 @@ pub(in crate::platform) fn open_apps() -> Vec<OpenProgram> {
 }
 
 pub(in crate::platform) fn open_windows_settings(page: WindowsPage) -> io::Result<()> {
+    // Un fil à part, dont l'appartement COM n'appartient qu'à cet appel :
+    // `ShellExecuteW` demande que COM soit initialisé, et le fil qui appelle
+    // (une tâche asynchrone de Tauri) n'en a pas la garde.
+    let uri = page.uri();
+    std::thread::spawn(move || shell_open(uri))
+        .join()
+        .map_err(|_| io::Error::other("l'ouverture des réglages a échoué"))?
+}
+
+/// Ouvre une adresse fixe `ms-settings:` avec le shell, dans un appartement COM
+/// initialisé pour la durée de l'appel.
+fn shell_open(uri: &'static str) -> io::Result<()> {
+    // SAFETY: appel sans pointeur, sur un fil qui n'a encore rien initialisé ;
+    // l'appartement est libéré plus bas, une fois, si l'initialisation a réussi.
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     // SAFETY: les trois chaînes sont terminées par zéro et valides pendant
     // l'appel ; l'adresse est l'une des deux constantes de `WindowsPage`.
     let result = unsafe {
         ShellExecuteW(
             None,
             &HSTRING::from("open"),
-            &HSTRING::from(page.uri()),
+            &HSTRING::from(uri),
             PCWSTR::null(),
             PCWSTR::null(),
             SW_SHOWNORMAL,
         )
     };
-    // ShellExecuteW rend une valeur supérieure à 32 quand elle réussit.
-    if result.0 as usize > 32 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    let outcome =
+        // ShellExecuteW rend une valeur supérieure à 32 quand elle réussit.
+        if result.0 as usize > 32 { Ok(()) } else { Err(io::Error::last_os_error()) };
+    if com.is_ok() {
+        // SAFETY: appariée à l'initialisation réussie de ce même fil, plus haut.
+        unsafe { CoUninitialize() };
+    }
+    outcome
 }
 
 #[cfg(test)]

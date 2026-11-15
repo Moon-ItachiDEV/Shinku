@@ -188,17 +188,26 @@ pub fn open_apps(backend: State<'_, Backend>) -> Vec<OpenApp> {
 }
 
 /// Ajoute aux jeux l'app de ce numéro, dans la dernière liste rendue par
-/// [`open_apps`].
+/// [`open_apps`]. `path` doit être exactement son chemin dans cette liste : il
+/// n'est que comparé (si la liste a changé, la demande est refusée).
 #[tauri::command(async)]
-pub fn add_game(backend: State<'_, Backend>, id: u32) -> Result<GameView, BackendError> {
-    backend.add_game(id)
+pub fn add_game(
+    backend: State<'_, Backend>,
+    id: u32,
+    path: String,
+) -> Result<GameView, BackendError> {
+    backend.add_game(id, &path)
 }
 
 /// Ajoute aux apps en veilleuse l'app de ce numéro, dans la dernière liste
-/// rendue par [`open_apps`].
+/// rendue par [`open_apps`]. Même règle pour `path`.
 #[tauri::command(async)]
-pub fn add_quiet_app(backend: State<'_, Backend>, id: u32) -> Result<GameView, BackendError> {
-    backend.add_quiet_app(id)
+pub fn add_quiet_app(
+    backend: State<'_, Backend>,
+    id: u32,
+    path: String,
+) -> Result<GameView, BackendError> {
+    backend.add_quiet_app(id, &path)
 }
 
 /// Dit ce que la personne pense d'un jeu de la liste. `path` n'est que

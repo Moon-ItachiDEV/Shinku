@@ -67,7 +67,7 @@ pub fn file_name(path: &str) -> String {
 const BROWSERS: [&str; 6] =
     ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe"];
 /// Programmes de Windows.
-pub(crate) const WINDOWS_PROGRAMS: [&str; 9] = [
+pub(crate) const WINDOWS_PROGRAMS: [&str; 10] = [
     "explorer.exe",
     "applicationframehost.exe",
     "searchhost.exe",
@@ -77,6 +77,7 @@ pub(crate) const WINDOWS_PROGRAMS: [&str; 9] = [
     "dwm.exe",
     "taskmgr.exe",
     "systemsettings.exe",
+    "mstsc.exe",
 ];
 /// Lecteurs et bureautique.
 const PLAYERS_AND_OFFICE: [&str; 10] = [
@@ -126,8 +127,6 @@ pub(crate) const SHINKU_PROGRAMS: [&str; 3] =
     ["shinku.exe", "shinku-agent.exe", "shinku-helper.exe"];
 /// Le lanceur de Rockstar, que la liste ci-dessus écrit sous deux noms.
 const ROCKSTAR_LAUNCHER: &str = "rockstargameslauncher.exe";
-/// Bureau à distance, qui ne se joue pas.
-const REMOTE_DESKTOP: &str = "mstsc.exe";
 
 /// Dossiers de lanceurs : un exécutable qui y vit n'est jamais un jeu.
 const LAUNCHER_FOLDERS: [&[&str]; 5] = [
@@ -153,6 +152,14 @@ const LIBRARY_MARKERS: [&[&str]; 10] = [
     &["rockstar games"],
 ];
 
+/// Vrai si ce nom de fichier est celui d'un lanceur de jeux (Steam, Epic,
+/// Riot, Ubisoft, EA, GOG, Battle.net, Rockstar). Un lanceur est le parent des
+/// jeux qu'il démarre : il n'est jamais mis en veilleuse.
+pub fn is_launcher(name: &str) -> bool {
+    let name = name.to_lowercase();
+    LAUNCHERS.contains(&name.as_str()) || name == ROCKSTAR_LAUNCHER
+}
+
 /// Vrai si ce nom de fichier (en minuscules) est dans la liste du veto.
 fn vetoed_name(name: &str) -> bool {
     [
@@ -163,7 +170,7 @@ fn vetoed_name(name: &str) -> bool {
         CHAT_AND_MUSIC.as_slice(),
         LAUNCHERS.as_slice(),
         SHINKU_PROGRAMS.as_slice(),
-        &[ROCKSTAR_LAUNCHER, REMOTE_DESKTOP],
+        &[ROCKSTAR_LAUNCHER],
     ]
     .iter()
     .any(|group| group.contains(&name))

@@ -10,15 +10,23 @@
 //! périodiquement, d'un seul geste (voir [`crate::settings`]). La fenêtre ne
 //! fait que le lire.
 //!
+//! La partie en cours garde deux dates : `opened`, l'ouverture, qui ne change
+//! jamais pendant la partie (c'est la borne de tout ce qui touche à la remise
+//! en place), et `since`, le début du jeu en cours, qui change quand la partie
+//! passe d'un jeu à l'autre (c'est ce que la page affiche). Elle garde aussi
+//! ses **racines** : tout processus qui est passé par le journal pendant la
+//! partie, même s'il en est sorti depuis, pour retrouver ceux qui ont hérité de
+//! sa priorité basse.
+//!
 //! **Lecture méfiante** : n'importe quel programme du compte peut écrire ce
-//! fichier. Absent ou illisible, c'est un état vide. Chaque champ est lu pour
-//! lui-même, borné et contrôlé : une classe de priorité inconnue (ou « temps
-//! réel ») devient « normale », un masque est borné à 0 ou 1, un GUID mal
-//! formé fait ignorer la partie alimentation, les listes et les chaînes ont
-//! une taille maximale.
+//! fichier. Absent, illisible ou de plus de 1 Mo, c'est un état vide. Chaque
+//! champ est lu pour lui-même, borné et contrôlé : une classe de priorité
+//! inconnue (ou « temps réel ») devient « normale », un masque est borné à 0
+//! ou 1, un GUID mal formé fait ignorer la partie alimentation, les listes et
+//! les chaînes ont une taille maximale.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -40,6 +48,10 @@ const APP_DIR: &str = "Shinku";
 pub const SEEN_KEPT: usize = 20;
 /// Nombre maximal de processus en veilleuse dans le journal.
 pub const QUIETED_KEPT: usize = 512;
+/// Nombre maximal de racines dans le journal.
+pub const ROOTS_KEPT: usize = 512;
+/// Taille maximale du fichier : au-delà, il est traité comme illisible.
+pub const MAX_FILE_BYTES: u64 = 1 << 20;
 /// Longueur maximale d'une chaîne lue dans le fichier, en caractères.
 const TEXT_LIMIT: usize = 260;
 
@@ -108,13 +120,31 @@ pub struct Quieted {
     pub throttle_state: u32,
 }
 
+/// Un processus passé par le journal pendant la partie : la racine d'une
+/// famille de processus qui ont pu hériter de sa priorité basse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Root {
+    /// Son numéro.
+    pub pid: u32,
+    /// Sa date de création (`FILETIME`).
+    pub started: i64,
+    /// Date, en millisecondes depuis 1970, où un relevé l'a vu mort. Absente
+    /// tant qu'il vit.
+    #[serde(rename = "goneMs", skip_serializing_if = "Option::is_none")]
+    pub gone: Option<i64>,
+}
+
 /// La partie en cours.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     /// Le jeu.
     pub game: GameRef,
-    /// Début, en millisecondes depuis 1970.
+    /// Ouverture de la partie, en millisecondes depuis 1970. Ne change jamais
+    /// pendant la partie : tout ce qui est né avant n'est pas d'elle.
+    pub opened: i64,
+    /// Début du jeu en cours, en millisecondes depuis 1970 (c'est l'affichage).
     pub since: i64,
     /// La personne a demandé de tout remettre en place : rien n'est plus appliqué.
     pub released: bool,
@@ -122,8 +152,40 @@ pub struct Session {
     pub power: PowerRecord,
     /// Les processus en veilleuse.
     pub quieted: Vec<Quieted>,
+    /// Tous les processus passés par le journal pendant la partie.
+    pub roots: Vec<Root>,
     /// Quelque chose n'a pas pu être remis en place : Shinku réessaie.
     pub restore_pending: bool,
+}
+
+impl Session {
+    /// Note un processus comme racine. Si la liste est pleine, la plus ancienne
+    /// racine morte lui laisse la place ; s'il n'y en a pas, il n'est pas noté
+    /// (il reste dans `quieted`, qui sert aussi de racines).
+    pub fn add_root(&mut self, pid: u32, started: i64) {
+        if self.roots.iter().any(|root| root.pid == pid && root.started == started) {
+            return;
+        }
+        if self.roots.len() >= ROOTS_KEPT {
+            let Some(dead) = self.roots.iter().position(|root| root.gone.is_some()) else {
+                return;
+            };
+            self.roots.remove(dead);
+        }
+        self.roots.push(Root { pid, started, gone: None });
+    }
+
+    /// Les racines de la partie : celles qui sont notées, plus les processus
+    /// en veilleuse (qui en sont toujours).
+    pub fn all_roots(&self) -> Vec<Root> {
+        let mut roots = self.roots.clone();
+        for entry in &self.quieted {
+            if !roots.iter().any(|root| root.pid == entry.pid && root.started == entry.started) {
+                roots.push(Root { pid: entry.pid, started: entry.started, gone: None });
+            }
+        }
+        roots
+    }
 }
 
 /// Le bilan de la dernière partie terminée.
@@ -217,7 +279,7 @@ impl GameStore {
 
     /// Lit le fichier. Absent ou illisible : un état vide.
     pub fn load(&self) -> GameFile {
-        let Ok(text) = fs::read_to_string(&self.path) else { return GameFile::default() };
+        let Some(text) = read_bounded(&self.path) else { return GameFile::default() };
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         match serde_json::from_str::<Value>(text) {
             Ok(Value::Object(document)) => parse(&document),
@@ -234,6 +296,15 @@ impl GameStore {
         fs::create_dir_all(dir)?;
         write_replacing(&self.path, json.as_bytes())
     }
+}
+
+/// Lit le fichier en entier, à condition qu'il tienne dans
+/// [`MAX_FILE_BYTES`] : un fichier plus gros n'est pas le nôtre.
+fn read_bounded(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut text = String::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_string(&mut text).ok()?;
+    (u64::try_from(text.len()).ok()? <= MAX_FILE_BYTES).then_some(text)
 }
 
 /// Une chaîne du fichier, bornée.
@@ -275,6 +346,11 @@ fn parse_power(value: Option<&Value>) -> PowerRecord {
                     previous: Some(previous),
                     applied: Some(applied),
                 },
+                // Ni l'un ni l'autre : c'est ainsi que Shinku écrit une
+                // alimentation déjà remise (« appliquée, puis remise »).
+                _ if !power.contains_key("previous") && !power.contains_key("applied") => {
+                    PowerRecord { outcome: PowerOutcome::Applied, previous: None, applied: None }
+                }
                 // Un GUID abîmé : la partie alimentation est ignorée. Rien ne
                 // sera remis, plutôt que de remettre un mode au hasard.
                 _ => PowerRecord::of(PowerOutcome::Off),
@@ -303,6 +379,15 @@ fn parse_quieted(value: &Value) -> Option<Quieted> {
     })
 }
 
+fn parse_root(value: &Value) -> Option<Root> {
+    let root = value.as_object()?;
+    Some(Root {
+        pid: u32::try_from(integer(root.get("pid"))?).ok()?,
+        started: integer(root.get("started"))?,
+        gone: integer(root.get("goneMs")),
+    })
+}
+
 fn parse_session(value: &Value) -> Option<Session> {
     let session = value.as_object()?;
     let game = session.get("game").and_then(Value::as_object);
@@ -313,16 +398,26 @@ fn parse_session(value: &Value) -> Option<Session> {
         }
         _ => Vec::new(),
     };
+    let roots = match session.get("roots") {
+        Some(Value::Array(entries)) => {
+            entries.iter().filter_map(parse_root).take(ROOTS_KEPT).collect()
+        }
+        _ => Vec::new(),
+    };
+    let since = integer(session.get("since")).unwrap_or(0);
     Some(Session {
         game: GameRef {
             path: field("path"),
             name: field("name"),
             source: source(game.and_then(|game| game.get("source"))),
         },
-        since: integer(session.get("since")).unwrap_or(0),
+        // Un journal d'avant `opened` se relit avec `opened = since`.
+        opened: integer(session.get("opened")).unwrap_or(since),
+        since,
         released: session.get("released").and_then(Value::as_bool).unwrap_or(false),
         power: parse_power(session.get("power")),
         quieted,
+        roots,
         restore_pending: session.get("restorePending").and_then(Value::as_bool).unwrap_or(false),
     })
 }
@@ -352,6 +447,10 @@ fn parse(document: &Map<String, Value>) -> GameFile {
     };
     if let Some(Value::Array(entries)) = document.get("seen") {
         for entry in entries {
+            // Assez de jeux : le reste du fichier n'est pas lu (il peut être énorme).
+            if file.seen.len() >= SEEN_KEPT {
+                break;
+            }
             let Some(entry) = entry.as_object() else { continue };
             let Some(path) = text(entry.get("path")).filter(|path| !path.is_empty()) else {
                 continue;
@@ -363,7 +462,6 @@ fn parse(document: &Map<String, Value>) -> GameFile {
             let last_played = integer(entry.get("lastPlayed")).unwrap_or(0);
             file.seen.push(Seen { path, name, last_played });
         }
-        file.seen.truncate(SEEN_KEPT);
     }
     file
 }
@@ -400,10 +498,19 @@ mod tests {
                     name: "Hollow Peaks".to_owned(),
                     source: Source::Library,
                 },
+                opened: 1_794_765_000_000,
                 since: 1_794_765_291_613,
                 released: false,
                 power: PowerRecord::applied(PowerPlan::BALANCED),
                 quieted: vec![quieted(111), Quieted { priority: priority::HIGH, ..quieted(112) }],
+                roots: vec![
+                    Root { pid: 111, started: 133_800_000_000_000_000, gone: None },
+                    Root {
+                        pid: 90,
+                        started: 133_799_000_000_000_000,
+                        gone: Some(1_794_765_200_000),
+                    },
+                ],
                 restore_pending: false,
             }),
             last: Some(Last {
@@ -593,5 +700,76 @@ mod tests {
         let blocked = GameStore::at(store.path().join("sous").join("game.json"));
         assert!(blocked.save(&file).is_err());
         assert_eq!(store.load(), file);
+    }
+
+    fn write_raw(store: &GameStore, text: &str) {
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), text).unwrap();
+    }
+
+    #[test]
+    fn a_journal_without_opened_takes_the_start_of_the_game_as_its_opening() {
+        let (_temp, store) = store();
+        write_raw(
+            &store,
+            &json!({"session": {"game": {"path": r"D:\x\hp.exe", "name": "x", "source": "library"},
+                "since": 42, "quieted": []}})
+            .to_string(),
+        );
+        let session = store.load().session.expect("une partie");
+        assert_eq!((session.opened, session.since), (42, 42));
+        assert!(session.roots.is_empty());
+    }
+
+    #[test]
+    fn roots_are_read_with_their_death_date_and_bounded() {
+        let (_temp, store) = store();
+        let roots: Vec<Value> =
+            (0..(ROOTS_KEPT + 100)).map(|n| json!({"pid": n, "started": 5, "goneMs": 7})).collect();
+        write_raw(
+            &store,
+            &json!({"session": {"game": {"path": r"D:\x\hp.exe", "name": "x", "source": "library"},
+                "opened": 1, "since": 2, "quieted": [], "roots": roots}})
+            .to_string(),
+        );
+        let session = store.load().session.expect("une partie");
+        assert_eq!(session.roots.len(), ROOTS_KEPT);
+        assert_eq!(session.roots[0].gone, Some(7));
+        assert_eq!(session.opened, 1);
+    }
+
+    #[test]
+    fn a_released_power_record_survives_a_round_trip() {
+        let (_temp, store) = store();
+        let mut file = full_file();
+        if let Some(session) = file.session.as_mut() {
+            session.power =
+                PowerRecord { outcome: PowerOutcome::Applied, previous: None, applied: None };
+        }
+        store.save(&file).unwrap();
+        let session = store.load().session.expect("une partie");
+        assert_eq!(session.power.outcome, PowerOutcome::Applied);
+        assert!(!session.power.is_held(), "rien à remettre : déjà remise");
+    }
+
+    #[test]
+    fn a_huge_seen_list_loads_quickly_and_is_cut_to_the_limit() {
+        let (_temp, store) = store();
+        let seen: Vec<Value> = (0..12_000)
+            .map(|n| json!({"path": format!(r"D:\Games\g{n}\g.exe"), "name": "g", "lastPlayed": n}))
+            .collect();
+        write_raw(&store, &json!({ "seen": seen }).to_string());
+        let started = std::time::Instant::now();
+        let file = store.load();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "lecture trop lente");
+        assert_eq!(file.seen.len(), SEEN_KEPT);
+    }
+
+    #[test]
+    fn a_journal_over_one_mebibyte_is_treated_as_unreadable() {
+        let (_temp, store) = store();
+        let padding = " ".repeat(usize::try_from(MAX_FILE_BYTES).unwrap() + 10);
+        write_raw(&store, &format!("{{\"seen\": []{padding}}}"));
+        assert_eq!(store.load(), GameFile::default());
     }
 }

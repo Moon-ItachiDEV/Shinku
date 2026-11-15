@@ -1174,3 +1174,278 @@ fn ticking_without_detection_still_follows_a_running_session() {
     assert_eq!(bench.watcher.tick_detecting(&bench.settings, false), Activity::Idle);
     assert!(!bench.watcher.has_session());
 }
+
+// ------------------------------------------- priorité héritée (bloquants 1 à 4)
+
+/// L'état d'un processus né d'un processus en veilleuse : il a hérité de la
+/// classe de son parent, mais pas du mode efficacité.
+fn inherited() -> ProcessState {
+    ProcessState { priority: priority::BELOW_NORMAL, throttle_control: 0, throttle_state: 0 }
+}
+
+#[test]
+fn a_listed_child_born_lowered_goes_back_to_normal() {
+    let mut bench = Bench::new();
+    bench.settings.game_mode_quiet_added = vec!["chrome.exe".to_owned()];
+    let main = bench.app(210, CHROME);
+    let game = bench.play();
+    assert_eq!(bench.state(main), low());
+    // Un nouvel onglet naît de Chrome en veilleuse : il hérite de la classe.
+    bench.host.advance(STEP);
+    let tab = bench.host.spawn(211, 210, CHROME);
+    bench.host.set_state(tab, inherited());
+    bench.ticks(16);
+    let entry = bench.session().quieted.into_iter().find(|entry| entry.pid == 211);
+    assert_eq!(
+        entry.map(|entry| entry.priority),
+        Some(priority::NORMAL),
+        "l'état d'avant de l'onglet est « normale », pas la classe héritée"
+    );
+    bench.quit(game);
+    assert_eq!(bench.state(tab).priority, priority::NORMAL, "l'onglet revient en « normale »");
+    assert_eq!(bench.state(main), normal());
+}
+
+#[test]
+fn an_orphan_whose_parent_left_the_journal_goes_back_to_normal() {
+    let mut bench = Bench::new();
+    let onedrive = bench.app(200, ONEDRIVE);
+    let game = bench.play();
+    bench.host.advance(STEP);
+    let child = bench.host.spawn(230, 200, r"C:\x\FileCoAuth.exe");
+    bench.host.set_state(child, inherited());
+    bench.host.kill(onedrive);
+    // Un relevé retire OneDrive du journal.
+    bench.ticks(16);
+    assert!(bench.session().quieted.is_empty());
+    bench.quit(game);
+    assert_eq!(bench.state(child).priority, priority::NORMAL, "l'orphelin hérité revient");
+}
+
+#[test]
+fn a_change_of_game_does_not_forget_children_born_before_it() {
+    let mut bench = Bench::new();
+    let onedrive = bench.app(200, ONEDRIVE);
+    let first = bench.play();
+    bench.host.advance(STEP);
+    let child = bench.host.spawn(230, 200, r"C:\x\FileCoAuth.exe");
+    bench.host.set_state(child, inherited());
+    let second = bench.app(101, OTHER_GAME);
+    bench.host.set_foreground(Some(second));
+    bench.ticks(3);
+    assert_eq!(bench.session().game.path, OTHER_GAME);
+    bench.host.kill(second);
+    bench.host.kill(first);
+    assert_eq!(bench.tick(), Activity::Idle);
+    assert_eq!(bench.state(onedrive), normal());
+    assert_eq!(bench.state(child).priority, priority::NORMAL, "l'enfant hérité revient");
+}
+
+#[test]
+fn a_game_started_by_a_quieted_app_is_never_lowered() {
+    let mut bench = Bench::new();
+    // Une app ajoutée par la personne, qui sert aussi de lanceur à un jeu.
+    bench.settings.game_mode_quiet_added = vec!["itch.exe".to_owned()];
+    let itch = bench.app(50, r"C:\Users\a\AppData\Local\itch\itch.exe");
+    let launcher = bench.app(100, r"D:\SteamLibrary\steamapps\common\X\launcher.exe");
+    bench.host.set_foreground(Some(launcher));
+    bench.ticks(2);
+    assert_eq!(bench.state(itch), low());
+    // Le lanceur demande à l'app de démarrer le vrai jeu : il hérite de la classe.
+    bench.host.advance(STEP);
+    let real = bench.host.spawn(101, 50, r"D:\SteamLibrary\steamapps\common\X\x64\X.exe");
+    bench.host.set_state(real, inherited());
+    bench.host.set_foreground(Some(real));
+    bench.ticks(3);
+    assert!(bench.session().game.path.ends_with("X.exe"), "la partie a suivi le jeu");
+    assert_eq!(bench.state(real).priority, priority::NORMAL, "le jeu n'est pas ralenti");
+    bench.ticks(40);
+    assert_eq!(bench.state(real).priority, priority::NORMAL);
+}
+
+// ------------------------------------------------ redémarrage et horloges
+
+#[test]
+fn after_a_reboot_only_the_power_plan_is_put_back() {
+    let mut bench = Bench::new();
+    bench.app(200, ONEDRIVE);
+    bench.play();
+    // Une minute passe, puis Windows redémarre : tous les pid sont neufs.
+    bench.host.advance(Duration::from_secs(60));
+    bench.host.reboot();
+    let newcomer = bench.app(200, ONEDRIVE);
+    bench.host.set_state(newcomer, low());
+    // Un jeu lancé après le redémarrage, de même nom que l'ancien.
+    let again = bench.launch();
+    let mut next = restart(&bench);
+    next.recover();
+    assert!(!next.has_session(), "la partie d'avant le redémarrage est close");
+    assert_eq!(bench.host.active_plan(), Some(PowerPlan::BALANCED));
+    assert_eq!(
+        bench.state(newcomer),
+        low(),
+        "un processus d'après le redémarrage n'est pas touché"
+    );
+    assert_eq!(bench.state(again), normal());
+    assert_eq!(bench.file().session, None);
+}
+
+#[test]
+fn a_clock_jumping_back_does_not_extend_the_ten_minutes() {
+    let mut bench = Bench::new();
+    bench.play();
+    let notepad = bench.app(300, NOTEPAD);
+    bench.host.set_foreground(Some(notepad));
+    bench.host.jump_clock(-7_200_000);
+    // Les délais suivent l'horloge monotone : dix minutes de temps réel.
+    bench.ticks(290);
+    assert!(bench.watcher.has_session());
+    bench.ticks(15);
+    assert!(!bench.watcher.has_session(), "la partie se termine malgré l'heure reculée");
+}
+
+#[test]
+fn a_clock_jumping_forward_does_not_end_the_session() {
+    let mut bench = Bench::new();
+    bench.play();
+    let notepad = bench.app(300, NOTEPAD);
+    bench.host.set_foreground(Some(notepad));
+    bench.host.jump_clock(7_200_000);
+    bench.ticks(100);
+    assert!(bench.watcher.has_session(), "deux heures d'horloge murale ne sont pas dix minutes");
+}
+
+#[test]
+fn a_write_that_failed_is_tried_again_after_a_minute_of_uptime() {
+    let mut bench = Bench::blocked();
+    bench.launch();
+    bench.tick();
+    bench.tick();
+    assert!(!bench.watcher.has_session(), "journal impossible : rien n'est ouvert");
+    bench.unblock();
+    bench.host.jump_clock(-3_600_000);
+    // Moins d'une minute de temps réel : pas de nouvel essai, même si
+    // l'heure murale est revenue en arrière.
+    bench.ticks(10);
+    assert!(!bench.watcher.has_session());
+    bench.ticks(25);
+    assert!(bench.watcher.has_session(), "l'essai a lieu après soixante secondes réelles");
+}
+
+// ----------------------------------------------------------- racines et gone
+
+#[test]
+fn a_child_born_long_after_its_root_died_is_not_raised() {
+    let mut bench = Bench::new();
+    let onedrive = bench.app(200, ONEDRIVE);
+    bench.play();
+    bench.host.kill(onedrive);
+    // Le relevé suivant marque la racine comme morte.
+    bench.ticks(16);
+    // Bien plus tard, un autre programme prend le même pid et lance un enfant.
+    bench.ticks(30);
+    let recycled = bench.host.spawn(200, 1, r"C:\Autre\thing.exe");
+    bench.host.advance(STEP);
+    let child = bench.host.spawn(231, 200, r"C:\Autre\child.exe");
+    bench.host.set_state(child, low());
+    let _ = recycled;
+    bench.ticks(32);
+    assert_eq!(bench.state(child), low(), "un enfant d'un pid recyclé n'est pas à Shinku");
+}
+
+#[test]
+fn a_game_switched_to_that_was_quieted_is_put_back() {
+    let mut bench = Bench::new();
+    bench.settings.game_mode_quiet_added = vec!["hades.exe".to_owned()];
+    let other = bench.app(101, OTHER_GAME);
+    bench.play();
+    assert_eq!(bench.state(other), low());
+    bench.host.set_foreground(Some(other));
+    bench.ticks(5);
+    assert_eq!(bench.session().game.path, OTHER_GAME);
+    assert_eq!(bench.state(other).priority, priority::NORMAL, "le nouveau jeu n'est pas ralenti");
+}
+
+// ----------------------------------------------------------- erreurs d'écriture
+
+#[test]
+fn a_throttle_that_cannot_change_keeps_the_entry_and_puts_it_back_at_the_end() {
+    let mut bench = Bench::new();
+    let onedrive = bench.app(200, ONEDRIVE);
+    bench.host.break_throttle(onedrive, true);
+    let game = bench.play();
+    // La priorité a changé, puis le mode efficacité a refusé.
+    assert_eq!(bench.state(onedrive).priority, priority::BELOW_NORMAL);
+    assert!(
+        bench.session().quieted.iter().any(|entry| entry.pid == 200),
+        "l'entrée reste au journal"
+    );
+    bench.host.break_throttle(onedrive, false);
+    bench.quit(game);
+    assert_eq!(bench.state(onedrive).priority, priority::NORMAL);
+}
+
+#[test]
+fn a_journal_that_cannot_be_written_is_flushed_as_soon_as_it_can() {
+    let mut bench = Bench::new();
+    bench.app(200, ONEDRIVE);
+    let game = bench.play();
+    // Le fichier temporaire est un dossier : plus aucune écriture ne réussit.
+    let tmp = bench.store.path().with_extension("json.tmp");
+    let _ = fs::remove_file(&tmp);
+    fs::create_dir(&tmp).unwrap();
+    bench.host.kill(game);
+    let activity = bench.tick();
+    assert_eq!(activity, Activity::Idle);
+    assert!(bench.file().session.is_some(), "le disque garde encore la partie");
+    fs::remove_dir(&tmp).unwrap();
+    bench.tick();
+    let file = bench.file();
+    assert_eq!(file.session, None, "dès que l'écriture passe, le disque dit la vérité");
+    assert!(file.last.is_some());
+}
+
+// ------------------------------------------------- relâcher puis changer de jeu
+
+#[test]
+fn a_released_game_then_another_game_closes_the_session_and_opens_a_new_one() {
+    let mut bench = Bench::new();
+    bench.play();
+    bench.watcher.release();
+    let other = bench.app(101, OTHER_GAME);
+    bench.host.set_foreground(Some(other));
+    bench.ticks(4);
+    let file = bench.file();
+    assert_eq!(file.last.as_ref().map(|last| last.path.as_str()), Some(GAME));
+    let session = file.session.expect("une nouvelle partie est ouverte");
+    assert_eq!(session.game.path, OTHER_GAME);
+    assert!(!session.released, "la nouvelle partie n'est pas relâchée");
+}
+
+#[test]
+fn a_release_then_a_recovery_reports_the_power_as_restored() {
+    let mut bench = Bench::new();
+    let game = bench.play();
+    bench.watcher.release();
+    bench.host.kill(game);
+    let mut next = restart(&bench);
+    next.recover();
+    let last = bench.file().last.expect("un bilan");
+    assert_eq!(last.power_restored, Some(true));
+}
+
+#[test]
+fn restore_attempts_are_counted_across_a_release_and_the_end_of_the_game() {
+    let mut bench = Bench::new();
+    let game = bench.play();
+    bench.host.refuse_power_changes(true);
+    bench.watcher.release();
+    assert!(bench.session().restore_pending);
+    bench.host.kill(game);
+    // La remise du relâchement a compté pour une tentative : dix-neuf restent.
+    bench.ticks(15 * 18);
+    assert!(bench.watcher.has_session());
+    bench.ticks(15);
+    assert!(!bench.watcher.has_session(), "abandon à la vingtième tentative cumulée");
+    assert_eq!(bench.file().last.unwrap().power_restored, Some(false));
+}
