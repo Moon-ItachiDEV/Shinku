@@ -752,7 +752,8 @@ impl Watcher {
     /// la personne regarde, ni déjà dans le journal, et qu'on peut lire.
     ///
     /// Un héritier trouvé « sous la normale » a déjà été relevé par la passe de
-    /// famille : l'état lu ici est son état d'avant.
+    /// famille : l'état lu ici est son état d'avant (sauf si son relèvement a
+    /// raté : voir plus bas).
     fn plan_quiet(&mut self, processes: &[RunningProcess], wish: &Wish<'_>) -> Vec<Planned> {
         let mut planned = Vec::new();
         for process in processes {
@@ -771,8 +772,13 @@ impl Watcher {
             if !priority::is_known(read.priority) {
                 continue;
             }
-            if let Some(target) = quiet_target(read) {
-                planned.push(Planned { process: process.clone(), noted: read, target });
+            // Un membre de la famille lu bas n'a pas pu être relevé : il a hérité,
+            // son état d'avant est « normale », mode efficacité par défaut.
+            let inherited = read.priority == priority::BELOW_NORMAL
+                && self.live.as_ref().is_some_and(|live| live.family.contains(&process.process));
+            let noted = if inherited { DEFAULT_THROTTLE } else { read };
+            if let Some(target) = quiet_target(noted) {
+                planned.push(Planned { process: process.clone(), noted, target });
             }
         }
         planned
@@ -943,13 +949,7 @@ impl Watcher {
         let excluded: HashSet<ProcessRef> = session.quieted.iter().map(process_of).collect();
         let mut left = session.quieted.clone();
         let mut apps = Vec::new();
-        let first: HashSet<ProcessRef> =
-            self.host.processes().iter().map(|process| process.process).collect();
-        let mut seeds: HashSet<u32> = left
-            .iter()
-            .filter(|entry| is_emitter(entry) && first.contains(&process_of(entry)))
-            .map(|entry| entry.pid)
-            .collect();
+        let mut seeds: HashSet<u32> = HashSet::new();
         let mut blind = false;
         for _ in 0..RESTORE_ROUNDS {
             let given = self.give_back(&left);
@@ -959,9 +959,22 @@ impl Watcher {
             }
             left = given.failed;
             let fresh = self.host.processes();
+            // Les émetteurs vivants, d'après ce relevé frais : un premier relevé
+            // illisible ne les fait pas perdre.
+            let here: HashSet<ProcessRef> = fresh.iter().map(|p| p.process).collect();
+            seeds.extend(
+                session
+                    .quieted
+                    .iter()
+                    .filter(|entry| is_emitter(entry) && here.contains(&process_of(entry)))
+                    .map(|entry| entry.pid),
+            );
             if fresh.is_empty() {
                 blind = session.quieted.iter().any(is_emitter)
-                    || self.live.as_ref().is_some_and(|l| !l.family.is_empty());
+                    || self
+                        .live
+                        .as_ref()
+                        .is_some_and(|l| !l.family.is_empty() || !l.follow.is_empty());
                 if blind {
                     left.clone_from(&session.quieted);
                 }

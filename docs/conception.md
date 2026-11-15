@@ -405,7 +405,8 @@ d'ordre, aucune heure murale, aucune horloge monotone dans la filiation.
   *nouveau* s'il est absent du dernier relevé lisible ; un **héritier** est un
   membre nouveau trouvé exactement « sous la normale ». Les processus déjà là
   avant la partie, ou déjà bas avant d'être vus, ne sont jamais touchés.
-- À chaque pas où le journal n'est pas vide, avant tout retour anticipé
+- À chaque pas d'une partie ouverte, journal vide compris (les points « à suivre »
+  survivent à la dernière remise), avant tout retour anticipé
   (veilleuse éteinte, partie relâchée, remise en attente), la passe de famille
   cherche les membres jusqu'au point fixe : l'ensemble de départ réunit les
   numéros des émetteurs vivants, des membres vivants et des morts de ce pas (un
@@ -435,7 +436,8 @@ d'ordre, aucune heure murale, aucune horloge monotone dans la filiation.
   absents du journal, trouvés bas, sont relevés (en « normale », mode efficacité
   par défaut, comme tout ce qui a hérité) ; un ancêtre du journal est remis à
   chaque pas, y compris après un changement de jeu. Les enfants du jeu relancé
-  par une app en veilleuse sont relevés avec lui.
+  par une app en veilleuse sont relevés avec lui, si le jeu a pu être relevé
+  (un jeu lancé en administrateur ne l'est pas : voir les limites).
 
 **Les morts.** Une entrée du journal absente du relevé n'en sort que si Windows
 prouve que le processus n'existe plus : `liveness` rend `Dead`, `Alive` ou
@@ -450,8 +452,10 @@ le journal reste tel quel (rendre deux fois son état à une entrée est sans
 danger), la remise est en attente et rejouée au délai habituel, quand le relevé
 est de nouveau lisible. `liveness` dit aussi `Dead` quand le numéro appartient
 maintenant à une autre session Windows (un processus ne change jamais de
-session) ; « terminé » se lit par une attente nulle sur le processus, sans
-dépendre du code de sortie.
+session), mais seulement si les deux ouvertures du processus échouent et que les
+deux sessions se lisent ; « terminé » se lit par une attente nulle sur le
+processus, sans dépendre du code de sortie, seulement si `SYNCHRONIZE` est
+accordé (sinon, repli sur le code de sortie).
 
 **Une seule remise en place** sert à la fin de partie, à « Tout remettre », aux
 nouveaux essais, à la reprise après plantage et à `--quitter` / `--retirer`,
@@ -460,8 +464,11 @@ d'avant par identité exacte (un processus mort sort, un processus illisible
 reste en attente) ; (b) un relevé frais, puis la passe de famille en mode
 remise, qui relève tout membre entrant trouvé sous la normale, listé ou non ;
 (c) un tour de plus si quelque chose a été relevé. Le journal n'est écrit
-qu'après (b) : un relevé frais est donc pris avant toute écriture, y compris pour « Tout remettre ». Une remise en cours de partie (app décochée ou regardée, app devenue le jeu) n'a pas de relevé frais : ses émetteurs restent « à suivre » pour la passe suivante. Sans mémoire (reprise après plantage, ordres sans agent), il n'y a
-pas de filtre « nouveau », les points de départ sont les émetteurs trouvés
+qu'après (b) : un relevé frais est donc pris avant toute écriture, y compris
+pour « Tout remettre ». Une remise en cours de partie (app décochée ou regardée,
+app devenue le jeu) n'a pas de relevé frais : ses émetteurs restent « à suivre »
+pour la passe suivante. Sans mémoire (reprise après plantage, ordres sans
+agent), il n'y a pas de filtre « nouveau », les points de départ sont les émetteurs trouvés
 vivants, et tout membre sous la normale est relevé une fois ; une entrée morte
 ne donne rien, et une entrée du journal, même tout juste remise, n'est jamais
 traitée comme un héritier (une app déjà basse avant la partie retrouve son état
@@ -489,8 +496,17 @@ plus écrits.
   l'ouverture d'une nouvelle partie jusqu'à ce qu'elle finisse (au plus dix
   minutes), et le jeu n'est pas surveillé pendant ce temps.
 - Un processus sorti avec le code 259 et dont une poignée reste ouverte ailleurs
-  est vu vivant par `exe_path` et `apply` (jamais un abaissement à tort ; `liveness`
-  n'a pas ce défaut).
+  est vu vivant par `exe_path` et `apply` (jamais un abaissement à tort) ; `liveness`
+  n'a pas ce défaut quand `SYNCHRONIZE` est accordé.
+- Un pid repris par un étranger : l'émetteur mort reste un point de départ un
+  relevé de plus, donc un enfant bas de lui-même du nouveau porteur peut être
+  relevé pendant deux pas au lieu d'un (bénin : on relève, on n'abaisse jamais).
+- Un jeu lancé « en tant qu'administrateur » par une app en veilleuse hérite de
+  sa priorité basse, et l'agent, non élevé, ne peut pas le relever : il reste bas.
+- Si le pid du jeu est repris par un processus illisible (un service), `liveness`
+  rend `Unknown` et la fin de partie peut être retardée de dix minutes, avec un
+  bilan « incomplet » ; le repli par la session n'a probablement pas d'effet
+  (à vérifier sur un vrai Windows).
 - Un plantage entre une remise en cours de partie et le pas suivant laisse
   passer l'enfant né dans cet intervalle (quelques millisecondes).
 - Reprise après plantage : les enfants nés pendant que l'agent était arrêté, de

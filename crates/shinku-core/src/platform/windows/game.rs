@@ -142,8 +142,8 @@ fn liveness_of(process: ProcessRef) -> Liveness {
             Err(_) => {
                 // SAFETY: appel sans argument.
                 let own = session_of(unsafe { GetCurrentProcessId() });
-                return match session_of(process.pid) {
-                    Some(session) if Some(session) != own => Liveness::Dead,
+                return match (session_of(process.pid), own) {
+                    (Some(session), Some(own)) if session != own => Liveness::Dead,
                     _ => Liveness::Unknown,
                 };
             }
