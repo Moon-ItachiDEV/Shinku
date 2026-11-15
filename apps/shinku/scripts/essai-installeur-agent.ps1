@@ -209,7 +209,7 @@ function Restore-Everything {
         }
     }
     if ($saved.hasRun) {
-        New-Item -Path $RunKey -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $RunKey)) { New-Item -Path $RunKey -Force | Out-Null }
         Set-ItemProperty -Path $RunKey -Name $RunName -Value ([string]$saved.run) -Type String
     } else {
         Remove-RunValue
@@ -354,7 +354,7 @@ try {
 
     # La valeur de démarrage, telle que shinku.exe l'écrit quand le mode est allumé.
     $runValue = '"{0}" --demarrage' -f $InstalledAgent
-    New-Item -Path $RunKey -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $RunKey)) { New-Item -Path $RunKey -Force | Out-Null }
     Set-ItemProperty -Path $RunKey -Name $RunName -Value $runValue -Type String
     if ((Get-RunValue) -ne $runValue) { Fail "la valeur $RunKey\$RunName n'a pas pu être écrite" }
     Done "valeur de démarrage posée : $runValue"

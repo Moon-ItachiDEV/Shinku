@@ -50,7 +50,6 @@ use windows::Win32::UI::Shell::{
 use windows::core::{GUID, HSTRING, PCWSTR, PWSTR};
 
 use super::game::version_string;
-use super::text_from;
 use crate::model::Timestamp;
 use crate::startup::host::{Existence, FileIdentity, RawApproval, RawEntry, RawPlace, StartupHost};
 use crate::startup::{Place, Scope};
@@ -711,7 +710,11 @@ impl StartupHost for SystemStartupHost {
                 break;
             }
             if needed <= buffer.len() {
-                return text_from(&buffer[..needed]);
+                // Conversion stricte : une variable qui n'est pas de l'UTF-16
+                // valide donnerait un chemin approximatif, donc un fichier
+                // « absent » à tort. Une ligne vide dit « impossible à dire ».
+                let end = buffer[..needed].iter().position(|&unit| unit == 0).unwrap_or(needed);
+                return String::from_utf16(&buffer[..end]).unwrap_or_default();
             }
             // Trop petit : Windows dit la taille qu'il faut (zéro final compris).
             if needed > 32_768 {
