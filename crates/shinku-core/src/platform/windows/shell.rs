@@ -39,7 +39,7 @@ use windows::Win32::UI::Shell::{
 use windows::core::{HRESULT, HSTRING, PCWSTR, Ref, implement};
 
 use super::super::{RecycleBin, RecycleError};
-use crate::fs::{fold_path, to_display_path, to_internal_path};
+use crate::fs::{fold_path, same_file_id, to_display_path, to_internal_path};
 
 /// Ce que Shinku demande au shell pour un envoi à la corbeille :
 /// - aucune fenêtre, aucune question (`FOF_NO_UI`) ;
@@ -312,9 +312,20 @@ fn recycle_here(path: &Path) -> Result<(), RecycleError> {
 
     // Le shell normalise les noms : il retire par exemple un point ou un
     // espace final, et désignerait alors un autre fichier que celui que
-    // Shinku a vérifié. On ne continue que s'il a compris exactement ce chemin.
-    let understood = parsed_path(&item);
-    if understood.as_deref().and_then(fold_path) != fold_path(path) || fold_path(path).is_none() {
+    // Shinku a vérifié. On ne continue que si le chemin qu'il a compris mène
+    // au même fichier sur le disque. Les deux écritures peuvent différer sans
+    // danger (un nom court comme `RUNNER~1` devient le nom long) : c'est le
+    // fichier désigné qui compte.
+    let same_file = |understood: &Path| {
+        match (crate::fs::identity(understood), crate::fs::identity(path)) {
+            (Ok(Some(theirs)), Ok(Some(ours))) => {
+                theirs.volume == ours.volume && same_file_id(theirs.file_id, ours.file_id)
+            }
+            // Sans identifiant à comparer, seule une écriture identique rassure.
+            _ => fold_path(path).is_some() && fold_path(understood) == fold_path(path),
+        }
+    };
+    if !parsed_path(&item).is_some_and(|understood| same_file(&understood)) {
         return Err(RecycleError::Failed(
             "Windows désigne un autre fichier sous ce nom".to_owned(),
         ));
