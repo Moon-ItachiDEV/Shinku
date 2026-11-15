@@ -52,6 +52,14 @@ export function navIcon(name: IconName, size = 17): TemplateResult {
 export const folderIcon = (): TemplateResult => icon(ICON_PATHS.folder, 16);
 export const crossIcon = (): TemplateResult => icon(ICON_PATHS.cross, 14);
 
+/** Le triangle « lancer » du bouton Analyser. */
+export const playIcon = (): TemplateResult => html`<svg class="ic" width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+  <path
+    d="M7.5 5.2v13.6a1 1 0 0 0 1.5.87l11.6-6.8a1 1 0 0 0 0-1.74L9 4.33a1 1 0 0 0-1.5.87z"
+    fill="currentColor"
+  ></path>
+</svg>`;
+
 export const checkIcon = (): TemplateResult => html`<svg class="ic" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
   <path
     d="M2.5 6.2l2.3 2.3 4.7-5"
@@ -408,24 +416,32 @@ export function moduleArt(name: ModuleArt, scan = false): TemplateResult {
  * de 0 à 1, ou `null` quand elle est inconnue (l'anneau tourne alors).
  */
 export function ring(p: string, fraction: number | null, core: TemplateResult): TemplateResult {
-  const LENGTH = 320.4;
-  const arc =
-    fraction === null
-      ? svg`<g class="spin"><circle class="ri" cx="56" cy="56" r="51" fill="none" stroke="url(#${p}-g)" stroke-width="2.4" stroke-linecap="round"></circle></g>`
-      : svg`<circle
-          class="rp"
-          cx="56"
-          cy="56"
-          r="51"
-          fill="none"
-          stroke="url(#${p}-g)"
-          stroke-width="2.4"
-          stroke-linecap="round"
-          transform="rotate(-90 56 56)"
-          ${styles({ 'stroke-dashoffset': (LENGTH * (1 - Math.min(1, Math.max(0, fraction)))).toFixed(1) })}
-        ></circle>`;
+  const RADIUS = 59;
+  const LENGTH = 2 * Math.PI * RADIUS;
+  let arc: TemplateResult;
+  if (fraction === null) {
+    arc = svg`<g class="spin"><circle class="ri" cx="62" cy="62" r=${RADIUS} fill="none" stroke="url(#${p}-g)" stroke-width="3" stroke-linecap="round"></circle></g>`;
+  } else {
+    const done = Math.min(1, Math.max(0, fraction));
+    arc = svg`<circle
+        class="rp"
+        cx="62"
+        cy="62"
+        r=${RADIUS}
+        fill="none"
+        stroke="url(#${p}-g)"
+        stroke-width="3"
+        stroke-linecap="round"
+        transform="rotate(-90 62 62)"
+        ${styles({ 'stroke-dashoffset': (LENGTH * (1 - done)).toFixed(1) })}
+      ></circle>
+      <g class="rh" ${styles({ transform: `rotate(${(done * 360).toFixed(1)}deg)`, opacity: done > 0 ? '1' : '0' })}>
+        <circle cx="62" cy="3" r="6.5" fill="#F0A77E" fill-opacity="0.28"></circle>
+        <circle class="f-dot" cx="62" cy="3" r="3"></circle>
+      </g>`;
+  }
   return html`<div class="ring">
-    <svg width="112" height="112" viewBox="0 0 112 112" aria-hidden="true">
+    <svg width="124" height="124" viewBox="0 0 124 124" aria-hidden="true">
       <defs>
         <linearGradient id="${p}-g" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stop-color="#FBE3C8"></stop>
@@ -433,7 +449,7 @@ export function ring(p: string, fraction: number | null, core: TemplateResult): 
           <stop offset="1" stop-color="#9D93E8"></stop>
         </linearGradient>
       </defs>
-      <circle class="s-hair" cx="56" cy="56" r="51" fill="none" stroke-opacity="0.07" stroke-width="2"></circle>
+      <circle class="s-text" cx="62" cy="62" r=${RADIUS} fill="none" stroke-opacity="0.13" stroke-width="2"></circle>
       ${arc}
     </svg>
     ${core}

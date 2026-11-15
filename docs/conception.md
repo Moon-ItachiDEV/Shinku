@@ -46,7 +46,7 @@ un message.
 
 ## Entre la page et le cœur : le guichet
 
-La page ne parle qu'à `shinku_core::backend::Backend`, au travers de vingt-trois
+La page ne parle qu'à `shinku_core::backend::Backend`, au travers de vingt-quatre
 commandes Tauri (`apps/shinku/src-tauri/src/commands.rs`). Chaque commande est
 une demande précise et bornée : lancer une analyse, lire une page de résultats,
 changer un réglage, faire le vide.
@@ -70,7 +70,7 @@ changer un réglage, faire le vide.
 ### Ce que la page a le droit de faire
 
 - **Permissions Tauri au plus juste.** `capabilities/default.json` donne à la
-  fenêtre ses vingt-trois commandes et les cinq gestes de sa barre de titre. Rien
+  fenêtre ses vingt-quatre commandes et les cinq gestes de sa barre de titre. Rien
   d'autre : ni fichiers, ni réseau, ni lancement de programmes, ni événements.
   Les commandes de l'application passent elles aussi par les permissions
   (`AppManifest::commands` dans `build.rs`) : une commande absente de la liste
@@ -174,7 +174,8 @@ L'ancien fichier est gardé sous le nom `settings.illisible.json`.
   pendant l'analyse, le chiffre « à libérer » reste donc en dessous de la
   vérité, puis rattrape son retard d'un coup. À corriger avec le moteur.
 - Doublons : même taille, puis empreinte d'un extrait, puis empreinte BLAKE3
-  du fichier entier. L'exemplaire le plus ancien de chaque groupe est gardé.
+  du fichier entier. L'exemplaire le plus ancien de chaque groupe est gardé,
+  tant que la personne n'en choisit pas un autre.
   La comparaison octet par octet aura lieu au moment de supprimer.
 - Les dossiers synchronisés sont signalés pour OneDrive. Les autres services,
   que Windows recense dans la clé de registre `SyncRootManager`, ne le sont
@@ -205,7 +206,17 @@ partir sans que personne ne l'ait décidé. Le choix a été fait le
   analyse à son heure de début (`Summary.started`).
 - La case des doublons reste fermée tant que leur recherche continue : on ne
   coche pas ce qu'on ne connaît pas encore.
-- Dans chaque groupe, un exemplaire est toujours gardé : le plus ancien.
+- Dans chaque groupe, un exemplaire est toujours gardé : le plus ancien, ou
+  celui que la personne choisit sur l'écran Doublons, ligne par ligne ou pour
+  tout un dossier. Ce choix (`keep_duplicate`) désigne un exemplaire que le
+  rapport connaît déjà, par l'empreinte et la taille de son groupe et par son
+  rang : aucun chemin ne vient de la page. Le cœur le note dans son rapport,
+  où un groupe garde toujours un exemplaire et un seul ; rien n'est supprimé
+  à ce moment-là. Un choix ne vaut que pour l'analyse affichée : des résultats
+  trop anciens pour nettoyer ne le prennent plus, et une nouvelle analyse
+  repart du plus ancien, ce que l'écran dit. « Garder ce dossier » ne remplace
+  pas un exemplaire déjà gardé dans ce dossier. L'écran ne propose que les
+  dossiers des groupes déjà affichés, mais le choix vaut pour tous.
 
 ## Le grand vide
 
@@ -221,7 +232,8 @@ moment d'écrire. L'ordre est fixe :
    ouverte sans suivre de lien, revérifiée, puis supprimée par ce même accès.
    Un élément de `%TEMP%` jugé en bloc part en entier ou reste en entier.
 3. **Les copies en double partent à la corbeille**, jamais ailleurs.
-   L'exemplaire le plus ancien de chaque groupe est gardé, et reste ouvert
+   L'exemplaire gardé de chaque groupe (le plus ancien, ou celui que la
+   personne a choisi) reste ouvert
    tant que ses copies partent. Chaque copie lui est comparée octet par octet
    avant de partir.
 

@@ -291,6 +291,19 @@ export interface DuplicateGroup {
   files: DuplicateFile[];
 }
 
+/**
+ * L'exemplaire à garder dans un groupe de doublons. Le groupe est désigné par
+ * son empreinte et sa taille, l'exemplaire par son rang : aucun chemin ne part
+ * de l'interface.
+ */
+export interface KeepChoice {
+  digest: string;
+  size: number;
+  index: number;
+  /** Garder aussi, dans les autres groupes, l'exemplaire rangé dans le même dossier. */
+  wholeFolder: boolean;
+}
+
 export interface DuplicatesPage {
   state: 'done' | 'pending' | 'off';
   candidates: number;
@@ -417,6 +430,8 @@ export interface Backend {
   junk(): Promise<JunkReport | null>;
   largeFiles(offset: number, limit: number): Promise<LargeFilesPage | null>;
   duplicates(offset: number, limit: number): Promise<DuplicatesPage | null>;
+  /** Choisit l'exemplaire gardé d'un doublon. Faux si le choix ne désigne plus rien. */
+  keepDuplicate(choice: KeepChoice): Promise<boolean>;
   setTheme(theme: Theme): Promise<Settings>;
   /** Ouvre le sélecteur de dossier de Windows. `null` si l'utilisateur annule. */
   addExcludedFolder(): Promise<Settings | null>;

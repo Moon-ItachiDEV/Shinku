@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Ce que la fenêtre de Shinku a le droit de demander : ses vingt-trois commandes, et les gestes de sa barre de titre (déplacer, réduire, agrandir, fermer). Rien d'autre : ni fichiers, ni réseau. Seuls l'agent du mode jeu (shinku-agent.exe, à côté de Shinku) et deux pages fixes des réglages de Windows (mode Jeu, alimentation) peuvent être lancés.",
+  "description": "Ce que la fenêtre de Shinku a le droit de demander : ses vingt-quatre commandes, et les gestes de sa barre de titre (déplacer, réduire, agrandir, fermer). Rien d'autre : ni fichiers, ni réseau. Seuls l'agent du mode jeu (shinku-agent.exe, à côté de Shinku) et deux pages fixes des réglages de Windows (mode Jeu, alimentation) peuvent être lancés.",
   "local": true,
   "windows": ["main"],
   "permissions": [
@@ -18,6 +18,7 @@
     "allow-clean-preview",
     "allow-start-clean",
     "allow-cancel-clean",
+    "allow-keep-duplicate",
     "allow-junk-details",
     "allow-large-files-page",
     "allow-duplicates-page",

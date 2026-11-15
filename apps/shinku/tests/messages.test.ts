@@ -41,6 +41,8 @@ test('les textes calculés accordent les nombres', () => {
   assert.equal(fr.large.found(4, 3 * 1024 ** 3), `4${NBSP}fichiers de plus de 3${NBSP}Go`);
   assert.equal(fr.results.skipped(1), `1${NBSP}dossier n’a pas pu être lu${NBSP}: il n’est pas compté.`);
   assert.equal(fr.results.skipped(3), `3${NBSP}dossiers n’ont pas pu être lus${NBSP}: ils ne sont pas comptés.`);
+  // La jauge du disque coupe la phrase en deux : le chiffre en grand, puis la suite.
+  assert.equal(`${fr.disk.free(796 * 1024 ** 3)} ${fr.disk.freeRest(2 * 1024 ** 4)}`, `796${NBSP}Go libres sur 2,0${NBSP}To`);
 });
 
 test('les guillemets français tiennent à leur texte par des espaces insécables', () => {

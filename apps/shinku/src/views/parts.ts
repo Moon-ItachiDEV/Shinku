@@ -5,7 +5,7 @@ import { keyed } from 'lit-html/directives/keyed.js';
 
 import { fr } from '../i18n/fr.ts';
 import type { CleanRowId } from '../model/scan.ts';
-import { backIcon } from './art.ts';
+import { backIcon, playIcon } from './art.ts';
 
 type Content = TemplateResult | typeof nothing;
 
@@ -44,10 +44,30 @@ export function backButton(onClick: () => void, label: string = fr.common.back):
   return html`<button type="button" class="back" @click=${onClick}>${backIcon()}${label}</button>`;
 }
 
-/** Le grand bouton rond. Désactivé, il reste visible : l'action existe, mais pas encore. */
-export function orb(label: string, onClick: (() => void) | null): TemplateResult {
-  return html`<button type="button" class="orb" ?disabled=${onClick === null} @click=${onClick ?? nothing}>
-    ${label}
+/**
+ * Le grand bouton rond. Désactivé, il reste visible : l'action existe, mais pas encore.
+ * `play` : un triangle au-dessus de l'étiquette, pour lancer une analyse.
+ * `enter` : le bouton apparaît en fondu.
+ */
+export function orb(
+  label: string,
+  onClick: (() => void) | null,
+  options: { play?: boolean; enter?: boolean } = {},
+): TemplateResult {
+  return html`<button
+    type="button"
+    class="orb ${options.enter === true ? 'enter' : ''}"
+    ?disabled=${onClick === null}
+    @click=${onClick ?? nothing}
+  >
+    ${options.play === true ? playIcon() : nothing}<span>${label}</span>
+  </button>`;
+}
+
+/** Le bouton d'arrêt, au centre de l'anneau d'avancement. `disabled` : l'arrêt est déjà demandé. */
+export function stopCore(onClick: () => void, disabled = false): TemplateResult {
+  return html`<button type="button" class="core" ?disabled=${disabled} @click=${onClick}>
+    <span class="sq"></span><span>${fr.common.stop}</span>
   </button>`;
 }
 

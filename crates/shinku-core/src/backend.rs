@@ -33,7 +33,7 @@ use crate::model::Trigger;
 use crate::platform::agent::WindowsPage;
 use crate::platform::{self, Environment, RecycleBin, Volume};
 use crate::scan::ScanOptions;
-use crate::scan::report::{DuplicateGroup, DuplicatesState, JunkReport, LargeFile};
+use crate::scan::report::{DuplicateGroup, DuplicatesState, JunkReport, KeepChoice, LargeFile};
 use crate::session::{Session, SessionError, SessionView};
 use crate::settings::{LoadIssue, Loaded, Settings, SettingsStore, Theme};
 
@@ -465,6 +465,14 @@ impl Backend {
             offset: offset.min(duplicates.groups.len()),
             groups: report.duplicates_page(offset, limit.min(PAGE_LIMIT)).to_vec(),
         })
+    }
+
+    /// Enregistre l'exemplaire que l'utilisateur veut garder d'un doublon,
+    /// pour le prochain grand vide. Le choix désigne un exemplaire déjà
+    /// connu du cœur, par son groupe et son rang : aucun chemin n'est reçu.
+    /// Faux si le choix ne désigne rien dans les résultats en cours.
+    pub fn keep_duplicate(&self, choice: &KeepChoice) -> bool {
+        self.session.keep_duplicate(choice)
     }
 
     /// Le mode d'affichage en vigueur. Réponse immédiate : la fenêtre s'en

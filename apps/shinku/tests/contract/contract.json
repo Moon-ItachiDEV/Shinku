@@ -366,6 +366,12 @@
       "sparedBytes": "number",
       "sparedFiles": "number"
     },
+    "keepChoice": {
+      "digest": "string",
+      "index": "number",
+      "size": "number",
+      "wholeFolder": "boolean"
+    },
     "largeFiles": {
       "bytes": "number",
       "count": "number",

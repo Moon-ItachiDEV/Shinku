@@ -272,13 +272,13 @@ option {
   transition: box-shadow 200ms ease, transform 180ms var(--e);
 }
 
+/* Le menu : une colonne collée au bord gauche, sur toute la hauteur. */
 .pvside {
   position: absolute;
-  left: 6px;
-  top: 6px;
-  bottom: 6px;
-  width: 16px;
-  border-radius: 5px;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 20px;
   opacity: 0.16;
 }
 

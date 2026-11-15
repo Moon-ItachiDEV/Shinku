@@ -21,7 +21,7 @@ use shinku_core::backend::{Backend, BackendError, DuplicatesPage, LargeFilesPage
 use shinku_core::clean::{CleanPreview, CleanRequest};
 use shinku_core::game::view::{GameOption, GameStatus, GameView, OpenApp};
 use shinku_core::platform::agent::WindowsPage;
-use shinku_core::scan::report::JunkReport;
+use shinku_core::scan::report::{JunkReport, KeepChoice};
 use shinku_core::session::SessionView;
 use shinku_core::settings::{Settings, Theme};
 use tauri::{State, WebviewWindow};
@@ -82,6 +82,13 @@ pub fn start_clean(
 #[tauri::command(async)]
 pub fn cancel_clean(backend: State<'_, Backend>) -> SessionView {
     backend.cancel_clean()
+}
+
+/// Enregistre l'exemplaire à garder d'un doublon : son groupe et son rang,
+/// jamais un chemin. Faux si le choix ne désigne rien.
+#[tauri::command(async)]
+pub fn keep_duplicate(backend: State<'_, Backend>, choice: KeepChoice) -> bool {
+    backend.keep_duplicate(&choice)
 }
 
 /// Le détail des fichiers inutiles.

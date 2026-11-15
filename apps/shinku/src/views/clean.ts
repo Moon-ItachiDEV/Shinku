@@ -29,7 +29,7 @@ import { mainVolume } from '../model/scan.ts';
 import type { Actions, AppState } from '../state.ts';
 import { doneArt, hole, ring } from './art.ts';
 import { openModal } from './modal.ts';
-import { CLEAN_NAMES, SEGMENT_CLASS, stage } from './parts.ts';
+import { CLEAN_NAMES, SEGMENT_CLASS, stage, stopCore } from './parts.ts';
 import { styles } from './style.ts';
 
 type Content = TemplateResult | typeof nothing;
@@ -153,9 +153,7 @@ function runningStage(state: AppState, actions: Actions, clean: CleanView): Temp
       ${ring(
         'clr',
         cleanFraction(clean),
-        html`<button type="button" class="core" ?disabled=${state.stopping} @click=${actions.stopClean}>
-          ${fr.common.stop}
-        </button>`,
+        stopCore(actions.stopClean, state.stopping),
       )}
       ${state.stopping ? html`<p class="cap" role="status">${fr.clean.stopping}</p>` : nothing}
     </div>`,

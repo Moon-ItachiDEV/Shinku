@@ -36,6 +36,7 @@ export function tauriBackend(): Backend {
     junk: () => invoke<JunkReport | null>('junk_details'),
     largeFiles: (offset, limit) => invoke<LargeFilesPage | null>('large_files_page', { offset, limit }),
     duplicates: (offset, limit) => invoke<DuplicatesPage | null>('duplicates_page', { offset, limit }),
+    keepDuplicate: (choice) => invoke<boolean>('keep_duplicate', { choice }),
     setTheme: (theme: Theme) => invoke<Settings>('set_theme', { theme }),
     addExcludedFolder: () => invoke<Settings | null>('add_excluded_folder'),
     removeExcludedFolder: (path) => invoke<Settings>('remove_excluded_folder', { path }),

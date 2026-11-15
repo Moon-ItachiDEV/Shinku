@@ -5,8 +5,10 @@
 //! ne peut pas recevoir un fichier, il reste à sa place.
 //!
 //! La liste vient du rapport de l'analyse, gardé dans le cœur. Dans chaque
-//! groupe, l'exemplaire le plus ancien est gardé : l'étape ne sait rien faire
-//! d'autre, quoi que l'interface demande. Avant d'envoyer une copie :
+//! groupe, un exemplaire et un seul y est marqué gardé (le plus ancien, ou
+//! celui que la personne a choisi) : l'étape le laisse toujours en place, et
+//! laisse entier un groupe qui n'en marquerait pas exactement un. Avant
+//! d'envoyer une copie :
 //!
 //! - elle doit toujours se trouver là où Shinku cherche des doublons, hors de
 //!   tout dossier exclu ou interdit, au bout d'un chemin sans aucun lien ;

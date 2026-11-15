@@ -22,8 +22,8 @@ a:hover {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
-  gap: 12px;
-  padding: 12px;
+  gap: 0;
+  padding: 0;
   background-color: var(--bg);
   background-image: var(--app-image);
   color: var(--text);
@@ -57,23 +57,32 @@ a:hover {
 }
 
 .side {
-  flex: 1 1 216px;
+  flex: 1 1 236px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 14px 10px 10px;
-  border-radius: 18px;
-  background: var(--side-bg);
-  border: 1px solid var(--side-border);
-  box-shadow: var(--side-shadow);
+  gap: 2px;
+  padding: 0 0 12px;
+  /* Le filet de droite et la lueur du pied sont des fonds, pas des pseudo-éléments : ils ne défilent pas avec le menu. */
+  background:
+    radial-gradient(148px 150px at 50% calc(100% - 20px), var(--side-glow), transparent),
+    linear-gradient(
+        180deg,
+        transparent,
+        rgb(var(--ov) / calc(0.1 * var(--ov-k))) 16%,
+        rgb(var(--ov) / calc(0.1 * var(--ov-k))) 84%,
+        transparent
+      )
+      right top / 1px 100% no-repeat,
+    var(--side-pane);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 2px 10px 14px;
+  gap: 10px;
+  height: 62px;
+  padding: 2px 24px 0;
 }
 
 .wm {
@@ -92,8 +101,11 @@ a:hover {
 }
 
 .grp {
-  margin: 16px 0 4px;
-  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 5px;
+  padding: 0 0 0 24px;
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.24em;
@@ -101,23 +113,46 @@ a:hover {
   color: var(--text-3);
 }
 
+/* Un filet qui s'éteint vers la droite. */
+.grp::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgb(var(--ov) / calc(0.1 * var(--ov-k))), rgb(var(--ov) / 0));
+}
+
 .nav {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 11px;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 9px;
+  gap: 9px;
+  height: 38px;
+  margin: 0 12px;
+  padding: 0 9px 0 5px;
+  border: 1px solid transparent;
+  border-radius: 14px;
   color: var(--text-2);
   text-decoration: none;
   font-size: 13.5px;
   font-weight: 400;
   letter-spacing: 0.03em;
-  transition: background-color 160ms ease, color 160ms ease;
+  transition: background-color 160ms ease, color 160ms ease, box-shadow 200ms ease;
 }
 
 a.nav {
   color: var(--text-2);
+}
+
+/* La tuile de l'icône. */
+.nic {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 160ms ease, box-shadow 200ms ease;
 }
 
 .nav svg {
@@ -125,13 +160,23 @@ a.nav {
   transition: color 160ms ease;
 }
 
+/* La page ouverte : une capsule au liseré dégradé, et une tuile allumée. */
 .nav[aria-current="page"],a.nav[aria-current="page"] {
-  background: rgb(var(--ov) / calc(0.07 * var(--ov-k)));
+  background:
+    var(--nav-on-fill) padding-box,
+    linear-gradient(115deg, rgb(251 227 200 / 0.95), rgb(240 167 126 / 0.8) 30%, rgb(217 139 176 / 0.6) 65%, rgb(157 147 232 / 0.55)) border-box;
+  box-shadow: 0 12px 24px -16px rgb(240 167 126 / 0.7);
   color: var(--text);
+  font-weight: 500;
+}
+
+.nav[aria-current="page"] .nic {
+  background: linear-gradient(135deg, #fbe3c8, #f0a77e 55%, #d98bb0);
+  box-shadow: 0 4px 10px -4px rgb(240 167 126 / 0.85), inset 0 1px 0 rgb(255 255 255 / 0.5);
 }
 
 .nav[aria-current="page"] svg {
-  color: var(--peach);
+  color: #2a1a22;
 }
 
 .nav:focus-visible {
@@ -171,30 +216,41 @@ a.nav {
 }
 
 .disk {
-  margin: 10px 2px 6px;
-  padding: 12px 12px 11px;
-  border-radius: 12px;
-  background: var(--disk-bg);
+  padding: 0 24px 12px;
 }
 
+/* La jauge est une ligne d'horizon, avec un point de lumière au bout. */
 .disk .tr {
-  height: 3px;
-  margin-top: 9px;
-  border-radius: 999px;
-  background: rgb(var(--ov) / calc(0.08 * var(--ov-k)));
-  overflow: hidden;
+  height: 2px;
+  margin: 12px 0;
+  border-radius: 2px;
+  background: rgb(var(--ov) / calc(0.1 * var(--ov-k)));
 }
 
 .disk .fl {
+  position: relative;
   height: 100%;
-  border-radius: 999px;
+  border-radius: 2px;
   background: linear-gradient(90deg, var(--violet), var(--rose), var(--peach));
   transition: width 900ms var(--io);
+}
+
+.disk .fl::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  top: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--gauge-dot);
+  box-shadow: 0 0 0 1px rgb(240 167 126 / 0.5), 0 0 10px 2px rgb(240 167 126 / 0.75);
 }
 
 .main {
   flex: 999 1 560px;
   min-width: 0;
+  margin: 12px;
   min-height: calc(100vh - 24px);
   display: flex;
   flex-direction: column;
@@ -329,27 +385,64 @@ a.back {
 
 .orb {
   position: relative;
+  flex-shrink: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  width: 104px;
-  height: 104px;
-  padding: 0 8px;
+  gap: 8px;
+  width: 124px;
+  height: 124px;
+  padding: 0 16px;
   box-sizing: border-box;
+  border: 0;
   border-radius: 999px;
-  border: 1.5px solid transparent;
-  background: radial-gradient(circle at 50% 28%, var(--orb-a), var(--orb-b) 72%) padding-box, conic-gradient(from 210deg, var(--cream), var(--peach), var(--rose), var(--violet), var(--cream)) border-box;
+  background: transparent;
   color: var(--orb-text);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   line-height: 1.3;
   text-align: center;
   text-decoration: none;
+  text-wrap: balance;
   cursor: pointer;
-  box-shadow: var(--orb-shadow);
-  transition: transform 180ms var(--e), box-shadow 240ms ease, opacity 160ms ease;
+  /* Deux orbites pâles autour du bouton, et une lueur chaude dessous. */
+  box-shadow:
+    0 0 0 9px rgb(240 167 126 / 0.08),
+    0 0 0 20px rgb(240 167 126 / 0.035),
+    0 26px 52px -20px rgb(240 167 126 / 0.65);
+  transition: transform 180ms var(--e), box-shadow 260ms ease, opacity 160ms ease;
+}
+
+/* Le liseré dégradé tourne lentement, comme le disque du trou noir. */
+.orb::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: conic-gradient(from 210deg, var(--cream), var(--peach), var(--rose), var(--violet), var(--cream));
+  animation: orb-turn 10s linear infinite;
+}
+
+/* Le disque : un reflet en haut, une ombre en bas. */
+.orb::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: inherit;
+  background: radial-gradient(circle at 50% 20%, var(--orb-a), var(--orb-b) 76%);
+  box-shadow: inset 0 1px 0 var(--orb-hi), inset 0 -14px 22px -14px var(--orb-shade);
+}
+
+.orb > * {
+  position: relative;
+  z-index: 1;
+}
+
+.orb svg {
+  color: var(--accent);
 }
 
 a.orb,a.orb:hover {
@@ -366,19 +459,30 @@ a.orb,a.orb:hover {
   box-shadow: none;
 }
 
+.orb:disabled::before {
+  animation: none;
+}
+
 .orb:disabled:active {
   transform: none;
 }
 
 .orb:focus-visible {
   outline: 2px solid var(--text);
-  outline-offset: 6px;
+  outline-offset: 8px;
+}
+
+@keyframes orb-turn {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .ring {
   position: relative;
-  width: 112px;
-  height: 112px;
+  flex-shrink: 0;
+  width: 124px;
+  height: 124px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -387,43 +491,56 @@ a.orb,a.orb:hover {
 .ring svg {
   position: absolute;
   inset: 0;
+  /* Le halo du point lumineux dépasse du cadre : il ne doit pas être coupé. */
+  overflow: visible;
 }
 
-.ring .rv {
-  stroke-dasharray: 320.4;
-  stroke-dashoffset: 320.4;
-  animation: ringfill 3.7s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-}
-
-@keyframes ringfill {
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
+/* Le bouton d'arrêt : son liseré est l'avancement (voir `ring` dans art.ts). */
 .core {
   position: relative;
-  width: 92px;
-  height: 92px;
+  width: 106px;
+  height: 106px;
   box-sizing: border-box;
   border-radius: 999px;
   border: 0;
-  background: radial-gradient(circle at 50% 28%, var(--core-a), var(--core-b) 72%);
+  padding: 0;
+  background: radial-gradient(circle at 50% 20%, var(--core-a), var(--core-b) 76%);
+  box-shadow: inset 0 1px 0 rgb(var(--ov) / calc(0.07 * var(--ov-k))), 0 0 0 1px rgb(var(--ov) / calc(0.05 * var(--ov-k)));
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: var(--text-soft-2);
+  gap: 8px;
+  color: var(--text);
   font-family: inherit;
-  font-size: 12.5px;
-  font-weight: 400;
+  font-size: 13.5px;
+  font-weight: 500;
   letter-spacing: 0.06em;
   text-decoration: none;
   cursor: pointer;
   transition: color 160ms ease, transform 180ms var(--e);
 }
 
+/* L'anneau pâle qui apparaît au survol, à la taille du bouton entier. */
+.core::before {
+  content: "";
+  position: absolute;
+  inset: -9px;
+  border-radius: inherit;
+  pointer-events: none;
+  transition: box-shadow 260ms ease;
+}
+
+.sq {
+  width: 13px;
+  height: 13px;
+  border-radius: 3.5px;
+  background: currentColor;
+  transition: background-color 160ms ease;
+}
+
 a.core {
-  color: var(--text-soft-2);
+  color: var(--text);
 }
 
 button.core:active,a.core:active {
@@ -432,7 +549,8 @@ button.core:active,a.core:active {
 
 .core:focus-visible {
   outline: 2px solid var(--text);
-  outline-offset: 4px;
+  /* Au-delà de l'anneau d'avancement, pour ne pas le recouvrir. */
+  outline-offset: 13px;
 }
 
 .pill {
@@ -935,15 +1053,12 @@ a.ghost {
 }
 
 @media (hover:hover) and (pointer:fine) {
-  .nav:hover {
-    background: rgb(var(--ov) / calc(0.045 * var(--ov-k)));
+  .nav:not([aria-current="page"]):hover {
+    background-color: rgb(var(--ov) / calc(0.045 * var(--ov-k)));
     color: var(--text);
   }
-  .nav:hover svg {
-    color: var(--text-soft-2);
-  }
-  .nav[aria-current="page"]:hover svg {
-    color: var(--peach);
+  .nav:not([aria-current="page"]):hover svg {
+    color: var(--text-2);
   }
   .wbtn:hover {
     background: rgb(var(--ov) / calc(0.06 * var(--ov-k)));
@@ -958,10 +1073,16 @@ a.ghost {
     color: var(--text);
   }
   .orb:not(:disabled):hover {
-    box-shadow: var(--orb-shadow-hover);
+    box-shadow:
+      0 0 0 12px rgb(240 167 126 / 0.11),
+      0 0 0 26px rgb(240 167 126 / 0.045),
+      0 28px 58px -18px rgb(240 167 126 / 0.8);
   }
-  .core:hover {
-    color: var(--text);
+  .core:not(:disabled):hover {
+    color: var(--stop-hover);
+  }
+  .core:not(:disabled):hover::before {
+    box-shadow: 0 0 0 7px rgb(232 130 111 / 0.09);
   }
   .pill:hover {
     background: var(--strong-hover);
@@ -985,8 +1106,11 @@ a.ghost {
   .flow,.breathe,.float,.sweep,.indet i {
     animation: none !important;
   }
-  .ring .rv {
-    animation-duration: 1ms !important;
+  .orb::before {
+    animation: none;
+  }
+  .orb,.core {
+    transition: none;
   }
   .draw {
     animation-duration: 1ms !important;

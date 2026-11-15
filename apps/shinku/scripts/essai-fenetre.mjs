@@ -880,11 +880,68 @@ function plant(files) {
   say(`  fichiers déposés : ${files.junk}, et deux fichiers identiques dans ${files.folder}`);
 }
 
+/** L'état des lignes d'un groupe de doublons dont un exemplaire porte ce nom. */
+function readCopies(name) {
+  const lines = [...document.querySelectorAll('.main li.pick button.row')];
+  const mine = lines.find((line) => (line.querySelector('.path')?.textContent ?? '').trim().endsWith(`\\${name}`));
+  const group = mine?.closest('ul');
+  if (mine === undefined || group == null) {
+    return null;
+  }
+  return [...group.querySelectorAll('li.pick button.row')].map((line) => ({
+    path: (line.querySelector('.path')?.textContent ?? '').trim(),
+    kept: line.getAttribute('aria-pressed') === 'true',
+  }));
+}
+
+/** Marque la ligne d'un exemplaire, pour que `click` la retrouve. */
+function markCopy(name) {
+  const lines = [...document.querySelectorAll('.main li.pick button.row')];
+  const mine = lines.find((line) => (line.querySelector('.path')?.textContent ?? '').trim().endsWith(`\\${name}`));
+  mine?.setAttribute('data-essai', 'copie');
+  return mine !== undefined;
+}
+
+/**
+ * La personne choisit l'exemplaire à garder : sur l'écran Doublons, l'essai
+ * clique la copie que Shinku n'aurait pas gardée de lui-même, et rend son nom.
+ * Le grand vide devra laisser celle-là, et elle seule.
+ */
+async function chooseKept(window, planted) {
+  await window.open('Doublons');
+  const names = planted.twins.map((twin) => path.basename(twin));
+  const copies = await until('les deux fichiers déposés sont listés', 30_000, async () => {
+    const found = await window.session.run(readCopies, names[0]);
+    if (found === null) {
+      // Le groupe est peut-être plus loin dans la liste : l'essai demande la suite.
+      await window.session.run(clickInPage, '.main .more button:not(:disabled)', null);
+    }
+    return found !== null && found.length === 2 ? found : null;
+  }, 500);
+  if (copies.filter((copy) => copy.kept).length !== 1) {
+    fail(`le groupe des fichiers déposés ne garde pas un exemplaire et un seul : ${JSON.stringify(copies)}`);
+  }
+  const wanted = names.find((name) => copies.some((copy) => !copy.kept && copy.path.endsWith(`\\${name}`)));
+  if (wanted === undefined || !(await window.session.run(markCopy, wanted))) {
+    fail('la copie non gardée ne se retrouve pas dans la liste');
+  }
+  await window.click(`garder « ${wanted} »`, '.main button.row[data-essai=copie]');
+  await until(`« ${wanted} » est l’exemplaire conservé`, 10_000, async () => {
+    const now = await window.session.run(readCopies, wanted);
+    return now !== null && now.filter((copy) => copy.kept).length === 1 && now.some((copy) => copy.kept && copy.path.endsWith(`\\${wanted}`));
+  });
+  await window.healthy('après avoir choisi l’exemplaire à garder');
+  await window.capture('doublons-choix');
+  done(`sur l’écran Doublons, un clic garde « ${wanted} » à la place de l’exemplaire le plus ancien`);
+  return wanted;
+}
+
 /**
  * Le grand vide, pour de bon : confirmer, suivre l'avancement, lire le bilan,
  * puis regarder sur le disque ce que les fichiers déposés sont devenus.
  */
 async function checkClean(window, planted) {
+  const wanted = planted === null ? null : await chooseKept(window, planted);
   await window.click('Grand vide', 'button.nav', 'Grand vide');
   await until('les résultats sont de nouveau affichés', 20_000, async () =>
     shows((await window.screen()).main, 'Le grand vide peut libérer'),
@@ -957,10 +1014,13 @@ async function checkClean(window, planted) {
     if (left.length !== 1) {
       fail(`des deux fichiers identiques, il devait en rester un seul ; il en reste ${left.length}`);
     }
+    if (path.basename(left[0]) !== wanted) {
+      fail(`l’exemplaire choisi était « ${wanted} », mais c’est « ${path.basename(left[0])} » qui est resté`);
+    }
     if (!shows(end.report, 'dans la corbeille')) {
       fail('le bilan ne dit pas que la copie attend dans la corbeille');
     }
-    done(`sur le disque : le fichier inutile est parti, et il reste un exemplaire du doublon (${path.basename(left[0])})`);
+    done(`sur le disque : le fichier inutile est parti, et il reste l’exemplaire choisi du doublon (${path.basename(left[0])})`);
     rmSync(planted.folder, { recursive: true, force: true });
   }
 

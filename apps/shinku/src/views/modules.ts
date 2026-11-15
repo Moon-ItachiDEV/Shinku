@@ -5,13 +5,14 @@
 
 import { html, nothing, type TemplateResult } from 'lit-html';
 
-import type { DuplicateGroup, JunkReport, LargeFile } from '../backend/types.ts';
+import type { DuplicateGroup, JunkReport, KeepChoice, LargeFile } from '../backend/types.ts';
 import { formatAgo, formatBytes, splitPath } from '../format.ts';
 import { fr } from '../i18n/fr.ts';
+import { sharedFolders } from '../model/duplicates.ts';
 import { binOverThreshold, category, duplicatesPercent, ringFraction } from '../model/scan.ts';
 import type { Actions, AppState, Route } from '../state.ts';
 import { binArt, moduleArt, type ModuleArt, ring } from './art.ts';
-import { hero, orb, stage } from './parts.ts';
+import { hero, orb, stage, stopCore } from './parts.ts';
 
 type Content = TemplateResult | typeof nothing;
 
@@ -24,7 +25,7 @@ function introStage(state: AppState, actions: Actions, art: ModuleArt, title: st
     key: 'intro',
     body: hero(moduleArt(art), title, text),
     dock: html`<div class="dock">
-      ${orb(fr.common.analyse, blocked || cleaning ? null : actions.startScan)}
+      ${orb(fr.common.analyse, blocked || cleaning ? null : actions.startScan, { play: true })}
       <p class="cap">
         ${cleaning ? fr.clean.title : blocked ? fr.home.checkFirst : fr.common.nothingWithoutConsent}
       </p>
@@ -41,7 +42,7 @@ function scanStage(state: AppState, actions: Actions, art: ModuleArt, title: str
       ${ring(
         `${art}-r`,
         ringFraction(state.session),
-        html`<button type="button" class="core" @click=${actions.cancelScan}>${fr.common.stop}</button>`,
+        stopCore(actions.cancelScan),
       )}
       <p class="cap">${fr.common.scanning}</p>
     </div>`,
@@ -177,7 +178,43 @@ export function largeView(state: AppState, actions: Actions): TemplateResult {
 
 // ── Doublons ───────────────────────────────────────────────────────────────
 
-function duplicateGroup(group: DuplicateGroup): TemplateResult {
+/** Ce que l'écran peut faire d'un choix : `null` tant qu'il ne peut pas en prendre. */
+type Keep = ((choice: KeepChoice) => void) | null;
+
+/** Combien de dossiers l'écran propose de garder d'un seul geste. */
+const FOLDER_ROWS = 4;
+
+/** Les dossiers qui rangent un exemplaire de plusieurs groupes : un bouton les garde partout. */
+function folderRows(groups: readonly DuplicateGroup[], keep: Keep, busy: boolean, partial: boolean): Content {
+  const folders = keep === null ? [] : sharedFolders(groups, FOLDER_ROWS);
+  if (keep === null || folders.length === 0) {
+    return nothing;
+  }
+  return html`<p class="sub">${fr.duplicates.folders}</p>
+    <ul class="list plain folders">
+      ${folders.map((entry) => {
+        const all = entry.kept === entry.groups;
+        return html`<li class="row static">
+          <span class="tx">
+            <span class="t1 path" title=${entry.folder}>${entry.folder}</span>
+            <span class="t2">${fr.duplicates.folderGroups(entry.groups)}</span>
+          </span>
+          <button
+            type="button"
+            class="ghost small"
+            aria-pressed=${all ? 'true' : 'false'}
+            aria-disabled=${busy ? 'true' : 'false'}
+            @click=${() => (all || busy ? undefined : keep(entry.choice))}
+          >
+            ${all ? fr.duplicates.folderKept : fr.duplicates.keepFolder}
+          </button>
+        </li>`;
+      })}
+    </ul>
+    ${partial ? html`<p class="note folders-note">${fr.duplicates.foldersPartial}</p>` : nothing}`;
+}
+
+function duplicateGroup(group: DuplicateGroup, keep: Keep, busy: boolean): TemplateResult {
   const kept = group.files.find((file) => file.keep) ?? group.files[0];
   const name = kept === undefined ? '' : splitPath(kept.path).name;
   return html`<ul class="list plain group">
@@ -188,14 +225,30 @@ function duplicateGroup(group: DuplicateGroup): TemplateResult {
       </span>
       <span class="val"><span>${formatBytes(group.reclaimable)}</span></span>
     </li>
-    ${group.files.map(
-      (file) =>
-        html`<li class="row static slim">
-          <span class="tx"><span class="t2 path" title=${file.path}>${file.path}</span></span>
-          ${file.synced ? html`<span class="tag">${fr.common.synced}</span>` : nothing}
-          ${file.keep ? html`<span class="tag strong">${fr.common.kept}</span>` : nothing}
-        </li>`,
-    )}
+    ${group.files.map((file, index) => {
+      const line = html`<span class="tx"><span class="t2 path" title=${file.path}>${file.path}</span></span>
+        ${file.synced ? html`<span class="tag">${fr.common.synced}</span>` : nothing}
+        ${file.keep
+          ? html`<span class="tag strong">${fr.common.kept}</span>`
+          : keep === null
+            ? nothing
+            : html`<span class="tag offer">${fr.duplicates.keepThis}</span>`}`;
+      if (keep === null) {
+        return html`<li class="row static slim">${line}</li>`;
+      }
+      const choice = { digest: group.digest, size: group.size, index, wholeFolder: false };
+      return html`<li class="pick">
+        <button
+          type="button"
+          class="row slim"
+          aria-pressed=${file.keep ? 'true' : 'false'}
+          aria-disabled=${busy ? 'true' : 'false'}
+          @click=${() => (file.keep || busy ? undefined : keep(choice))}
+        >
+          ${line}
+        </button>
+      </li>`;
+    })}
   </ul>`;
 }
 
@@ -219,7 +272,7 @@ export function duplicatesView(state: AppState, actions: Actions): TemplateResul
         ${ring(
           'duplicates-r',
           ringFraction(state.session),
-          html`<button type="button" class="core" @click=${actions.cancelScan}>${fr.common.stop}</button>`,
+          stopCore(actions.cancelScan),
         )}
         <p class="cap">${fr.common.scanning}</p>
       </div>`,
@@ -227,18 +280,22 @@ export function duplicatesView(state: AppState, actions: Actions): TemplateResul
   }
   const page = state.duplicates;
   const off = entry.state === 'unavailable';
+  // Un choix ne se prend que sur des résultats qui servent encore à nettoyer.
+  const keep: Keep = state.session.state === 'results' && !state.session.stale ? actions.keepDuplicate : null;
+  const busy = state.keeping || state.loadingMore;
   const body =
     page === null
       ? off
         ? nothing
         : loadingNote()
-      : html`${page.groups.map(duplicateGroup)}
+      : html`${folderRows(page.groups, keep, busy, page.groups.length < page.groupCount)}
+        ${page.groups.map((group) => duplicateGroup(group, keep, busy))}
         ${page.groups.length < page.groupCount ? moreButton(state, actions, 'duplicates') : nothing}
         ${page.skippedFiles > 0 ? html`<p class="note">${fr.duplicates.skipped(page.skippedFiles)}</p>` : nothing}`;
   return listStage({
     name: fr.nav.duplicates,
     title: fr.duplicates.found(page?.groupCount ?? (entry.items > 0 ? 1 : 0)),
-    hint: off ? fr.duplicates.offText : entry.items > 0 ? fr.duplicates.hint : fr.duplicates.hintNone,
+    hint: off ? fr.duplicates.offText : entry.items > 0 ? (keep === null ? fr.duplicates.hintFixed : fr.duplicates.hint) : fr.duplicates.hintNone,
     body,
     action: fr.duplicates.remove,
     cap: entry.bytes > 0 ? fr.duplicates.viaClean(entry.bytes) : fr.duplicates.nothing,

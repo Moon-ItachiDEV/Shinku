@@ -38,7 +38,7 @@ use shinku_core::model::{Lot, ModuleId, RiskLevel, Timestamp, Trigger};
 use shinku_core::platform::agent::{AgentState, OpenProgram, WindowsPage};
 use shinku_core::platform::{Environment, KnownFolder, RecycleBin, StaticEnvironment, Volume};
 use shinku_core::rules::JunkCategory;
-use shinku_core::scan::report::{CategoryState, DuplicatesState};
+use shinku_core::scan::report::{CategoryState, DuplicatesState, KeepChoice};
 use shinku_core::scan::{Phase, ScanOptions};
 use shinku_core::session::SessionState;
 use shinku_core::settings::{AutoScan, Language, LoadIssue, SettingsStore, Theme};
@@ -278,7 +278,15 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     samples.insert("sessionView.results", to_json(&results));
     samples.insert("junk", to_json(&backend.junk().expect("fichiers inutiles")));
     samples.insert("largeFiles", to_json(&backend.large_files(0, 10).expect("gros fichiers")));
-    samples.insert("duplicates", to_json(&backend.duplicates(0, 10).expect("doublons")));
+    let duplicates = backend.duplicates(0, 10).expect("doublons");
+    samples.insert("duplicates", to_json(&duplicates));
+
+    // Le choix de l'exemplaire gardé : l'autre demande que la fenêtre envoie.
+    let group = duplicates.groups.first().expect("un groupe de doublons");
+    let keep_choice =
+        KeepChoice { digest: group.digest.clone(), size: group.size, index: 0, whole_folder: true };
+    samples.insert("keepChoice", to_json(&keep_choice));
+    assert!(backend.keep_duplicate(&keep_choice), "le choix désigne un exemplaire du rapport");
 
     // Le grand vide : l'écran de confirmation, puis le bilan.
     let preview = backend.clean_preview().expect("écran de confirmation");

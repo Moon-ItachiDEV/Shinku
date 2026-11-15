@@ -27,6 +27,7 @@ import type {
   CleanRefusal,
   CleanRequest,
   DuplicatesPage,
+  KeepChoice,
   FolderRefusal,
   GameOption,
   GameRefusal,
@@ -240,6 +241,12 @@ async function samples(): Promise<Record<string, unknown>> {
     duplicates: await backend.duplicates(0, 10),
   };
 
+  // Le choix de l'exemplaire gardé d'un doublon.
+  const group = lists.duplicates?.groups[0];
+  assert.ok(group !== undefined);
+  const keepChoice: KeepChoice = { digest: group.digest, size: group.size, index: 0, wholeFolder: true };
+  assert.equal(await backend.keepDuplicate(keepChoice), true);
+
   // Le grand vide : sa confirmation, sa demande, puis son bilan.
   const cleanPreview = await backend.cleanPreview();
   const cleanRequest: CleanRequest = { analysis, recycleBin: true, junkFiles: true, duplicates: true };
@@ -290,6 +297,7 @@ async function samples(): Promise<Record<string, unknown>> {
     ...lists,
     cleanPreview,
     cleanRequest,
+    keepChoice,
     cleanStop,
     'gameView.idle': gameIdle,
     'gameView.playing': gamePlaying,

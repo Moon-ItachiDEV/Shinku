@@ -49,11 +49,16 @@
   --badge-text: #f2aa9a;
   --badge-dot: #e8826f;
 
-  --orb-a: #55497a;
-  --orb-b: #352d4c;
+  --orb-a: #5b4e82;
+  --orb-b: #332b4a;
   --orb-text: #fbf3ec;
-  --orb-shadow: 0 0 0 7px rgba(240, 167, 126, 0.05), 0 20px 44px -20px rgba(240, 167, 126, 0.55);
-  --orb-shadow-hover: 0 0 0 10px rgba(240, 167, 126, 0.08), 0 22px 50px -18px rgba(240, 167, 126, 0.7);
+  /* Le disque du bouton rond : reflet en haut, ombre en bas. */
+  --orb-hi: rgb(255 255 255 / 0.22);
+  --orb-shade: rgb(10 5 26 / 0.45);
+  /* L'accent des petites icônes allumées (le triangle du bouton Analyser). */
+  --accent: #f0a77e;
+  /* Le bouton Arrêter, survolé. */
+  --stop-hover: #e8826f;
   --core-a: #4a3f6a;
   --core-b: #30294a;
 
@@ -65,11 +70,13 @@
     radial-gradient(900px 640px at 68% 34%, rgba(176, 150, 230, 0.3), rgba(176, 150, 230, 0) 70%),
     radial-gradient(620px 420px at 70% 100%, rgba(240, 167, 126, 0.16), rgba(240, 167, 126, 0) 70%),
     linear-gradient(135deg, #4a3f68 0%, #372f52 48%, #2a243c 100%);
-  --side-bg: rgba(255, 255, 255, 0.09);
-  --side-border: rgba(255, 255, 255, 0.12);
-  --side-shadow: 0 30px 60px -44px rgba(20, 12, 40, 0.5);
+  /* Le menu : une colonne teintée, une capsule pour la page ouverte, une lueur chaude au pied. */
+  --side-pane: linear-gradient(180deg, rgb(22 15 40 / 0.38), rgb(22 15 40 / 0.2));
+  --nav-on-fill: linear-gradient(90deg, #6b5372, #4d4270);
+  --side-glow: rgb(240 167 126 / 0.16);
+  /* Le point de lumière au bout de la jauge du disque. */
+  --gauge-dot: #fbe3c8;
   --list-bg: rgb(var(--ov) / calc(0.028 * var(--ov-k)));
-  --disk-bg: rgb(var(--ov) / calc(0.03 * var(--ov-k)));
   --box-border: rgb(var(--ov) / calc(0.26 * var(--ov-k)));
   --check-bg: var(--peach);
 
@@ -104,8 +111,10 @@
   --orb-a: #ffffff;
   --orb-b: #f1ecee;
   --orb-text: #1f1a26;
-  --orb-shadow: 0 0 0 7px rgba(240, 167, 126, 0.12), 0 18px 40px -20px rgba(200, 110, 70, 0.45);
-  --orb-shadow-hover: 0 0 0 10px rgba(240, 167, 126, 0.16), 0 20px 44px -18px rgba(200, 110, 70, 0.55);
+  --orb-hi: #ffffff;
+  --orb-shade: rgb(70 50 90 / 0.14);
+  --accent: #c9703f;
+  --stop-hover: #b4513f;
   --core-a: #ffffff;
   --core-b: #f3eff1;
 
@@ -116,11 +125,11 @@
   --app-image:
     radial-gradient(880px 600px at 66% 38%, rgba(157, 147, 232, 0.22), rgba(157, 147, 232, 0) 70%),
     radial-gradient(520px 340px at 66% 92%, rgba(240, 167, 126, 0.16), rgba(240, 167, 126, 0) 70%);
-  --side-bg: rgba(255, 255, 255, 0.7);
-  --side-border: rgba(38, 30, 52, 0.07);
-  --side-shadow: 0 24px 50px -36px rgba(70, 50, 90, 0.35);
+  --side-pane: linear-gradient(180deg, rgb(255 255 255 / 0.7), rgb(255 255 255 / 0.42));
+  --nav-on-fill: linear-gradient(90deg, #fff1e6, #ffffff);
+  --side-glow: rgb(240 167 126 / 0.22);
+  --gauge-dot: #ee9a6c;
   --list-bg: rgba(255, 255, 255, 0.72);
-  --disk-bg: rgba(255, 255, 255, 0.72);
   --box-border: rgba(38, 30, 52, 0.3);
   --check-bg: #1f1a26;
 

@@ -84,6 +84,7 @@ pub fn run() -> ExitCode {
             commands::clean_preview,
             commands::start_clean,
             commands::cancel_clean,
+            commands::keep_duplicate,
             commands::junk_details,
             commands::large_files_page,
             commands::duplicates_page,
