@@ -75,7 +75,7 @@ function navButton(state: AppState, actions: Actions, item: NavItem): TemplateRe
     aria-current=${state.route === item.route ? 'page' : nothing}
     @click=${() => actions.navigate(item.route)}
   >
-    ${navIcon(item.icon)}<span>${item.label}</span>${item.route === 'bin' ? binBadge(state) : nothing}
+    <i class="nic">${navIcon(item.icon)}</i><span>${item.label}</span>${item.route === 'bin' ? binBadge(state) : nothing}
   </button>`;
 }
 
@@ -90,14 +90,14 @@ function diskGauge(state: AppState): TemplateResult | typeof nothing {
       <span>${fr.disk.title(volume.label, driveName(volume.root))}</span><span>${fr.disk.used(used)}</span>
     </div>
     <div class="tr" aria-hidden="true"><div class="fl" ${styles({ width: `${used}%` })}></div></div>
-    <p class="dfree">${fr.disk.free(volume.free, volume.total)}</p>
+    <p class="dfree"><b>${fr.disk.free(volume.free)}</b> <span>${fr.disk.freeRest(volume.total)}</span></p>
   </div>`;
 }
 
 function sidebar(state: AppState, actions: Actions): TemplateResult {
   return html`<nav class="side" aria-label=${fr.nav.label}>
     <div class="brand" data-tauri-drag-region="deep">
-      ${mark('sb')}<span class="wm">SHINKU</span><span class="kj" lang="ja">真空</span>
+      ${mark('sb', 24)}<span class="wm">SHINKU</span><span class="kj" lang="ja">真空</span>
     </div>
     ${GROUPS.map(
       (group) =>

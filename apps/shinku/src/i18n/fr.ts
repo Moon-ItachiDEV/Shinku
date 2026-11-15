@@ -72,7 +72,8 @@ export const fr = typeset({
   disk: {
     title: (label: string, drive: string) => `${label === '' ? 'Disque local' : label} (${drive})`,
     used: (value: number) => `${value}${NBSP}%`,
-    free: (free: number, total: number) => `${formatBytes(free)} libres sur ${formatBytes(total)}`,
+    free: (free: number) => formatBytes(free),
+    freeRest: (total: number) => `libres sur ${formatBytes(total)}`,
     unknown: 'Espace disque inconnu',
   },
 

@@ -12,7 +12,7 @@ import { sharedFolders } from '../model/duplicates.ts';
 import { binOverThreshold, category, duplicatesPercent, ringFraction } from '../model/scan.ts';
 import type { Actions, AppState, Route } from '../state.ts';
 import { binArt, moduleArt, type ModuleArt, ring } from './art.ts';
-import { hero, orb, stage } from './parts.ts';
+import { hero, orb, stage, stopCore } from './parts.ts';
 
 type Content = TemplateResult | typeof nothing;
 
@@ -25,7 +25,7 @@ function introStage(state: AppState, actions: Actions, art: ModuleArt, title: st
     key: 'intro',
     body: hero(moduleArt(art), title, text),
     dock: html`<div class="dock">
-      ${orb(fr.common.analyse, blocked || cleaning ? null : actions.startScan)}
+      ${orb(fr.common.analyse, blocked || cleaning ? null : actions.startScan, { play: true })}
       <p class="cap">
         ${cleaning ? fr.clean.title : blocked ? fr.home.checkFirst : fr.common.nothingWithoutConsent}
       </p>
@@ -42,7 +42,7 @@ function scanStage(state: AppState, actions: Actions, art: ModuleArt, title: str
       ${ring(
         `${art}-r`,
         ringFraction(state.session),
-        html`<button type="button" class="core" @click=${actions.cancelScan}>${fr.common.stop}</button>`,
+        stopCore(actions.cancelScan),
       )}
       <p class="cap">${fr.common.scanning}</p>
     </div>`,
@@ -272,7 +272,7 @@ export function duplicatesView(state: AppState, actions: Actions): TemplateResul
         ${ring(
           'duplicates-r',
           ringFraction(state.session),
-          html`<button type="button" class="core" @click=${actions.cancelScan}>${fr.common.stop}</button>`,
+          stopCore(actions.cancelScan),
         )}
         <p class="cap">${fr.common.scanning}</p>
       </div>`,

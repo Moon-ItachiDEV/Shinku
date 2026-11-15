@@ -25,7 +25,7 @@ import {
 import type { Actions, AppState, HomePane } from '../state.ts';
 import { checkIcon, chevronIcon, hole, navIcon, ring } from './art.ts';
 import { cleanPane } from './clean.ts';
-import { backButton, orb, SEGMENT_CLASS, stage } from './parts.ts';
+import { backButton, orb, SEGMENT_CLASS, stage, stopCore } from './parts.ts';
 import { styles } from './style.ts';
 
 const ROW_NAMES: Record<ScanRowId, string> = {
@@ -125,7 +125,7 @@ function welcomePane(state: AppState, actions: Actions): TemplateResult {
     dock = html`${orb(fr.home.follow, actions.showScan)}
       <p class="cap">${fr.common.scanning}</p>`;
   } else if (blocked) {
-    dock = html`${orb(fr.common.analyse, null)}
+    dock = html`${orb(fr.common.analyse, null, { play: true })}
       <p class="cap">${fr.home.checkFirst}</p>`;
   } else {
     const below =
@@ -136,7 +136,7 @@ function welcomePane(state: AppState, actions: Actions): TemplateResult {
               ${fr.home.reviewResults(summary.finished)}
             </button>`
           : html`<p class="cap">${fr.common.nothingWithoutConsent}</p>`;
-    dock = html`${orb(fr.common.analyse, actions.startScan)} ${below}`;
+    dock = html`${orb(fr.common.analyse, actions.startScan, { play: true })} ${below}`;
   }
 
   return html`<div class="stage enter">
@@ -207,11 +207,11 @@ function scanPane(state: AppState, actions: Actions): TemplateResult {
   });
 
   const dock = finished
-    ? html`<button type="button" class="orb enter" @click=${actions.showResults}>${fr.scan.seeResults}</button>`
+    ? orb(fr.scan.seeResults, actions.showResults, { enter: true })
     : html`${ring(
           'anr',
           ringFraction(view),
-          html`<button type="button" class="core" @click=${actions.cancelScan}>${fr.common.stop}</button>`,
+          stopCore(actions.cancelScan),
         )}
         ${view.summary !== null
           ? html`<button type="button" class="back" @click=${actions.showResults}>${fr.scan.seeEarlyResults}</button>`

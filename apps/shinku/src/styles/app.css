@@ -84,6 +84,10 @@ button:disabled {
   fill: var(--hole);
 }
 
+.f-dot {
+  fill: var(--gauge-dot);
+}
+
 .f-ill {
   fill: var(--ill-fill);
 }
@@ -102,18 +106,30 @@ button:disabled {
 
 /* ── Anneau d'avancement ────────────────────────────────────────────────── */
 
+/*
+ * Les longueurs ci-dessous vont avec le dessin de ring() (views/art.ts) : un
+ * cercle de rayon 59 centré en 62, soit 370,7 de tour. Les changer ensemble.
+ */
+
 .ring .rp {
-  stroke-dasharray: 320.4;
+  stroke-dasharray: 370.7;
   transition: stroke-dashoffset 420ms linear;
+}
+
+/* Le point lumineux au bout de l'arc : il tourne au même rythme que lui. */
+.ring .rh {
+  transform-box: view-box;
+  transform-origin: 62px 62px;
+  transition: transform 420ms linear, opacity 160ms ease;
 }
 
 /* Avancement inconnu : un arc tourne. */
 .ring .ri {
-  stroke-dasharray: 76 244.4;
+  stroke-dasharray: 88 282.7;
 }
 
 .ring .spin {
-  transform-origin: 56px 56px;
+  transform-origin: 62px 62px;
   animation: spin 1.5s linear infinite;
 }
 
@@ -126,7 +142,7 @@ button:disabled {
 /* ── Menu latéral ───────────────────────────────────────────────────────── */
 
 .side {
-  flex: 0 0 216px;
+  flex: 0 0 236px;
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: none;
@@ -140,8 +156,6 @@ button:disabled {
 
 button.nav {
   flex-shrink: 0;
-  width: 100%;
-  border: 0;
   background: transparent;
   font-family: inherit;
   text-align: left;
@@ -186,12 +200,25 @@ button.nav {
   flex-shrink: 0;
 }
 
+/* L'espace libre : le chiffre en grand et léger, la suite en petit. */
 .dfree {
-  margin: 8px 0 0;
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 7px;
   font-size: 11px;
   font-weight: 300;
   letter-spacing: 0.05em;
   color: var(--text-3);
+}
+
+.dfree b {
+  font-size: 21px;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Zone principale ────────────────────────────────────────────────────── */
@@ -1138,27 +1165,59 @@ dialog.ask[open]::backdrop {
  * Fenêtre très basse : un portable de 13 pouces réglé à 150 % n'offre que
  * 672 pixels de haut. Le menu se resserre pour que les Paramètres et la jauge
  * du disque restent visibles sans défiler, et la zone principale gagne
- * quelques lignes.
+ * quelques lignes. Un premier cran dès 740 pixels, un second à 660 : il suffit
+ * à la hauteur minimale de la fenêtre (600).
  */
-@media (max-height: 660px) {
-  .side {
-    padding-top: 10px;
-  }
-
+@media (max-height: 740px) {
   .brand {
-    padding-bottom: 8px;
+    height: 54px;
   }
 
   .grp {
-    margin: 10px 0 2px;
+    margin: 12px 0 4px;
   }
 
   .nav {
-    height: 30px;
+    height: 34px;
+  }
+
+  .disk .tr {
+    margin: 9px 0;
+  }
+}
+
+@media (max-height: 660px) {
+  .brand {
+    height: 48px;
+  }
+
+  .grp {
+    margin: 9px 0 3px;
+  }
+
+  .nav {
+    height: 32px;
+  }
+
+  .side {
+    gap: 1px;
+    padding-bottom: 6px;
+  }
+
+  .disk {
+    padding-bottom: 6px;
+  }
+
+  .disk .tr {
+    margin: 7px 0;
+  }
+
+  .dfree b {
+    font-size: 18px;
   }
 
   .dock {
-    height: 140px;
+    height: 150px;
     gap: 6px;
   }
 
@@ -1206,6 +1265,7 @@ dialog.ask[open]::backdrop {
   }
 
   .ring .rp,
+  .ring .rh,
   .toast,
   .seg span {
     transition: none !important;
