@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::model::{FileId, Lot, ModuleId, RiskLevel, Timestamp, Trigger};
 use crate::platform::{RecycleBin, Volume, serialize_display_path};
@@ -133,6 +133,84 @@ impl Report {
     /// Une page de la liste des groupes de doublons.
     pub fn duplicates_page(&self, offset: usize, limit: usize) -> &[DuplicateGroup] {
         page(&self.duplicates.groups, offset, limit)
+    }
+
+    /// Le même rapport, où l'utilisateur a choisi l'exemplaire à garder.
+    ///
+    /// Le choix désigne un exemplaire que ce rapport connaît déjà : le groupe
+    /// par son empreinte et sa taille, l'exemplaire par son rang. Aucun chemin
+    /// ne vient de l'extérieur. Avec `whole_folder`, le choix vaut pour tous
+    /// les groupes qui ont un exemplaire dans le même dossier que celui-là :
+    /// un groupe qui y garde déjà un exemplaire ne bouge pas, les autres y
+    /// gardent leur plus ancien.
+    ///
+    /// Chaque groupe garde toujours un exemplaire et un seul. `None` si le
+    /// rapport n'est pas complet ou si le choix ne désigne rien.
+    pub fn keeping(&self, choice: &KeepChoice) -> Option<Self> {
+        if !self.complete || self.duplicates.state != DuplicatesState::Done {
+            return None;
+        }
+        let groups = &self.duplicates.groups;
+        let chosen = groups
+            .iter()
+            .find(|group| group.digest == choice.digest && group.size == choice.size)?
+            .files
+            .get(choice.index as usize)?;
+        let folder = chosen.path.parent()?;
+
+        let mut revised = self.clone();
+        for group in &mut revised.duplicates.groups {
+            let same_group = group.digest == choice.digest && group.size == choice.size;
+            let kept = if same_group {
+                Some(choice.index as usize)
+            } else if choice.whole_folder {
+                let here = |file: &DuplicateFile| file.path.parent() == Some(folder);
+                // Un exemplaire déjà gardé dans ce dossier a pu être choisi à
+                // la main : il n'est pas remplacé par son voisin.
+                if group.files.iter().any(|file| file.keep && here(file)) {
+                    None
+                } else {
+                    group.files.iter().position(here)
+                }
+            } else {
+                None
+            };
+            if let Some(kept) = kept {
+                group.keep_only(kept);
+            }
+        }
+        let duplicates = &mut revised.duplicates;
+        duplicates.bytes = duplicates.groups.iter().map(|group| group.reclaimable).sum();
+        Some(revised)
+    }
+}
+
+/// L'exemplaire qu'un utilisateur veut garder dans un groupe de doublons.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeepChoice {
+    /// Empreinte du groupe.
+    pub digest: String,
+    /// Taille de chaque exemplaire du groupe.
+    pub size: u64,
+    /// Rang de l'exemplaire à garder dans le groupe.
+    pub index: u32,
+    /// Garder aussi, dans les autres groupes, l'exemplaire rangé dans le
+    /// même dossier.
+    pub whole_folder: bool,
+}
+
+impl DuplicateGroup {
+    /// Garde l'exemplaire de rang `kept` et lui seul.
+    fn keep_only(&mut self, kept: usize) {
+        if kept >= self.files.len() {
+            return;
+        }
+        for (rank, file) in self.files.iter_mut().enumerate() {
+            file.keep = rank == kept;
+        }
+        self.reclaimable =
+            self.files.iter().filter(|file| !file.keep).map(|file| file.on_disk).sum();
     }
 }
 
@@ -328,7 +406,8 @@ pub struct DuplicateGroup {
     pub digest: String,
     /// Place récupérable en ne gardant que l'exemplaire conservé.
     pub reclaimable: u64,
-    /// Les exemplaires. Le premier est le plus ancien : c'est celui qu'on garde.
+    /// Les exemplaires, du plus ancien au plus récent. Un seul porte `keep` :
+    /// le premier, ou celui que l'utilisateur a choisi.
     pub files: Vec<DuplicateFile>,
 }
 

@@ -15,6 +15,7 @@ const COMMANDS: &[&str] = &[
     "clean_preview",
     "start_clean",
     "cancel_clean",
+    "keep_duplicate",
     "junk_details",
     "large_files_page",
     "duplicates_page",

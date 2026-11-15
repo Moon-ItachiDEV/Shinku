@@ -28,7 +28,7 @@ use shinku_core::model::Timestamp;
 use shinku_core::platform::{
     Environment, KnownFolder, RecycleBin, RecycleError, StaticEnvironment, Volume,
 };
-use shinku_core::scan::report::Report;
+use shinku_core::scan::report::{DuplicateFile, KeepChoice, Report};
 
 mod common;
 use common::{DAY, Pc, link_dir, link_file, listed, make_recent, noise, on_disk, pause, write};
@@ -491,6 +491,141 @@ fn copies_go_to_the_recycle_bin_and_the_oldest_stays() {
     assert!(temp.exists());
 
     assert!(pc.scan().duplicates.groups.is_empty(), "il ne reste qu'un exemplaire");
+}
+
+#[test]
+fn the_copy_the_person_chose_is_the_one_that_stays() {
+    let (pc, bin) = pc_with_bin();
+    let (oldest, second, third) = three_photos(&pc);
+    let content = fs::read(&oldest).unwrap();
+    let report = pc.scan();
+    let group = &report.duplicates.groups[0];
+    let wanted = group.files.iter().position(|file| file.path == third).unwrap() as u32;
+    let choice = |index, whole_folder| KeepChoice {
+        digest: group.digest.clone(),
+        size: group.size,
+        index,
+        whole_folder,
+    };
+
+    // Un choix qui ne désigne rien ne change rien.
+    assert!(report.keeping(&choice(99, false)).is_none());
+    let stranger = KeepChoice { digest: "0".repeat(64), ..choice(wanted, false) };
+    assert!(report.keeping(&stranger).is_none());
+
+    let chosen = report.keeping(&choice(wanted, false)).unwrap();
+    let kept: Vec<&Path> = chosen.duplicates.groups[0]
+        .files
+        .iter()
+        .filter(|file| file.keep)
+        .map(|file| file.path.as_path())
+        .collect();
+    assert_eq!(kept, [third.as_path()], "un exemplaire gardé, et un seul");
+    assert_eq!(chosen.duplicates.copies, 2);
+    assert_eq!(chosen.duplicates.bytes, on_disk(&oldest) + on_disk(&second));
+    assert_eq!(chosen.started, report.started, "c'est toujours la même analyse");
+
+    let bilan = clean(&pc.environment, &chosen, duplicates_only(&chosen));
+    assert_eq!((bilan.duplicates.state, bilan.duplicates.copies), (StepState::Done, 2));
+    assert_eq!(fs::read(&third).unwrap(), content, "l'exemplaire choisi est intact");
+    assert!(!oldest.exists() && !second.exists());
+    assert_eq!(bin_content(&bin), [content.clone(), content], "les autres sont récupérables");
+}
+
+#[test]
+fn keeping_a_folder_keeps_its_copy_in_every_group() {
+    let (pc, _bin) = pc_with_bin();
+    let (sorted, unsorted) =
+        (pc.profile.join("Desktop").join("à garder"), pc.profile.join("Desktop").join("vrac"));
+    for (name, seed) in [("film.mov", 1), ("clip.mov", 2), ("photo.jpg", 3)] {
+        // Le vrac d'abord : c'est lui le plus ancien, donc gardé d'office.
+        write(&unsorted.join(name), &noise(6000, seed));
+        write(&sorted.join(name), &noise(6000, seed));
+    }
+    // Un doublon sans exemplaire dans le dossier choisi : il ne bouge pas.
+    write(&unsorted.join("seul.bin"), &noise(7000, 9));
+    write(&pc.profile.join("Documents").join("seul.bin"), &noise(7000, 9));
+
+    let report = pc.scan();
+    assert_eq!(report.duplicates.groups.len(), 4);
+    let (rank, index) = report
+        .duplicates
+        .groups
+        .iter()
+        .enumerate()
+        .find_map(|(rank, group)| {
+            let index = group.files.iter().position(|file| file.path.starts_with(&sorted))?;
+            Some((rank, index))
+        })
+        .unwrap();
+    let group = &report.duplicates.groups[rank];
+    let chosen = report
+        .keeping(&KeepChoice {
+            digest: group.digest.clone(),
+            size: group.size,
+            index: index as u32,
+            whole_folder: true,
+        })
+        .unwrap();
+
+    for (before, after) in report.duplicates.groups.iter().zip(&chosen.duplicates.groups) {
+        let kept: Vec<&DuplicateFile> = after.files.iter().filter(|file| file.keep).collect();
+        assert_eq!(kept.len(), 1, "un exemplaire gardé, et un seul");
+        if after.files.iter().any(|file| file.path.starts_with(&sorted)) {
+            assert!(kept[0].path.starts_with(&sorted), "{:?}", kept[0].path);
+        } else {
+            let unchanged = before.files.iter().position(|file| file.keep);
+            assert_eq!(after.files.iter().position(|file| file.keep), unchanged);
+        }
+    }
+}
+
+#[test]
+fn keeping_a_folder_leaves_a_copy_already_chosen_there() {
+    let (pc, _bin) = pc_with_bin();
+    let (sorted, unsorted) =
+        (pc.profile.join("Desktop").join("à garder"), pc.profile.join("Desktop").join("vrac"));
+    // Deux exemplaires dans le dossier trié, un troisième dans le vrac.
+    write(&unsorted.join("photo.jpg"), &noise(6000, 1));
+    write(&sorted.join("photo.jpg"), &noise(6000, 1));
+    write(&sorted.join("photo (1).jpg"), &noise(6000, 1));
+    write(&unsorted.join("film.mov"), &noise(8000, 2));
+    write(&sorted.join("film.mov"), &noise(8000, 2));
+
+    let report = pc.scan();
+    let find = |report: &Report, name: &str| {
+        let wanted = sorted.join(name);
+        report
+            .duplicates
+            .groups
+            .iter()
+            .find_map(|group| {
+                let index = group.files.iter().position(|file| file.path == wanted)?;
+                Some((group.digest.clone(), group.size, index as u32))
+            })
+            .unwrap()
+    };
+    let kept = |report: &Report| -> Vec<PathBuf> {
+        let files = report.duplicates.groups.iter().flat_map(|group| &group.files);
+        let mut kept: Vec<PathBuf> =
+            files.filter(|file| file.keep).map(|file| file.path.clone()).collect();
+        kept.sort();
+        kept
+    };
+
+    // La personne choisit « photo (1).jpg » à la main, puis garde tout le dossier trié.
+    let (digest, size, index) = find(&report, "photo (1).jpg");
+    let by_hand = report.keeping(&KeepChoice { digest, size, index, whole_folder: false }).unwrap();
+    let (digest, size, index) = find(&by_hand, "film.mov");
+    let folder = by_hand.keeping(&KeepChoice { digest, size, index, whole_folder: true }).unwrap();
+
+    let mut expected = vec![sorted.join("film.mov"), sorted.join("photo (1).jpg")];
+    expected.sort();
+    assert_eq!(
+        kept(&folder),
+        expected,
+        "le choix fait à la main n'est pas remplacé par son voisin"
+    );
 }
 
 #[test]

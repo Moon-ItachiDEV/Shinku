@@ -28,7 +28,7 @@ use crate::clean::{
 };
 use crate::hash::DigestCache;
 use crate::platform::Environment;
-use crate::scan::report::{Report, Summary};
+use crate::scan::report::{KeepChoice, Report, Summary};
 use crate::scan::{Phase, ProgressSnapshot, ScanHandle, ScanOptions, start};
 
 /// Où en est la session.
@@ -199,6 +199,20 @@ impl Session {
         if let Activity::Scan(scan) = &*activity {
             scan.control().cancel();
             *activity = Activity::Idle;
+        }
+    }
+
+    /// Enregistre l'exemplaire que l'utilisateur veut garder d'un doublon.
+    /// Faux s'il n'y a pas de résultats complets, s'ils sont trop anciens pour
+    /// nettoyer ou si le choix ne désigne rien : rien ne change alors. Un
+    /// choix ne vaut que pour cette analyse : la suivante repart du plus ancien.
+    pub fn keep_duplicate(&self, choice: &KeepChoice) -> bool {
+        let now = self.environment.now();
+        match &*self.activity() {
+            Activity::Scan(scan) => scan
+                .control()
+                .revise(|report| if report.is_stale(now) { None } else { report.keeping(choice) }),
+            Activity::Idle | Activity::Clean(_) => false,
         }
     }
 
@@ -534,6 +548,37 @@ mod tests {
             environment.with_now(Timestamp::from_ticks(finished.ticks() + 11 * 60 * 10_000_000));
         let report = session.report().unwrap();
         assert!(report.is_stale(later.now()));
+    }
+
+    #[test]
+    fn the_kept_copy_is_chosen_on_shown_results_only() {
+        let (_workspace, environment, _) = pc();
+        let session = Session::new(Arc::new(environment), Arc::new(MemoryCache::new()));
+        let choice = |report: &Report, index| {
+            let group = &report.duplicates.groups[0];
+            KeepChoice {
+                digest: group.digest.clone(),
+                size: group.size,
+                index,
+                whole_folder: false,
+            }
+        };
+
+        session.start_scan(options()).unwrap();
+        wait_for(&session, SessionState::Results);
+        let report = session.report().unwrap();
+        assert!(report.duplicates.groups[0].files[0].keep);
+        assert!(session.keep_duplicate(&choice(&report, 1)));
+        let revised = session.report().unwrap();
+        let kept: Vec<bool> =
+            revised.duplicates.groups[0].files.iter().map(|file| file.keep).collect();
+        assert_eq!(kept.iter().filter(|keep| **keep).count(), 1);
+        assert!(kept[1], "l'exemplaire choisi est gardé");
+        assert_eq!(revised.duplicates.copies, report.duplicates.copies);
+
+        // Sans résultats, il n'y a rien à choisir.
+        session.cancel_scan();
+        assert!(!session.keep_duplicate(&choice(&report, 0)));
     }
 
     #[test]

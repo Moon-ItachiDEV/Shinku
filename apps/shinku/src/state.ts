@@ -7,6 +7,7 @@ import type {
   CleanPreview,
   CleanRequest,
   DuplicatesPage,
+  KeepChoice,
   JunkReport,
   LargeFilesPage,
   Overview,
@@ -63,6 +64,8 @@ export interface AppState {
   duplicates: DuplicatesPage | null;
   /** Une page supplémentaire est en cours de chargement. */
   loadingMore: boolean;
+  /** Le choix d'un exemplaire à garder attend la réponse du cœur. */
+  keeping: boolean;
   /** Le sélecteur de dossier de Windows est ouvert. */
   pickingFolder: boolean;
   /** Message bref affiché en bas de l'écran ; son texte reste le temps qu'il s'efface. */
@@ -97,6 +100,7 @@ export function initialState(now: number): AppState {
     large: null,
     duplicates: null,
     loadingMore: false,
+    keeping: false,
     pickingFolder: false,
     toast: '',
     toastShown: false,
@@ -122,6 +126,8 @@ export interface Actions {
   /** Referme le bilan d'un grand vide terminé. */
   closeReport(): void;
   loadMore(list: 'large' | 'duplicates'): void;
+  /** Choisit l'exemplaire gardé d'un doublon. Rien n'est supprimé. */
+  keepDuplicate(choice: KeepChoice): void;
   setTheme(theme: Theme): void;
   addFolder(): void;
   removeFolder(path: string): void;

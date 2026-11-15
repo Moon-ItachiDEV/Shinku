@@ -10,7 +10,8 @@
 //!
 //! La comparaison octet par octet n'a lieu qu'au moment de supprimer, contre
 //! l'exemplaire gardé. Dans chaque groupe, l'exemplaire le plus ancien est
-//! gardé : il n'est jamais proposé à la suppression.
+//! gardé, tant que la personne n'en choisit pas un autre (`Report::keeping`) :
+//! l'exemplaire gardé n'est jamais proposé à la suppression.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

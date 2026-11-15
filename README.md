@@ -15,7 +15,9 @@ Ce qui fonctionne :
   doublons, gros fichiers, état de la corbeille ;
 - le grand vide : après confirmation, il vide la corbeille, supprime les
   fichiers inutiles et envoie à la corbeille les copies en double que la
-  personne a cochées. Un exemplaire de chaque doublon est toujours gardé ;
+  personne a cochées. Un exemplaire de chaque doublon est toujours gardé :
+  le plus ancien, ou celui que la personne choisit sur l'écran Doublons,
+  fichier par fichier ou pour tout un dossier ;
 - l'interface complète, en deux modes d'affichage (Crépuscule et Brume),
   branchée sur le moteur ;
 - la fenêtre de l'application (`shinku.exe`) et son installeur pour Windows.

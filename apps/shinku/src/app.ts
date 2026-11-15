@@ -7,7 +7,16 @@
 
 import { render } from 'lit-html';
 
-import type { Backend, BackendError, SessionView, Settings, Theme } from './backend/types.ts';
+import type {
+  Backend,
+  BackendError,
+  DuplicateGroup,
+  DuplicatesPage,
+  KeepChoice,
+  SessionView,
+  Settings,
+  Theme,
+} from './backend/types.ts';
 import { fr } from './i18n/fr.ts';
 import { cleanRequest, confirmedRequest, readiness, requestedSteps } from './model/clean.ts';
 import { reportKey, toggled } from './model/scan.ts';
@@ -66,6 +75,7 @@ const NO_ACTIONS: Actions = {
   stopClean: () => {},
   closeReport: () => {},
   loadMore: () => {},
+  keepDuplicate: () => {},
   setTheme: () => {},
   addFolder: () => {},
   removeFolder: () => {},
@@ -207,6 +217,7 @@ export class App {
       patch.large = null;
       patch.duplicates = null;
       patch.loadingMore = false;
+      patch.keeping = false;
     }
 
     if (session.state === 'idle' || session.state === 'failed' || session.clean !== null) {
@@ -310,7 +321,8 @@ export class App {
   }
 
   private async loadMore(list: 'large' | 'duplicates'): Promise<void> {
-    if (this.state.loadingMore) {
+    // Une page lue pendant qu'un choix s'enregistre pourrait dater d'avant lui.
+    if (this.state.loadingMore || this.state.keeping) {
       return;
     }
     const epoch = this.dataEpoch;
@@ -334,6 +346,57 @@ export class App {
     } finally {
       if (epoch === this.dataEpoch) {
         this.set({ loadingMore: false });
+      }
+    }
+  }
+
+  /**
+   * La personne choisit l'exemplaire à garder d'un doublon, ou tout un dossier.
+   * Rien n'est supprimé : le cœur note le choix dans son rapport, et le grand
+   * vide le suivra.
+   */
+  private async keepDuplicate(choice: KeepChoice): Promise<void> {
+    const { session, duplicates, keeping, loadingMore, cleanBusy, confirm } = this.state;
+    if (session.state !== 'results' || session.stale || duplicates === null || keeping || loadingMore) {
+      return;
+    }
+    if (cleanBusy || confirm !== null) {
+      // La confirmation du grand vide annonce des chiffres : ils ne bougent plus.
+      return;
+    }
+    const epoch = this.dataEpoch;
+    this.set({ keeping: true });
+    try {
+      const noted = await this.backend.keepDuplicate(choice);
+      if (epoch !== this.dataEpoch) {
+        return;
+      }
+      if (!noted) {
+        this.toast(fr.toast.keepRefused);
+      }
+      // Le cœur fait foi : les groupes affichés sont relus chez lui, choix noté ou non.
+      const shown = this.state.duplicates?.groups.length ?? 0;
+      const groups: DuplicateGroup[] = [];
+      let last: DuplicatesPage | null = null;
+      do {
+        last = await this.backend.duplicates(groups.length, Math.min(PAGE_SIZE, Math.max(1, shown - groups.length)));
+        if (epoch !== this.dataEpoch) {
+          return;
+        }
+        groups.push(...(last?.groups ?? []));
+      } while (last !== null && last.groups.length > 0 && groups.length < shown);
+      this.set({ duplicates: last === null ? null : { ...last, offset: 0, groups } });
+      // Le total des copies a changé : l'Accueil et la légende le relisent.
+      const sessionEpoch = this.sessionEpoch;
+      const fresh = await this.backend.sessionView();
+      if (sessionEpoch === this.sessionEpoch) {
+        this.adopt(fresh);
+      }
+    } catch (error) {
+      this.toast(errorMessage(error));
+    } finally {
+      if (epoch === this.dataEpoch) {
+        this.set({ keeping: false });
       }
     }
   }
@@ -383,7 +446,8 @@ export class App {
    * ferait du disque tel qu'il est maintenant, et la confirmation l'affiche.
    */
   private async askClean(): Promise<void> {
-    if (this.state.cleanBusy || this.state.confirm !== null) {
+    // Un choix d'exemplaire en route changerait les chiffres de la confirmation.
+    if (this.state.cleanBusy || this.state.confirm !== null || this.state.keeping) {
       return;
     }
     if (readiness(this.state.session, this.state.selection) !== 'ready') {
@@ -557,6 +621,7 @@ export class App {
     stopClean: () => void this.stopClean(),
     closeReport: () => void this.cancelScan(),
     loadMore: (list) => void this.loadMore(list),
+    keepDuplicate: (choice) => void this.keepDuplicate(choice),
     setTheme: (theme) => void this.setTheme(theme),
     addFolder: () => void this.addFolder(),
     removeFolder: (path) => void this.changeFolders(() => this.backend.removeExcludedFolder(path)),
