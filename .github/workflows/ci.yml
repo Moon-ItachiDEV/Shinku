@@ -6,7 +6,8 @@
 #   - « Lint de la cible Windows » (Linux) : le code propre à Windows, que le
 #     premier travail ne compile pas, passe au lint par compilation croisée.
 #   - « Windows » : les tests du cœur sur un vrai NTFS, puis l'installeur,
-#     installé et essayé pour de bon avant d'être publié.
+#     installé et essayé pour de bon (la fenêtre, puis le mode jeu) avant
+#     d'être publié.
 #
 # Les minutes Windows comptent double sur un dépôt privé : tout ce qui peut
 # être vérifié sous Linux l'est sous Linux.
@@ -152,9 +153,10 @@ jobs:
         working-directory: apps/shinku
         run: npm ci
 
-      # Compile l'interface, puis shinku.exe en version finale, puis
-      # l'installeur NSIS (non signé : la signature vient avant la version
-      # publique).
+      # Compile l'interface, puis l'agent du mode jeu (beforeBuildCommand, dans
+      # target/release), puis shinku.exe en version finale, puis l'installeur
+      # NSIS, qui embarque l'agent par son crochet (installer-hooks.nsh). Non
+      # signé : la signature vient avant la version publique.
       - name: Installeur
         working-directory: apps/shinku
         run: npm run tauri build
@@ -173,6 +175,23 @@ jobs:
       - name: Essai de la fenêtre
         working-directory: apps/shinku
         run: node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures" --grand-vide
+
+      # Le mode jeu, de bout en bout : l'agent installé reconnaît un vrai jeu
+      # (une petite fenêtre compilée pour l'occasion) au premier plan, met un
+      # ping en veilleuse, change le mode d'alimentation, puis remet tout en
+      # place quand le jeu se ferme. Les machines de GitHub tournent en
+      # administrateur : l'essai lance l'agent et le jeu avec les droits
+      # ordinaires d'un utilisateur, comme sur un PC.
+      - name: Essai du mode jeu
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-mode-jeu.ps1 -Agent "$env:ProgramFiles\Shinku\shinku-agent.exe"
+
+      # Quoi qu'il arrive : le mode d'alimentation, les réglages et le journal
+      # d'origine sont remis, et ce qui reste de l'essai est arrêté.
+      - name: Remettre la machine d'essai en place
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-mode-jeu.ps1 -Restaurer
 
       - name: Publier les captures de la fenêtre
         if: always()

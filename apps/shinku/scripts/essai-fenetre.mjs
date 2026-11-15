@@ -26,6 +26,18 @@
 // L'essai y dépose d'abord un faux fichier inutile et deux fichiers
 // identiques, et vérifie sur le disque ce qu'ils sont devenus.
 //
+// L'essai allume aussi, un instant, le mode jeu automatique : le programme
+// lance alors shinku-agent.exe (installé à côté de lui), que l'essai compte
+// parmi les processus de la machine. Il l'éteint ensuite. La reconnaissance
+// d'un vrai jeu est essayée à part, par essai-mode-jeu.ps1.
+//
+// Mise au point hors de Windows : `--programme` peut être un script qui ouvre
+// la démo (`npm run build:demo`, servie par n'importe quel serveur web) dans un
+// Chrome lancé avec le port de débogage que l'essai donne dans la variable
+// WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, et `--adresse` le début de l'adresse
+// de la démo. La démo n'a pas de vrai agent : seuls les contrôles de la page
+// sont alors faits.
+//
 // Sans dépendance : Node 22 suffit.
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -429,6 +441,17 @@ function readScreen() {
     title: text(document.querySelector('.main h1')),
     toast: toast === null ? '' : text(toast),
     theme: document.documentElement.dataset.theme ?? '',
+  };
+}
+
+/** La page Mode jeu : l'interrupteur principal, le titre de l'en-tête, l'avertissement. */
+function readGame() {
+  const text = (element) => (element?.innerText ?? '').replace(/[ \u00a0\u202f]+/g, ' ').trim();
+  const main = document.querySelector('#game-auto');
+  return {
+    on: main === null ? null : main.getAttribute('aria-checked') === 'true',
+    title: text(document.querySelector('.ghead h1')),
+    warning: text(document.querySelector('.gwarn')),
   };
 }
 
@@ -956,7 +979,7 @@ async function checkModules(window) {
     ['Gros fichiers', 'de plus de'],
     ['Corbeille', 'la corbeille se vide avec le grand vide', 'Rien à vider'],
     ['Démarrage', 'Ce module arrive dans une prochaine version'],
-    ['Mode jeu', 'Ce module arrive dans une prochaine version'],
+    ['Mode jeu', 'Pendant que tu joues'],
     ['Désinstallation', 'Ce module arrive dans une prochaine version'],
     ['Confidentialité', 'Ce module arrive dans une prochaine version'],
   ];
@@ -969,6 +992,99 @@ async function checkModules(window) {
     quote(screen.main, 14);
     await window.capture(slug(label));
   }
+}
+
+/** Le nombre de processus shinku-agent.exe qui tournent ; `null` hors de Windows. */
+function agentCount() {
+  if (!onWindows) {
+    return null;
+  }
+  const result = spawnSync('tasklist', ['/FI', 'IMAGENAME eq shinku-agent.exe', '/FO', 'CSV', '/NH'], {
+    encoding: 'utf8',
+  });
+  return (result.stdout ?? '').split('\n').filter((line) => line.toLowerCase().includes('shinku-agent.exe')).length;
+}
+
+/**
+ * L'interrupteur principal du mode jeu : éteint au départ ; l'allumer lance
+ * l'agent et la page ne montre plus d'avertissement ; l'éteindre fait sortir
+ * l'agent. L'état de départ est remis, même si l'essai échoue en route.
+ */
+async function checkGameMode(window) {
+  const read = () => window.session.run(readGame);
+  const toggle = async (on) => {
+    await window.click('Mode jeu automatique', '#game-auto');
+    await until(`l’interrupteur passe sur ${on ? 'allumé' : 'éteint'}`, 10_000, async () => (await read()).on === on);
+    // Un sondage de la page (toutes les 2 s) redonne l'état du cœur : l'interrupteur ne doit pas revenir en arrière.
+    await sleep(2500);
+    if ((await read()).on !== on) {
+      fail(`l’interrupteur est revenu sur ${on ? 'éteint' : 'allumé'} : le cœur a refusé le changement`);
+    }
+    await window.healthy(`après avoir ${on ? 'allumé' : 'éteint'} le mode jeu`);
+  };
+
+  const screen = await window.open('Mode jeu');
+  for (const expected of ['Mode jeu automatique', 'Pendant que tu joues', 'Tes jeux', 'Windows s’en occupe déjà']) {
+    if (!shows(screen.main, expected)) {
+      fail(`la page Mode jeu ne montre pas « ${expected} » :\n${screen.main}`);
+    }
+  }
+  const start = await read();
+  if (start.on !== false) {
+    fail(`le mode jeu automatique devait être éteint au départ (interrupteur : ${start.on})`);
+  }
+  if (!shows(start.title, 'éteint')) {
+    fail(`au départ, l’en-tête devait dire que le mode jeu est éteint : « ${start.title} »`);
+  }
+  const before = agentCount();
+  if (before !== null && before !== 0) {
+    fail(`le mode jeu est éteint, mais ${before} agent(s) tournent déjà`);
+  }
+  done('au départ, le mode jeu automatique est éteint');
+  await window.capture('mode-jeu-eteint');
+
+  try {
+    await toggle(true);
+    if (before !== null) {
+      await until('l’agent tourne', 20_000, () => agentCount() >= 1, 500);
+      done('allumé : l’agent tourne');
+    }
+    // L'agent démarre, puis la page le revoit : le temps de deux sondages.
+    await sleep(4500);
+    const lit = await read();
+    if (lit.warning !== '') {
+      fail(`le mode jeu est allumé, mais la page avertit : « ${lit.warning} »`);
+    }
+    if (!shows(lit.title, 'veille')) {
+      fail(`allumé, l’en-tête devait dire que Shinku veille : « ${lit.title} »`);
+    }
+    done(`allumé : plus d’avertissement, l’en-tête dit « ${lit.title} »`);
+    await window.capture('mode-jeu-allume');
+
+    await toggle(false);
+    if (before !== null) {
+      // L'agent se voit éteint à son prochain pas (2 s) : il n'a plus de raison de veiller.
+      await until('l’agent sort', 20_000, () => agentCount() === 0, 500);
+      done('éteint : l’agent sort');
+    }
+    const off = await read();
+    if (!shows(off.title, 'éteint')) {
+      fail(`éteint, l’en-tête devait le dire : « ${off.title} »`);
+    }
+  } finally {
+    // L'état de départ, quoi qu'il arrive : éteint, et sans agent.
+    try {
+      if ((await read()).on === true) {
+        await toggle(false);
+      }
+    } catch {
+      // La fenêtre a pu se fermer ; l'essai a déjà dit pourquoi il échoue.
+    }
+    if (before !== null && agentCount() > 0) {
+      spawnSync('taskkill', ['/F', '/IM', 'shinku-agent.exe'], { stdio: 'ignore' });
+    }
+  }
+  done('l’état de départ est restauré (mode jeu éteint, plus d’agent)');
 }
 
 /** Le mode d'affichage enregistré, lu dans le fichier de réglages. */
@@ -1082,6 +1198,7 @@ async function main() {
     }
     await checkScan(window);
     await checkModules(window);
+    await checkGameMode(window);
     await checkSettings(window);
     if (options['grand-vide']) {
       await checkClean(window, planted);

@@ -11,13 +11,16 @@
 # le contrôle de compte d'utilisateur : groupe Administrateurs en refus seul,
 # privilèges retirés, niveau d'intégrité moyen.
 #
+# `-Arguments` donne au programme sa ligne de commande, telle quelle.
+#
 # La première ligne écrite est « PID <numéro> », celui du programme lancé.
 #
 # Ce fichier commence par une marque d'ordre des octets (BOM) : sans elle,
 # Windows PowerShell 5 lirait ses lettres accentuées de travers.
 
 param(
-    [Parameter(Mandatory = $true)][string]$Programme
+    [Parameter(Mandatory = $true)][string]$Programme,
+    [string]$Arguments = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -154,7 +157,7 @@ public static class StandardUser
     }
 
     // Lance le programme et rend son numéro de processus.
-    public static int Start(string program)
+    public static int Start(string program, string arguments)
     {
         IntPtr own;
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, out own))
@@ -184,7 +187,7 @@ public static class StandardUser
         STARTUPINFO startup = new STARTUPINFO();
         startup.cb = Marshal.SizeOf(startup);
         PROCESS_INFORMATION created;
-        StringBuilder commandLine = new StringBuilder("\"" + program + "\"");
+        StringBuilder commandLine = new StringBuilder("\"" + program + "\"" + (arguments.Length > 0 ? " " + arguments : ""));
         // Sans bloc d'environnement : le programme reçoit celui de ce processus.
         if (!CreateProcessAsUser(standard, program, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0,
                 IntPtr.Zero, null, ref startup, out created))
@@ -210,7 +213,7 @@ public static class StandardUser
 '@
 
 try {
-    $id = [StandardUser]::Start($Programme)
+    $id = [StandardUser]::Start($Programme, $Arguments)
 } catch {
     # Windows a refusé de créer le processus : sa raison est le message.
     [Console]::Error.WriteLine($_.Exception.GetBaseException().Message)

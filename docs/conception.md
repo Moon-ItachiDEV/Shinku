@@ -11,7 +11,7 @@ notes couvrent le « comment ».
 | --- | --- | --- |
 | `shinku.exe` | La fenêtre et le cœur : analyse tout ce qui appartient à l'utilisateur. | Ceux de l'utilisateur, jamais plus. |
 | `shinku-helper.exe` | Les actions sur la machine. N'accepte que des verbes fixes. | Administrateur, à la demande. Squelette pour l'instant. |
-| `shinku-agent.exe` | L'analyse planifiée, sans fenêtre. | Ceux de l'utilisateur. Squelette pour l'instant. |
+| `shinku-agent.exe` | Le mode jeu, sans fenêtre (voir plus bas). Plus tard, l'analyse planifiée. | Ceux de l'utilisateur ; il refuse de tourner en administrateur. |
 
 Toute la logique vit dans `shinku-core`. Les trois programmes ne font que
 l'appeler : ce qui décide se teste donc sans fenêtre, sans Windows et sans
@@ -46,24 +46,28 @@ un message.
 
 ## Entre la page et le cœur : le guichet
 
-La page ne parle qu'à `shinku_core::backend::Backend`, au travers de quatorze
+La page ne parle qu'à `shinku_core::backend::Backend`, au travers de vingt-trois
 commandes Tauri (`apps/shinku/src-tauri/src/commands.rs`). Chaque commande est
 une demande précise et bornée : lancer une analyse, lire une page de résultats,
 changer un réglage, faire le vide.
 
 - Aucune commande ne reçoit un chemin à lire ou à écrire. Le dossier à exclure
   est choisi par l'utilisateur dans une boîte de dialogue de Windows, ouverte
-  par le programme ; la page n'en fournit pas le chemin. Le seul chemin que la
-  page envoie sert à retirer un dossier de la liste des exclusions, et n'est
-  comparé qu'à cette liste. Le grand vide lui-même ne reçoit que trois cases
-  cochées et la date de l'analyse affichée.
+  par le programme ; la page n'en fournit pas le chemin. Les seuls chemins ou
+  noms que la page renvoie sont ceux que le cœur lui a donnés (un dossier à
+  retirer de la liste des exclusions, un jeu ou une app du mode jeu), et ils
+  ne sont que comparés à ce que le cœur connaît déjà : un texte inconnu est
+  refusé. Pour ajouter un jeu ou une app, la page ne choisit qu'un numéro dans
+  la dernière liste d'apps ouvertes que le cœur lui a rendue. Le grand vide
+  lui-même ne reçoit que trois cases cochées et la date de l'analyse
+  affichée.
 - Les pages de résultats sont plafonnées côté cœur (`PAGE_LIMIT`), quelle que
   soit la taille demandée.
 
 ### Ce que la page a le droit de faire
 
 - **Permissions Tauri au plus juste.** `capabilities/default.json` donne à la
-  fenêtre ses quatorze commandes et les cinq gestes de sa barre de titre. Rien
+  fenêtre ses vingt-trois commandes et les cinq gestes de sa barre de titre. Rien
   d'autre : ni fichiers, ni réseau, ni lancement de programmes, ni événements.
   Les commandes de l'application passent elles aussi par les permissions
   (`AppManifest::commands` dans `build.rs`) : une commande absente de la liste
@@ -140,11 +144,15 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | --- | --- |
 | `%APPDATA%\Shinku\settings.json` | Les réglages. |
 | `%APPDATA%\Shinku\journal.json` | Les grands vides : dates et totaux, aucun chemin. |
+| `%LOCALAPPDATA%\Shinku\game.json` | Le journal du mode jeu : la partie en cours, le bilan de la dernière, les jeux reconnus. Écrit par l'agent seulement. |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, valeur `Shinku` | Lance l'agent avec Windows. La seule écriture de registre de Shinku. Présente seulement quand le mode jeu automatique est allumé. |
 | `%LOCALAPPDATA%\fr.shinku.app\` | Le cache de WebView2 pour la fenêtre. |
 
 Rien d'autre, et rien hors du PC. L'analyse ne modifie aucun fichier. Seul le
 grand vide supprime, et seulement ce que décrit la section qui lui est
-consacrée.
+consacrée. Le mode jeu change des réglages en cours de partie (priorité de
+processus, mode d'alimentation), jamais un fichier de la personne ; il remet
+tout en place.
 
 Un fichier de réglages illisible n'est jamais écrasé en silence : Shinku repart
 des valeurs par défaut, le dit, et bloque l'analyse tant que l'utilisateur n'a
@@ -263,6 +271,172 @@ exactement la demande qui sera envoyée. Une case dont la catégorie n'a rien à
 nettoyer ne compte pas. Seul le grand vide supprime pour l'instant : les
 boutons des modules restent inactifs.
 
+## Le mode jeu
+
+La première maquette avait un bouton « Préparer / lancer le jeu ». Il y a trop
+de façons de lancer un jeu (Steam, Epic, un raccourci, un exécutable) pour que
+Shinku en choisisse une : **Shinku ne lance rien**. La page Mode jeu est une
+page de réglages directs. Un programme d'arrière-plan, l'agent, reconnaît le
+jeu quand il passe au premier plan, applique les réglages, puis remet tout en
+place.
+
+Les règles du produit :
+
+- rien n'est modifié sans accord : le mode jeu automatique est **éteint par
+  défaut** ;
+- tout se remet en place : fin de partie, fermeture de session, plantage,
+  coupure de courant, désinstallation ;
+- aucune élévation : ni `shinku.exe` ni l'agent ne tournent en administrateur ;
+- honnêteté : pas de « mémoire libérée », pas d'images par seconde promises, et
+  Shinku ne refait pas ce que Windows fait déjà (le Mode Jeu de Windows, les
+  notifications coupées en plein écran : la page les signale et ouvre les
+  réglages de Windows) ;
+- la page ne fournit jamais un chemin ni un nom libre (voir plus haut).
+
+### Reconnaître un jeu
+
+Toute la décision est dans `shinku-core` (`game/`), testée sous Linux avec une
+fausse machine (`FakeHost`). Un exécutable est un jeu, dans cet ordre :
+
+1. s'il est dans les jeux ajoutés par la personne ;
+2. sinon, s'il n'est pas dans « Ce n'est pas un jeu » ;
+3. sinon, s'il ne tombe pas sous le **veto** : navigateurs, shell de Windows,
+   lecteurs vidéo, bureautique, outils de développement, communication,
+   lanceurs (Steam, Epic, Battle.net, Riot…) et Shinku lui-même, par nom ou par
+   dossier de lanceur. Le veto ne joue pas contre un jeu que la personne a
+   ajouté (c'est son choix écrit), mais l'ajout d'un programme sous veto est
+   refusé ;
+4. sinon, s'il se trouve dans une bibliothèque de jeux (`steamapps\common`,
+   `XboxGames`, `Epic Games`, `GOG Games`, `Riot Games`, un dossier `Games` ou
+   `Jeux`…).
+
+Le jeu est identifié par le **chemin de son exécutable**, pas par un numéro de
+processus. Il doit rester au premier plan sur deux pas consécutifs (2 s chacun)
+avant que le mode s'active.
+
+Ce qui est écarté, et pourquoi : la détection du plein écran et la lecture de la
+liste de jeux de Windows. Trop de faux positifs (une vidéo en plein écran, un
+diaporama) et une clé de registre non documentée, qui peut changer. Mieux vaut
+un jeu à ajouter à la main qu'un navigateur traité comme un jeu.
+
+### Ce que l'agent applique
+
+- **Alimentation « Performances élevées »**, réévaluée à chaque pas : jamais sur
+  batterie (remise tout de suite si on passe sur batterie en cours de partie) ;
+  jamais si le PC n'a pas ce mode ; jamais sur un processeur AMD X3D
+  (7900X3D, 7950X3D, 9900X3D, 9950X3D), pour lesquels AMD recommande le mode
+  normal ; jamais si le mode actif est celui du constructeur ou un mode
+  personnalisé. À la fin, le mode d'avant n'est remis **que si le mode actif est
+  encore celui que Shinku a posé** : si la personne l'a changé entre-temps, son
+  choix reste.
+- **Apps en veilleuse** : priorité « sous la normale » et mode efficacité de
+  Windows pour une liste d'apps (OneDrive, Dropbox, Google Drive cochés
+  d'office ; les navigateurs proposés mais décochés, parce qu'on peut y regarder
+  une vidéo ou y passer un appel ; plus les apps ajoutées). On ne fait que
+  baisser : un processus déjà bas garde sa classe. L'app que la personne regarde
+  n'est jamais ralentie. Les processus du système, de Shinku et du jeu sont
+  protégés.
+
+Ce qui n'est pas fait : fermer des apps, vider de la mémoire, changer des
+priorités vers le haut, toucher au registre ou aux services.
+
+### Le journal et la reprise
+
+`game.json` est écrit par l'agent seulement, à chaque transition, jamais
+périodiquement, d'un seul geste (fichier écrit à côté, puis mis en place). À
+l'activation, **l'intention est écrite avant le geste** : la session complète,
+avec le mode d'alimentation d'avant et, pour chaque processus mis en veilleuse,
+son numéro, sa date de création et son état d'avant. Si l'écriture échoue
+(disque plein), rien n'est modifié.
+
+Au démarrage de l'agent (`recover`), une session trouvée au journal est reprise
+si le jeu vit encore, sinon terminée normalement : c'est ce qui remet l'ordre
+après un plantage ou une coupure de courant. Un processus n'est remis que s'il
+vit encore (numéro **et** date de création : un numéro se recycle) ; sa priorité
+n'est remise que si elle vaut encore ce que Shinku a posé. Un processus créé par
+un processus en veilleuse en hérite : à la remise en place, ses descendants
+trouvés en priorité basse y sont remis aussi.
+
+Une session se termine quand plus aucun processus du jeu ne vit, quand le jeu
+n'a pas été au premier plan depuis dix minutes (un lanceur resté ouvert ne garde
+pas le PC en mode jeu), quand il n'est plus reconnu, ou quand la personne éteint
+le mode automatique. Si quelque chose ne peut pas être remis (Windows refuse de
+changer l'alimentation), la session reste en attente, la remise est retentée
+toutes les 30 s, et la page le dit ; au bout de vingt essais, le bilan note que
+tout n'a pas pu être remis.
+
+`game.json` peut être écrit par n'importe quel programme du compte : sa lecture
+est méfiante (classes de priorité connues seulement, jamais « temps réel »,
+chaînes bornées, identifiants d'alimentation au format exact).
+
+### Limites connues
+
+- **Les jeux hors bibliothèque** (Battle.net, Minecraft, Roblox…) ne sont pas
+  reconnus tout seuls : la personne les ajoute depuis la liste des apps ouvertes.
+- **Les jeux UWP** passent par `ApplicationFrameHost.exe`, que le veto écarte :
+  la fenêtre au premier plan n'est pas celle du jeu.
+- **Un anti-triche** peut refuser d'ouvrir le processus du jeu : Shinku ne le
+  voit pas au premier plan, ou ne peut pas savoir s'il vit encore.
+- **Le nom du mutex** de l'agent (`Local\Shinku.Agent`) peut être pris à
+  l'avance par un autre programme du même compte, qui empêcherait l'agent de
+  démarrer. Il n'y gagne rien d'autre.
+- **Aucun vrai jeu n'a encore été essayé** : l'essai de bout en bout utilise un
+  faux jeu, et les effets de la veilleuse sur un jeu précis ne sont pas
+  mesurés.
+
+## L'agent
+
+`shinku-agent.exe` (`crates/shinku-agent`) n'a ni console ni fenêtre visible. Sa
+boucle (`game::agent::Agent`) ne connaît pas Windows : elle reçoit des
+événements (`Tick`, `PowerChanged`, `Release`, `Quit`, `Remove`, `SessionEnding`,
+`Disconnected`, `Reconnected`) et rend « continuer » ou « s'arrêter ». Le reste
+(`platform/windows/agent.rs`) est la fenêtre cachée qui les produit.
+
+**Qui le lance.** Shinku, au démarrage et à chaque changement des réglages du
+mode jeu (`Backend::sync_agent`), hors du fil de la fenêtre : si le mode
+automatique est allumé, ou si le journal contient une partie, et que l'agent ne
+tourne pas. Windows le lance aussi, à l'ouverture de session, par la valeur
+`Run` (`shinku-agent.exe --demarrage` : reprise immédiate, détection après deux
+minutes). Cette valeur n'existe que si le mode automatique est allumé : Shinku
+n'apparaît dans les apps de démarrage de Windows qu'à cette condition, et c'est
+elle qui garantit la reprise après une coupure de courant. Si la personne l'a
+désactivée dans le Gestionnaire des tâches, la page le dit et Shinku n'y touche
+pas. Fermer la fenêtre ne ferme pas l'agent.
+
+**Quand il sort.** Quand le mode automatique est éteint et qu'il n'y a plus de
+session ; quand il reçoit « quitter » ou « retirer » ; quand Windows ferme la
+session (il remet tout en place avant de rendre la main). Une déconnexion de la
+session (console ou bureau à distance) remet aussi tout en place, et la
+détection reprend à la reconnexion.
+
+**Ses messages.** Une fenêtre de premier niveau, jamais affichée (pas une
+fenêtre « message seulement » : elle ne recevrait pas la fin de session), de
+classe `Shinku.Agent`. Elle reçoit une minuterie de 2 s, les changements
+d'alimentation, la fin et le changement de session, et trois messages de
+Windows enregistrés (`Shinku.Agent.Relacher`, `.Quitter`, `.Retirer`) que
+`shinku.exe` et l'installeur lui postent. Un processus élevé peut poster à une
+fenêtre qui ne l'est pas : c'est ainsi que l'installeur lui parle. Une
+instance par session, garantie par un mutex nommé.
+
+**Ses arguments.** Aucun (veille tout de suite), `--demarrage`, `--relacher`
+(reprend la session du journal, la relâche, puis veille), `--quitter` et
+`--retirer` (postent l'ordre à l'agent en cours et attendent sa fin, dix
+secondes au plus ; permis même élevé, c'est l'installeur qui les appelle),
+`--version`. Tout autre argument : code 2. Lancé en administrateur, il sort sans
+rien dire, code 3 : un agent élevé n'aurait pas les droits des jeux de la
+personne.
+
+**Son installation.** `shinku-agent.exe` n'est pas le programme principal : Tauri
+ne l'embarque pas tout seul. `tauri.conf.json` le compile avant l'installeur
+(`beforeBuildCommand`), et le crochet `src-tauri/installer-hooks.nsh`
+(`bundle.windows.nsis.installerHooks`) le copie à côté de `shinku.exe`, et fait
+sortir l'ancien agent avant toute copie ou suppression (`--quitter` à
+l'installation, `--retirer` à la désinstallation, puis `taskkill` en dernier
+recours). Le chemin du fichier est bâti à partir de `${__FILEDIR__}`, par un
+`!define` hors de toute macro : NSIS résout sinon les chemins relatifs par
+rapport au script généré, et relirait `${__FILEDIR__}` à l'endroit où la macro
+est insérée, pas où le fichier est écrit.
+
 ## L'installeur
 
 NSIS, installation par machine dans Program Files, en français, avec l'amorce
@@ -274,8 +448,8 @@ WebView2 fait partie de Windows 11 : l'amorce ne sert que s'il a été retiré d
 PC, et c'est le seul cas où l'installeur télécharge quelque chose (chez
 Microsoft).
 
-Pour l'instant, l'installeur ne contient que `shinku.exe`. Le helper et l'agent
-y entreront avec leurs premières fonctions.
+L'installeur contient `shinku.exe` et l'agent du mode jeu, `shinku-agent.exe`
+(voir « L'agent »). Le helper y entrera avec ses premières fonctions.
 
 ### Le manifeste de `shinku.exe`
 
@@ -309,6 +483,26 @@ L'essai lit la page et clique par le port de débogage de WebView2, demandé de
 l'extérieur par une variable d'environnement : `shinku.exe` n'a aucune option
 d'essai.
 
+Il essaie aussi l'interrupteur principal du mode jeu : éteint au départ ;
+allumé, plus d'avertissement et un processus `shinku-agent.exe` tourne ; éteint,
+l'agent sort ; l'état de départ est restauré.
+
+Un second essai, `apps/shinku/scripts/essai-mode-jeu.ps1`, mène le mode jeu de
+bout en bout avec l'agent installé. Il force le mode d'alimentation « Utilisation
+normale » (sans cela il ne prouverait rien), écrit des réglages d'essai, puis
+lance avec le jeton filtré un `ping` en veilleuse, l'agent, et un faux jeu : une
+petite application compilée à l'instant, avec son propre chemin. Un
+`powershell.exe` aurait celui de tous les autres processus PowerShell de la
+machine, dont celui de l'essai : l'agent croirait la partie encore en cours.
+Quand le faux jeu a le premier plan, l'essai exige une session au journal, le
+ping en priorité basse et, si le mode « Performances élevées » existe sur la
+machine, l'alimentation dedans. Il ferme le jeu, exige un bilan complet, le ping
+et l'alimentation revenus, puis arrête l'agent par `--quitter`. Une étape de la
+CI, exécutée quoi qu'il arrive, remet le mode d'alimentation, les réglages et le
+journal d'origine. Si Windows refuse le premier plan à la fenêtre du faux jeu,
+l'essai le dit (« premier plan refusé par la machine d'essai ») et échoue : pas
+de faux succès.
+
 Les machines de GitHub font tout tourner en administrateur. Shinku y est donc
 lancé avec un jeton filtré, comme celui que donne le contrôle de compte
 d'utilisateur (`apps/shinku/scripts/lancer-en-utilisateur.ps1`) : ce sont les
@@ -331,9 +525,15 @@ d'environnement que dans un programme sans droits d'administrateur.
   peut ainsi faire supprimer ce que Shinku juge inutile, ce qu'il pouvait
   déjà faire lui-même avec les mêmes droits ; il n'y gagne aucune élévation.
   À réexaminer avec le helper.
-- **Helper et agent.** Lier leur bibliothèque d'exécution C++ de façon
-  statique, comme le fait déjà `shinku.exe`, pour ne dépendre d'aucun
-  composant à installer.
+- **Signer l'agent.** L'installeur embarque `shinku-agent.exe` par un crochet
+  NSIS, pas comme une ressource ou un binaire externe de Tauri : rien ne dit que
+  Tauri le signera avec `shinku.exe` (à vérifier), il faudra donc le signer
+  avant de fabriquer l'installeur. Un agent non signé, qui change la
+  priorité d'autres programmes, est exactement ce qu'un antivirus regarde de
+  près.
+- **Helper et agent.** Leur bibliothèque d'exécution C++ est liée statiquement
+  (`build.rs`), comme celle de `shinku.exe` ; à vérifier sur un PC sans
+  Visual C++ installé.
 - **ARM64.** Le code ne dépend pas de l'architecture, mais seul l'installeur
   x64 est fabriqué et testé.
 - **Intégration continue.** Désigner les actions GitHub par l'empreinte de

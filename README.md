@@ -16,25 +16,32 @@ Ce qui fonctionne :
 - le grand vide : après confirmation, il vide la corbeille, supprime les
   fichiers inutiles et envoie à la corbeille les copies en double que la
   personne a cochées. Un exemplaire de chaque doublon est toujours gardé ;
+- le mode jeu : un agent sans fenêtre (`shinku-agent.exe`) reconnaît un jeu
+  quand il passe au premier plan, passe l'alimentation en « Performances
+  élevées » (jamais sur batterie), met en veilleuse les apps d'arrière-plan
+  choisies, puis remet tout en place à la fin de la partie, y compris après un
+  plantage ou une coupure de courant. Éteint par défaut ; Shinku ne lance
+  jamais un jeu ;
 - l'interface complète, en deux modes d'affichage (Crépuscule et Brume),
   branchée sur le moteur ;
-- la fenêtre de l'application (`shinku.exe`) et son installeur pour Windows.
+- la fenêtre de l'application (`shinku.exe`) et son installeur pour Windows,
+  qui embarque l'agent.
 
 Ce qui n'existe pas encore :
 
 - les actions des modules (supprimer un seul doublon, un gros fichier…).
   Leurs boutons sont visibles mais inactifs, et l'interface le dit ;
-- l'assistant élevé (`shinku-helper.exe`) et l'agent lancé avec Windows
-  (`shinku-agent.exe`), dont il n'existe que le squelette ;
-- les modules Démarrage, Mode jeu, Désinstallation et Confidentialité.
+- l'assistant élevé (`shinku-helper.exe`), dont il n'existe que le squelette ;
+- l'analyse planifiée par l'agent : pour l'instant, il ne fait que le mode jeu ;
+- les modules Démarrage, Désinstallation et Confidentialité.
 
 ## Plan du dépôt
 
 | Dossier | Contenu |
 | --- | --- |
-| `crates/shinku-core` | Le cœur : règles, liste d'interdits, moteur d'analyse, réglages, et le « guichet » que la fenêtre appelle. Tout ce qui décide est ici, et se teste sans fenêtre. |
+| `crates/shinku-core` | Le cœur : règles, liste d'interdits, moteur d'analyse, mode jeu (`game/`), réglages, et le « guichet » que la fenêtre appelle. Tout ce qui décide est ici, et se teste sans fenêtre. |
 | `crates/shinku-helper` | L'assistant élevé. Il n'accepte que des verbes fixes, jamais un chemin. Squelette. |
-| `crates/shinku-agent` | L'agent sans fenêtre, lancé avec Windows. Squelette. |
+| `crates/shinku-agent` | L'agent du mode jeu : sans fenêtre, lancé par Shinku ou avec Windows. Il ne décide rien : il appelle le cœur toutes les deux secondes. |
 | `apps/shinku` | L'interface : TypeScript, lit-html, Vite. |
 | `apps/shinku/src-tauri` | La fenêtre : Tauri 2 sur WebView2. Elle affiche l'interface et transmet ses demandes au cœur. |
 | `docs` | Les notes de conception. |
@@ -75,14 +82,20 @@ npm run demo       # l'interface dans le navigateur, sur des données factices
 npm run check      # les types
 npm test           # les tests de l'interface, du contrat et du câblage
 npm run tauri dev  # Windows : la vraie fenêtre, rechargée à chaque changement
-npm run tauri build  # Windows : shinku.exe et son installeur
+npm run tauri build  # Windows : shinku.exe, shinku-agent.exe et l'installeur
 ```
 
-L'installeur est écrit dans `target/release/bundle/nsis/`.
+L'installeur est écrit dans `target/release/bundle/nsis/`. Il embarque
+`shinku-agent.exe`, compilé juste avant par `beforeBuildCommand`
+(`target/release/`) : un `tauri build` avec `--target` ne le trouverait pas.
 
 La démo accepte quelques réglages dans son adresse : `?theme=light` ou
 `?theme=dark`, `?speed=20` (analyse accélérée), `?bin=empty` (corbeille vide),
 `?issue=unreadable` ou `?issue=partial` (réglages illisibles au démarrage).
+Pour le mode jeu : `?game=off|idle|playing|released|pending` (où en est la
+partie), `?agent=missing|stopped`, `?power=unavailable|unsuited|battery` et
+`?startup=disabled`. La démo n'a pas de vrai agent : tout y est simulé en
+mémoire.
 
 `npm run build` puis `npm run preview` servent l'interface compilée sous la
 même politique de sécurité de contenu que la fenêtre : c'est le moyen de
@@ -97,7 +110,8 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   fabriqués pour l'occasion.
 - Le contrat entre le cœur et l'interface est un fichier de référence,
   `apps/shinku/tests/contract/contract.json`. Le cœur vérifie qu'il produit
-  bien ces formes de JSON, l'interface vérifie qu'elle attend les mêmes. Après
+  bien ces formes de JSON, l'interface vérifie qu'elle attend les mêmes (les
+  types, et les réponses de la démo). Après
   un changement voulu du JSON :
 
   ```sh
@@ -121,11 +135,25 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   Il mène une vraie analyse du disque et change un instant le mode
   d'affichage enregistré. Il annule la confirmation du grand vide : rien
   n'est supprimé. L'option `--grand-vide` le fait aller au bout, pour de
-  bon : elle est réservée à une machine jetable.
+  bon : elle est réservée à une machine jetable. Il allume aussi un instant
+  le mode jeu automatique et vérifie que l'agent démarre puis sort.
+- Le mode jeu est essayé de bout en bout par
+  `apps/shinku/scripts/essai-mode-jeu.ps1`, sur un vrai Windows : l'agent
+  installé reconnaît un faux jeu (une petite fenêtre compilée à l'instant) au
+  premier plan, met un `ping` en veilleuse, change le mode d'alimentation, puis
+  remet tout en place à la fermeture du jeu. Il remet à la fin le mode
+  d'alimentation et les réglages d'origine ; à réserver, lui aussi, à un PC
+  d'essai. Depuis `apps/shinku` :
+
+  ```sh
+  powershell -File scripts/essai-mode-jeu.ps1 -Agent "C:\Program Files\Shinku\shinku-agent.exe"
+  ```
+
 - L'intégration continue (`.github/workflows/ci.yml`) rejoue le tout sous
   Linux, passe le code propre à Windows au lint, puis, sur un vrai Windows,
   lance les tests du cœur, fabrique l'installeur, l'installe et essaie la
-  fenêtre. L'installeur n'est publié que si cet essai passe.
+  fenêtre, puis le mode jeu. L'installeur n'est publié que si ces essais
+  passent.
 
 ## Pour aller plus loin
 
