@@ -37,13 +37,17 @@
 //! - un **émetteur** est une entrée dont Shinku a baissé la classe ;
 //! - la **famille** (en mémoire seulement) est faite des processus hors journal
 //!   vus naître, depuis le relevé précédent, d'un émetteur ou d'un membre ;
-//! - un membre trouvé exactement « sous la normale » est relevé, une seule
-//!   fois ; s'il est lui-même listé et coché, il entre au journal avec « normale »
-//!   pour état d'avant ;
+//! - un membre trouvé exactement « sous la normale » est relevé tout de suite,
+//!   une seule fois, listé ou non ; s'il est listé et coché, le relevé des apps
+//!   le met ensuite en veilleuse en notant l'état qu'il lit (« normale ») ;
+//! - tout ce que Shinku relève ou remet (entrée remise, jeu ou ancêtre relevé)
+//!   et tout émetteur trouvé mort reste un point de départ de la passe suivante
+//!   (`Live.follow`) : un enfant né entre le relevé et le geste est trouvé ;
 //! - la remise en place est une seule fonction, qui rend leur état aux entrées
-//!   par identité, puis relève ce qui est né pendant ce temps.
+//!   par identité, puis relève ce qui est né pendant ce temps ; sans relevé
+//!   frais lisible, elle n'est pas finie.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -156,7 +160,7 @@ struct Live {
     /// Une remise en place a été abandonnée : le bilan le dira.
     incomplete: bool,
     /// Noms des apps déjà remises à leur vitesse pendant cette partie.
-    apps_restored: Vec<String>,
+    apps_restored: BTreeSet<String>,
     /// Un autre jeu reconnu au premier plan, et depuis combien de pas.
     switch: Option<(String, u32)>,
     /// Processus qu'on n'a pas pu modifier : à retirer du journal au pas suivant.
@@ -181,10 +185,13 @@ struct Live {
     family: HashSet<ProcessRef>,
     /// Membres dont la priorité ne s'est pas lue : lectures déjà faites.
     eval_retry: HashMap<ProcessRef, u8>,
-    /// Héritiers listés et cochés, vus au premier relevé : leur état d'avant est
-    /// « normale ». Consommés par le prochain relevé des apps listées.
-    heirs: HashSet<ProcessRef>,
-    /// Un héritier listé attend : le relevé des apps listées n'attend pas son tour.
+    /// Numéros dont les enfants nés entre un relevé et le geste qui a relevé ou
+    /// remis leur parent restent à chercher : émetteurs remis ou trouvés morts,
+    /// jeu et ancêtres relevés. Consommés par la prochaine passe de famille.
+    follow: HashSet<u32>,
+    /// Quelque chose vient d'être relevé : le relevé des apps listées n'attend
+    /// pas son tour (un processus listé relevé est mis en veilleuse en notant
+    /// l'état qu'il a alors).
     force_scan: bool,
     /// Les processus du jeu connus, même ceux qui ne sont plus dans le relevé.
     game_ids: HashSet<ProcessRef>,
@@ -199,7 +206,7 @@ impl Live {
             attempts: 0,
             last_retry: uptime,
             incomplete: false,
-            apps_restored: Vec::new(),
+            apps_restored: BTreeSet::new(),
             switch: None,
             dropped: Vec::new(),
             unmodifiable: HashSet::new(),
@@ -211,7 +218,7 @@ impl Live {
             previous: None,
             family: HashSet::new(),
             eval_retry: HashMap::new(),
-            heirs: HashSet::new(),
+            follow: HashSet::new(),
             force_scan: false,
             game_ids: HashSet::new(),
         }
@@ -249,8 +256,6 @@ struct Planned {
     process: RunningProcess,
     /// L'état d'avant, tel qu'il sera noté au journal.
     noted: ProcessState,
-    /// L'état lu sur le processus.
-    read: ProcessState,
     /// L'état à lui donner.
     target: ProcessState,
 }
@@ -267,9 +272,6 @@ struct Wish<'a> {
     current: &'a [Quieted],
     /// Ce qu'on n'a pas pu modifier.
     unmodifiable: &'a HashSet<ProcessRef>,
-    /// Les héritiers vus au premier relevé : trouvés « sous la normale », leur
-    /// état d'avant est « normale ».
-    heirs: &'a HashSet<ProcessRef>,
     /// Les processus qui ont lancé le jeu.
     ancestors: &'a HashSet<ProcessRef>,
 }
@@ -687,7 +689,6 @@ impl Watcher {
                 watched: None,
                 current: &[],
                 unmodifiable: &HashSet::new(),
-                heirs: &HashSet::new(),
                 ancestors: &ancestors,
             },
         );
@@ -750,9 +751,8 @@ impl Watcher {
     /// qui ne sont ni protégés, ni le jeu, ni un de ses ancêtres, ni l'app que
     /// la personne regarde, ni déjà dans le journal, et qu'on peut lire.
     ///
-    /// Un héritier (vu naître d'un émetteur, ou orphelin nouveau) trouvé en
-    /// « sous la normale » a hérité de cette classe : son état d'avant est
-    /// « normale », mode efficacité par défaut.
+    /// Un héritier trouvé « sous la normale » a déjà été relevé par la passe de
+    /// famille : l'état lu ici est son état d'avant.
     fn plan_quiet(&mut self, processes: &[RunningProcess], wish: &Wish<'_>) -> Vec<Planned> {
         let mut planned = Vec::new();
         for process in processes {
@@ -771,12 +771,8 @@ impl Watcher {
             if !priority::is_known(read.priority) {
                 continue;
             }
-            let mut noted = read;
-            if read.priority == priority::BELOW_NORMAL && wish.heirs.contains(&process.process) {
-                noted = DEFAULT_THROTTLE;
-            }
-            if let Some(target) = quiet_target(noted) {
-                planned.push(Planned { process: process.clone(), noted, read, target });
+            if let Some(target) = quiet_target(read) {
+                planned.push(Planned { process: process.clone(), noted: read, target });
             }
         }
         planned
@@ -929,18 +925,22 @@ impl Watcher {
     /// chaque nouvel essai, la reprise après plantage et les ordres `--quitter`
     /// et `--retirer`. Par tours, trois au plus : (a) chaque entrée du journal
     /// retrouve son état d'avant ; (b) un relevé frais, puis une passe de famille
-    /// qui relève tout membre trouvé « sous la normale », listé ou non ; (c) si
-    /// elle a relevé quelque chose, un tour de plus. Le journal n'est écrit
-    /// qu'après (par l'appelant).
+    /// qui relève tout membre trouvé « sous la normale » ; (c) si elle a relevé
+    /// quelque chose, un tour de plus. Le journal n'est écrit qu'après (par
+    /// l'appelant). Un relevé frais illisible ne prouve rien : la remise n'est
+    /// pas finie, le journal reste tel quel et sera rejoué (rendre deux fois son
+    /// état à une entrée est sans danger).
     ///
     /// Avec mémoire (l'agent a suivi la partie), seuls les nouveaux processus
     /// sont candidats et les émetteurs morts comptent. Sans mémoire (reprise après
     /// plantage), tout le relevé est candidat, mais seuls les émetteurs trouvés
     /// vivants sont des points de départ : après un redémarrage du PC aucune
-    /// identité ne correspond, et rien n'est touché.
+    /// identité ne correspond, et rien n'est touché. Une entrée du journal n'est
+    /// jamais traitée comme un héritier : `give_back` lui a rendu son état.
     fn restore_all(&mut self, session: &Session) -> Restoration {
         let (power, power_restored) = self.restore_power(&session.power);
         let memory = self.live.as_ref().is_some_and(|live| live.previous.is_some());
+        let excluded: HashSet<ProcessRef> = session.quieted.iter().map(process_of).collect();
         let mut left = session.quieted.clone();
         let mut apps = Vec::new();
         let first: HashSet<ProcessRef> =
@@ -950,6 +950,7 @@ impl Watcher {
             .filter(|entry| is_emitter(entry) && first.contains(&process_of(entry)))
             .map(|entry| entry.pid)
             .collect();
+        let mut blind = false;
         for _ in 0..RESTORE_ROUNDS {
             let given = self.give_back(&left);
             apps.extend(given.apps);
@@ -958,32 +959,46 @@ impl Watcher {
             }
             left = given.failed;
             let fresh = self.host.processes();
-            let excluded: HashSet<ProcessRef> = left.iter().map(process_of).collect();
-            let pass = Pass { names: &[], watched: None, excluded: &excluded, remise: true };
-            if self.family_pass(&fresh, &seeds, &pass) == 0 {
+            if fresh.is_empty() {
+                blind = session.quieted.iter().any(is_emitter)
+                    || self.live.as_ref().is_some_and(|l| !l.family.is_empty());
+                if blind {
+                    left.clone_from(&session.quieted);
+                }
+                break;
+            }
+            if self.family_pass(&fresh, &seeds, &excluded) == 0 {
                 break;
             }
         }
-        let complete = power_restored != Some(false) && left.is_empty();
+        let complete = power_restored != Some(false) && left.is_empty() && !blind;
         Restoration { power, power_restored, left, apps, complete }
     }
 
     /// La passe de famille. `seeds` : les numéros de processus dont les enfants
-    /// ont pu hériter (émetteurs vivants, émetteurs et membres morts à ce pas).
-    /// Tout processus nouveau, hors journal, ni jeu ni ancêtre du jeu, dont le
-    /// parent est un de ces numéros (ou un membre), entre dans la famille quelle
-    /// que soit sa priorité, jusqu'au point fixe. Chaque membre est évalué une
-    /// seule fois, à son entrée : trouvé exactement « sous la normale », il est
-    /// relevé, sauf s'il est listé et coché (il passe alors par le journal, avec
-    /// « normale » pour état d'avant). Rend le nombre de processus relevés.
+    /// ont pu hériter (émetteurs vivants ou morts à ce pas), avec ceux que la
+    /// passe d'avant a laissés à suivre (`Live.follow`). Tout processus nouveau,
+    /// hors `excluded` (journal, jeu, ancêtres), dont le parent est un de ces
+    /// numéros (ou un membre), entre dans la famille quelle que soit sa
+    /// priorité, jusqu'au point fixe. Chaque membre est évalué une seule fois, à
+    /// son entrée : trouvé exactement « sous la normale », il est relevé en
+    /// « normale », mode efficacité par défaut, listé ou non (s'il est listé,
+    /// le relevé des apps le mettra ensuite en veilleuse en notant l'état lu).
+    /// Rend le nombre de processus relevés.
     fn family_pass(
         &mut self,
         processes: &[RunningProcess],
         seeds: &HashSet<u32>,
-        pass: &Pass<'_>,
+        excluded: &HashSet<ProcessRef>,
     ) -> usize {
+        // Un relevé vide n'est pas un relevé : il ne dit pas qui est mort.
+        if processes.is_empty() {
+            return 0;
+        }
         let Some(live) = self.live.as_mut() else { return 0 };
-        if seeds.is_empty() && live.family.is_empty() {
+        let mut parents = seeds.clone();
+        parents.extend(std::mem::take(&mut live.follow));
+        if parents.is_empty() && live.family.is_empty() {
             return 0;
         }
         let mut family = std::mem::take(&mut live.family);
@@ -991,7 +1006,6 @@ impl Watcher {
         let previous = live.previous.take();
         let present: HashSet<ProcessRef> = processes.iter().map(|p| p.process).collect();
         // Un membre absent du relevé est mort : ses enfants ont pu en hériter.
-        let mut parents = seeds.clone();
         family.retain(|member| {
             let here = present.contains(member);
             if !here {
@@ -1012,7 +1026,7 @@ impl Watcher {
                 }
                 if parents.contains(&process.parent)
                     && new(&process.process)
-                    && !pass.excluded.contains(&process.process)
+                    && !excluded.contains(&process.process)
                     && family.insert(process.process)
                 {
                     parents.insert(process.process.pid);
@@ -1024,8 +1038,7 @@ impl Watcher {
                 break;
             }
         }
-        let room = self.file.session.as_ref().is_some_and(|s| s.quieted.len() < QUIETED_KEPT);
-        let (mut relieved, mut heirs) = (0, Vec::new());
+        let mut relieved = 0;
         for process in to_read {
             let Some(state) = self.host.inspect(process.process) else {
                 let tries = retry.entry(process.process).or_insert(0);
@@ -1036,17 +1049,9 @@ impl Watcher {
                 continue;
             };
             retry.remove(&process.process);
-            if state.priority != priority::BELOW_NORMAL {
-                continue;
-            }
-            let listed = !pass.remise
-                && room
-                && pass.names.contains(&process.exe_name)
-                && !apps::protected(&process.exe_name)
-                && pass.watched != Some(process.exe_name.as_str());
-            if listed {
-                heirs.push(process.process);
-            } else if self.host.apply(process.process, DEFAULT_THROTTLE).is_ok() {
+            if state.priority == priority::BELOW_NORMAL
+                && self.host.apply(process.process, DEFAULT_THROTTLE).is_ok()
+            {
                 relieved += 1;
             }
         }
@@ -1054,45 +1059,47 @@ impl Watcher {
             live.family = family;
             live.eval_retry = retry;
             live.previous = previous;
-            if !heirs.is_empty() {
-                live.heirs.extend(heirs);
-                live.force_scan = true;
-            }
+            live.force_scan |= relieved > 0;
         }
         relieved
     }
 
     /// Un processus nouveau, listé et coché, trouvé « sous la normale » et dont le
     /// parent n'est dans aucun processus du relevé (l'intermédiaire a vécu moins
-    /// d'un pas : `Update.exe` qui relance une app) est lui aussi un héritier.
-    fn note_orphans(&mut self, processes: &[RunningProcess], pass: &Pass<'_>) {
-        if pass.names.is_empty() {
+    /// d'un pas : `Update.exe` qui relance une app) a hérité lui aussi : il est
+    /// relevé d'abord, comme un membre de la famille.
+    fn note_orphans(
+        &mut self,
+        processes: &[RunningProcess],
+        names: &[String],
+        excluded: &HashSet<ProcessRef>,
+    ) {
+        if names.is_empty() {
             return;
         }
         let Some(previous) = self.live.as_ref().and_then(|live| live.previous.as_ref()) else {
             return;
         };
         let pids: HashSet<u32> = processes.iter().map(|p| p.process.pid).collect();
-        let found: Vec<ProcessRef> = processes
-            .iter()
-            .filter(|p| {
-                !previous.contains(&p.process)
-                    && !pids.contains(&p.parent)
-                    && pass.names.contains(&p.exe_name)
-                    && !apps::protected(&p.exe_name)
-                    && pass.watched != Some(p.exe_name.as_str())
-                    && !pass.excluded.contains(&p.process)
-            })
-            .filter(|p| {
-                self.host.inspect(p.process).is_some_and(|s| s.priority == priority::BELOW_NORMAL)
-            })
-            .map(|p| p.process)
-            .collect();
-        if let Some(live) = self.live.as_mut()
-            && !found.is_empty()
-        {
-            live.heirs.extend(found);
-            live.force_scan = true;
+        let mut relieved = false;
+        for process in processes.iter().filter(|p| {
+            !previous.contains(&p.process)
+                && !pids.contains(&p.parent)
+                && names.contains(&p.exe_name)
+                && !apps::protected(&p.exe_name)
+                && !excluded.contains(&p.process)
+        }) {
+            if self
+                .host
+                .inspect(process.process)
+                .is_some_and(|state| state.priority == priority::BELOW_NORMAL)
+                && self.host.apply(process.process, DEFAULT_THROTTLE).is_ok()
+            {
+                relieved = true;
+            }
+        }
+        if let Some(live) = self.live.as_mut() {
+            live.force_scan |= relieved;
         }
     }
 
@@ -1117,51 +1124,58 @@ impl Watcher {
             .as_ref()
             .map(|live| live.game_ids.iter().copied().collect())
             .unwrap_or_default();
-        let all_dead = known.iter().all(|id| self.host.liveness(*id) == Liveness::Dead);
-        if all_dead && !(known.is_empty() && processes.is_empty()) {
+        let alive: HashSet<ProcessRef> =
+            known.iter().copied().filter(|id| self.host.liveness(*id) != Liveness::Dead).collect();
+        if let Some(live) = self.live.as_mut() {
+            live.game_ids.clone_from(&alive);
+        }
+        if alive.is_empty() && !(known.is_empty() && processes.is_empty()) {
             View::Over
         } else {
             View::Blind
         }
     }
 
-    /// Les processus du jeu déjà vérifiés qui sont dans ce relevé : on ne rouvre
-    /// pas les autres.
-    fn game_set(&self, processes: &[RunningProcess]) -> HashSet<ProcessRef> {
-        processes.iter().map(|p| p.process).filter(|id| self.verified.contains(id)).collect()
-    }
-
     /// Les morts et la famille, à chaque pas tant que le journal n'est pas vide :
     /// une entrée absente du relevé n'en sort que si `liveness` dit `Dead`, puis
-    /// la passe de famille relève les héritiers.
+    /// la passe de famille relève les héritiers. `raised` : les processus du jeu
+    /// et ancêtres relevés à ce pas, dont les enfants sont cherchés aussi.
     fn track(
         &mut self,
         processes: &[RunningProcess],
         names: &[String],
-        watched: Option<&str>,
-        game: &HashSet<ProcessRef>,
-        ancestors: &HashSet<ProcessRef>,
+        excluded_more: &[&HashSet<ProcessRef>],
+        raised: &HashSet<u32>,
     ) {
         let Some(session) = self.file.session.as_ref() else { return };
         let entries = session.quieted.clone();
+        let memory = self.live.as_ref().is_some_and(|live| live.previous.is_some());
         let present: HashSet<ProcessRef> = processes.iter().map(|p| p.process).collect();
-        let (mut seeds, mut dead) = (HashSet::new(), HashSet::new());
+        let (mut seeds, mut dead, mut dead_emitters) =
+            (raised.clone(), HashSet::new(), HashSet::new());
         for entry in &entries {
             let id = process_of(entry);
             let gone = !present.contains(&id) && self.host.liveness(id) == Liveness::Dead;
             if gone {
                 dead.insert(id);
             }
-            if is_emitter(entry) && (gone || present.contains(&id)) {
+            if is_emitter(entry) && present.contains(&id) {
                 seeds.insert(entry.pid);
+            } else if is_emitter(entry) && gone && memory {
+                seeds.insert(entry.pid);
+                dead_emitters.insert(entry.pid);
             }
         }
         let mut excluded: HashSet<ProcessRef> = entries.iter().map(process_of).collect();
-        excluded.extend(game);
-        excluded.extend(ancestors);
-        let pass = Pass { names, watched, excluded: &excluded, remise: false };
-        self.note_orphans(processes, &pass);
-        self.family_pass(processes, &seeds, &pass);
+        for more in excluded_more {
+            excluded.extend(more.iter().copied());
+        }
+        self.note_orphans(processes, names, &excluded);
+        self.family_pass(processes, &seeds, &excluded);
+        if let Some(live) = self.live.as_mut() {
+            live.follow.extend(dead_emitters);
+            live.follow.extend(raised);
+        }
         if !dead.is_empty() {
             self.change_anyway(|file| {
                 if let Some(session) = file.session.as_mut() {
@@ -1193,8 +1207,6 @@ impl Watcher {
         let (mut apps, incomplete) =
             self.live.take().map(|live| (live.apps_restored, live.incomplete)).unwrap_or_default();
         apps.extend(done.apps.iter().cloned());
-        apps.sort_unstable();
-        apps.dedup();
         let power_restored = match session.power.outcome {
             PowerOutcome::Applied if session.power.is_held() => done.power_restored,
             PowerOutcome::Applied => Some(true),
@@ -1283,8 +1295,6 @@ impl Watcher {
 
     // --------------------------------------------------------- partie en cours
 
-    // --------------------------------------------------------- partie en cours
-
     /// Un pas pendant une partie.
     fn tick_session(&mut self, settings: &Settings, detect: bool) {
         let Some(session) = self.file.session.clone() else {
@@ -1318,9 +1328,8 @@ impl Watcher {
         // Une app listée n'entre au journal ni pendant une remise en attente, ni
         // quand la partie est relâchée : ses héritiers sont alors relevés.
         let names = if ending || session.released { Vec::new() } else { quiet_names(settings) };
-        let watched = foreground.map(|f| file_name(&f.exe)).filter(|name| names.contains(name));
         let (game, ancestors) = if view == View::Playing {
-            let game = self.game_set(processes);
+            let game = self.verified.clone();
             let ancestors = ancestors_of(&game, processes);
             (game, ancestors)
         } else {
@@ -1328,7 +1337,7 @@ impl Watcher {
         };
         if ending {
             if view != View::Blind {
-                self.track(processes, &names, watched.as_deref(), &game, &ancestors);
+                self.track(processes, &names, &[&game, &ancestors], &HashSet::new());
             }
             self.retry_pending();
             return;
@@ -1344,7 +1353,14 @@ impl Watcher {
             return;
         }
         if view != View::Blind {
-            self.track(processes, &names, watched.as_deref(), &game, &ancestors);
+            // Le jeu et ses ancêtres d'abord : leurs enfants nés avec eux sont
+            // cherchés par la même passe.
+            let raised = if session.released {
+                HashSet::new()
+            } else {
+                self.guard_game(session, processes, &game, &ancestors)
+            };
+            self.track(processes, &names, &[&game, &ancestors], &raised);
         }
         let on_game = foreground.is_some_and(|f| key(&f.exe) == key(&session.game.path));
         if on_game {
@@ -1432,14 +1448,22 @@ impl Watcher {
         self.verified.clear();
         self.rejected.clear();
         self.verified.insert(foreground.process);
+        // Un autre jeu : ce qui ne servait qu'à l'ancien est oublié.
         if let Some(live) = self.live.as_mut() {
             live.last_foreground = uptime;
             live.switch = None;
+            live.game_ids.clone_from(&self.verified);
+            live.unmodifiable.clear();
+            live.back_failed.clear();
+            live.guard_failed.clear();
         }
         let Some(session) = self.file.session.clone() else { return };
-        let game = self.game_set(processes);
+        let game = self.verified.clone();
         let ancestors = ancestors_of(&game, processes);
-        self.guard_game(&session, processes, &game, &ancestors);
+        let raised = self.guard_game(&session, processes, &game, &ancestors);
+        if let Some(live) = self.live.as_mut() {
+            live.follow.extend(raised);
+        }
         self.put_back_game(&session, &game, &ancestors);
     }
 
@@ -1466,26 +1490,26 @@ impl Watcher {
         if view == View::Blind {
             return;
         }
-        let Some(session) = self.file.session.clone() else { return };
-        self.guard_game(&session, processes, game, ancestors);
         self.quiet_step(settings, processes, foreground, game, ancestors);
     }
 
     /// Le jeu n'est jamais ralenti : tout processus du jeu, et tout processus qui
     /// l'a lancé quand il n'est pas au journal (lui retrouve son état d'avant),
-    /// trouvé exactement « sous la normale » est relevé. Un relèvement qui échoue
-    /// est retenté toutes les 30 secondes, vingt fois au plus.
+    /// trouvé exactement « sous la normale » est relevé en « normale », mode
+    /// efficacité par défaut. Un relèvement qui échoue est retenté toutes les 30
+    /// secondes, vingt fois au plus. Rend les numéros relevés.
     fn guard_game(
         &mut self,
         session: &Session,
         processes: &[RunningProcess],
         game: &HashSet<ProcessRef>,
         ancestors: &HashSet<ProcessRef>,
-    ) {
+    ) -> HashSet<u32> {
         let journal: HashSet<ProcessRef> = session.quieted.iter().map(process_of).collect();
         let mut raise = game.clone();
         raise.extend(ancestors.difference(&journal));
         let uptime = self.host.uptime_ms();
+        let mut raised = HashSet::new();
         for process in processes.iter().filter(|p| raise.contains(&p.process)) {
             let due = self
                 .live
@@ -1498,18 +1522,18 @@ impl Watcher {
             if state.priority != priority::BELOW_NORMAL {
                 continue;
             }
-            let raised = self
-                .host
-                .apply(process.process, ProcessState { priority: priority::NORMAL, ..state });
+            let done = self.host.apply(process.process, DEFAULT_THROTTLE);
             if let Some(live) = self.live.as_mut() {
-                match raised {
+                match done {
                     Ok(()) => {
                         live.guard_failed.remove(&process.process);
+                        raised.insert(process.process.pid);
                     }
                     Err(_) => note_failure(&mut live.guard_failed, process.process, uptime),
                 }
             }
         }
+        raised
     }
 
     /// Remet à leur état d'avant les entrées du journal qui sont devenues le
@@ -1521,33 +1545,41 @@ impl Watcher {
         game: &HashSet<ProcessRef>,
         ancestors: &HashSet<ProcessRef>,
     ) {
-        let (back, staying): (Vec<Quieted>, Vec<Quieted>) =
-            session.quieted.iter().cloned().partition(|entry| {
+        let back: Vec<Quieted> = session
+            .quieted
+            .iter()
+            .filter(|entry| {
                 let process = process_of(entry);
                 game.contains(&process) || ancestors.contains(&process)
-            });
+            })
+            .cloned()
+            .collect();
         if !back.is_empty() {
-            self.put_back(back, staying);
+            self.put_back(&back);
         }
     }
 
     /// Remet ces entrées à leur état d'avant, par identité, et les retire du
     /// journal. Celles qu'on n'a pas pu remettre y restent, à leur place, et sont
     /// retentées toutes les 30 secondes (vingt fois au plus : la remise de fin de
-    /// partie s'en chargera ensuite). Pas de cascade : leurs héritiers non listés
-    /// sont déjà relevés, et les listés ont leur propre entrée.
-    fn put_back(&mut self, back: Vec<Quieted>, _staying: Vec<Quieted>) {
-        let given = self.give_back(&back);
+    /// partie s'en chargera ensuite). Les enfants nés entre le dernier relevé et
+    /// ce geste ont pu hériter : les émetteurs remis restent des points de départ
+    /// de la prochaine passe de famille.
+    fn put_back(&mut self, back: &[Quieted]) {
+        let given = self.give_back(back);
         let uptime = self.host.uptime_ms();
         let failed: HashSet<ProcessRef> = given.failed.iter().map(process_of).collect();
         if let Some(live) = self.live.as_mut() {
             live.apps_restored.extend(given.apps);
-            for entry in &back {
+            for entry in back {
                 let process = process_of(entry);
                 if failed.contains(&process) {
                     note_failure(&mut live.back_failed, process, uptime);
                 } else {
                     live.back_failed.remove(&process);
+                    if is_emitter(entry) {
+                        live.follow.insert(entry.pid);
+                    }
                 }
             }
         }
@@ -1597,18 +1629,19 @@ impl Watcher {
         // L'app que la personne regarde n'est jamais ralentie.
         let watched = foreground.map(|f| file_name(&f.exe)).filter(|name| names.contains(name));
 
-        let (mut staying, back) =
-            split_quieted(&session, &names, watched.as_deref(), game, ancestors);
+        let (_, back) = split_quieted(&session, &names, watched.as_deref(), game, ancestors);
         let uptime = self.host.uptime_ms();
         // Une remise qui a échoué attend son tour : elle reste au journal.
-        let (back, waiting): (Vec<Quieted>, Vec<Quieted>) = back.into_iter().partition(|entry| {
-            self.live
-                .as_ref()
-                .is_none_or(|live| may_try(&live.back_failed, process_of(entry), uptime))
-        });
-        staying.extend(waiting);
+        let back: Vec<Quieted> = back
+            .into_iter()
+            .filter(|entry| {
+                self.live
+                    .as_ref()
+                    .is_none_or(|live| may_try(&live.back_failed, process_of(entry), uptime))
+            })
+            .collect();
         if !back.is_empty() {
-            self.put_back(back, staying);
+            self.put_back(&back);
         }
 
         let Some(live) = self.live.as_mut() else { return };
@@ -1622,28 +1655,23 @@ impl Watcher {
         }
         live.last_scan = uptime;
         if !names.is_empty() {
-            self.scan(processes, &names, watched.as_deref(), game, ancestors);
+            self.scan(processes, &names, watched.as_deref(), ancestors);
         }
     }
 
     /// Relevé des apps listées : met les nouvelles en veilleuse. Le journal n'est
-    /// réécrit que si quelque chose change, et avant d'agir. Un héritier qu'on ne
-    /// peut pas journaliser (journal plein, écriture en échec) est relevé tout de
-    /// suite au lieu d'être laissé bas.
+    /// réécrit que si quelque chose change, et avant d'agir. Un héritier trouvé
+    /// bas a déjà été relevé : il est mis en veilleuse en notant l'état lu.
     fn scan(
         &mut self,
         processes: &[RunningProcess],
         names: &[String],
         watched: Option<&str>,
-        game: &HashSet<ProcessRef>,
         ancestors: &HashSet<ProcessRef>,
     ) {
         let Some(session) = self.file.session.clone() else { return };
-        let heirs =
-            self.live.as_mut().map(|live| std::mem::take(&mut live.heirs)).unwrap_or_default();
         let unmodifiable =
             self.live.as_ref().map(|live| live.unmodifiable.clone()).unwrap_or_default();
-        let _ = game;
         let mut planned = self.plan_quiet(
             processes,
             &Wish {
@@ -1652,13 +1680,10 @@ impl Watcher {
                 watched,
                 current: &session.quieted,
                 unmodifiable: &unmodifiable,
-                heirs: &heirs,
                 ancestors,
             },
         );
-        let room = QUIETED_KEPT.saturating_sub(session.quieted.len());
-        let overflow = planned.split_off(room.min(planned.len()));
-        self.relieve_heirs(&overflow);
+        planned.truncate(QUIETED_KEPT.saturating_sub(session.quieted.len()));
         if planned.is_empty() {
             return;
         }
@@ -1667,15 +1692,6 @@ impl Watcher {
         // Journal non écrit : rien n'est abaissé, on réessaiera au prochain relevé.
         if self.change(|file| file.session = Some(next)).is_ok() {
             self.act_on(planned);
-        } else {
-            self.relieve_heirs(&planned);
-        }
-    }
-
-    /// Relève ceux de ces processus qui ont hérité de la classe basse.
-    fn relieve_heirs(&self, planned: &[Planned]) {
-        for plan in planned.iter().filter(|plan| plan.noted != plan.read) {
-            let _ = self.host.apply(plan.process.process, DEFAULT_THROTTLE);
         }
     }
 }
@@ -1689,19 +1705,6 @@ struct GiveBack {
     apps: Vec<String>,
     /// Les numéros des émetteurs dont le processus est mort.
     dead_emitters: Vec<u32>,
-}
-
-/// Les réglages d'une passe de famille.
-struct Pass<'a> {
-    /// Les noms d'apps qu'on peut encore mettre au journal (vide : aucune).
-    names: &'a [String],
-    /// L'app que la personne regarde.
-    watched: Option<&'a str>,
-    /// Ce qui ne peut pas entrer dans la famille : le journal, le jeu et ses
-    /// ancêtres.
-    excluded: &'a HashSet<ProcessRef>,
-    /// C'est une remise en place : tout héritier est relevé, listé ou non.
-    remise: bool,
 }
 
 /// Sépare les entrées du journal : celles qui restent en veilleuse, et celles

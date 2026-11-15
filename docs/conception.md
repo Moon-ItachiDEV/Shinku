@@ -409,26 +409,33 @@ d'ordre, aucune heure murale, aucune horloge monotone dans la filiation.
   (veilleuse éteinte, partie relâchée, remise en attente), la passe de famille
   cherche les membres jusqu'au point fixe : l'ensemble de départ réunit les
   numéros des émetteurs vivants, des membres vivants et des morts de ce pas (un
-  parent mort au pas où son enfant apparaît reste un émetteur) ; un membre qui
+  parent mort au pas où son enfant apparaît reste un émetteur), plus ceux que
+  la passe d'avant a laissés « à suivre » : tout ce que Shinku relève ou remet
+  (entrée remise en cours de partie, jeu ou ancêtre relevé) et tout émetteur
+  trouvé mort reste un point de départ de la prochaine passe lisible, car un
+  enfant né entre le relevé et le geste a pu hériter. Le jeu et ses ancêtres ne
+  deviennent pas membres : seuls leurs enfants nouveaux sont évalués. Un membre qui
   s'est remis « normale » lui-même laisse passer ses propres enfants, car
   ceux-ci ont pu hériter à travers lui. La famille est bornée à 2048 membres.
   Chaque membre est évalué une seule fois (priorité illisible : trois essais).
   Trouvé sous la normale, il est relevé en « normale » avec le mode efficacité
   par défaut, en un seul essai ; un héritier qui se rabaisse ensuite lui-même
   n'est pas poursuivi.
-- Un héritier **listé** et coché passe par le chemin normal du journal, avec
-  « normale » (mode efficacité par défaut) pour état d'avant, qu'il ait hérité
-  ou non du mode efficacité. Si le journal ne peut pas le prendre (veilleuse
-  éteinte, app décochée, journal plein, écriture impossible), il est relevé tout
-  de suite. Un nouveau processus listé dont le parent n'est dans aucun processus
-  du relevé (orphelin : l'intermédiaire a vécu moins d'un pas) est traité de
-  même ; un nouveau processus listé dont le parent est un processus vivant
-  étranger garde l'état lu comme état d'avant. Si le geste de mise en veilleuse
-  échoue, l'entrée ne sort du journal que si l'état lu est celui qu'on avait
-  noté.
-- Le jeu et ses ancêtres ne sont jamais ralentis : un ancêtre absent du journal
-  trouvé bas est relevé, un ancêtre du journal est remis à chaque pas, y compris
-  après un changement de jeu.
+- Un héritier trouvé sous la normale est **toujours** relevé tout de suite,
+  listé ou non. S'il est listé et coché, le relevé des apps (déclenché sans
+  attendre) le met ensuite en veilleuse comme n'importe quelle app listée, en
+  notant l'état qu'il lit : « normale », qu'il ait hérité ou non du mode
+  efficacité. Un nouveau processus listé dont le parent n'est dans aucun
+  processus du relevé (orphelin : l'intermédiaire a vécu moins d'un pas) est
+  relevé d'abord de la même façon ; un nouveau processus listé dont le parent
+  est un processus vivant étranger garde l'état lu comme état d'avant. Si le
+  geste de mise en veilleuse échoue, l'entrée ne sort du journal que si l'état
+  lu est celui qu'on avait noté.
+- Le jeu et ses ancêtres ne sont jamais ralentis : le jeu et ses ancêtres
+  absents du journal, trouvés bas, sont relevés (en « normale », mode efficacité
+  par défaut, comme tout ce qui a hérité) ; un ancêtre du journal est remis à
+  chaque pas, y compris après un changement de jeu. Les enfants du jeu relancé
+  par une app en veilleuse sont relevés avec lui.
 
 **Les morts.** Une entrée du journal absente du relevé n'en sort que si Windows
 prouve que le processus n'existe plus : `liveness` rend `Dead`, `Alive` ou
@@ -438,7 +445,13 @@ illisible (vide, ou sans le jeu alors que son processus n'est pas prouvé mort)
 suspend seulement les morts, la famille, la mise en veilleuse des nouveaux et la
 fin « plus aucun processus du jeu » ; les autres fins (mode automatique éteint,
 « Ce n'est pas un jeu », dix minutes d'arrière-plan, nouveaux essais de remise)
-passent.
+passent ; mais une remise dont le relevé frais est illisible n'est pas finie :
+le journal reste tel quel (rendre deux fois son état à une entrée est sans
+danger), la remise est en attente et rejouée au délai habituel, quand le relevé
+est de nouveau lisible. `liveness` dit aussi `Dead` quand le numéro appartient
+maintenant à une autre session Windows (un processus ne change jamais de
+session) ; « terminé » se lit par une attente nulle sur le processus, sans
+dépendre du code de sortie.
 
 **Une seule remise en place** sert à la fin de partie, à « Tout remettre », aux
 nouveaux essais, à la reprise après plantage et à `--quitter` / `--retirer`,
@@ -447,10 +460,12 @@ d'avant par identité exacte (un processus mort sort, un processus illisible
 reste en attente) ; (b) un relevé frais, puis la passe de famille en mode
 remise, qui relève tout membre entrant trouvé sous la normale, listé ou non ;
 (c) un tour de plus si quelque chose a été relevé. Le journal n'est écrit
-qu'après (b). Sans mémoire (reprise après plantage, ordres sans agent), il n'y a
+qu'après (b) : un relevé frais est donc pris avant toute écriture, y compris pour « Tout remettre ». Une remise en cours de partie (app décochée ou regardée, app devenue le jeu) n'a pas de relevé frais : ses émetteurs restent « à suivre » pour la passe suivante. Sans mémoire (reprise après plantage, ordres sans agent), il n'y a
 pas de filtre « nouveau », les points de départ sont les émetteurs trouvés
 vivants, et tout membre sous la normale est relevé une fois ; une entrée morte
-ne donne rien. Après un redémarrage du PC, aucune identité du journal ne
+ne donne rien, et une entrée du journal, même tout juste remise, n'est jamais
+traitée comme un héritier (une app déjà basse avant la partie retrouve son état
+d'avant, rien d'autre). Après un redémarrage du PC, aucune identité du journal ne
 correspond : rien n'est touché, sans qu'on ait à détecter le redémarrage.
 
 **Les dates.** `since` est le début du jeu affiché ; il ne sert qu'à
@@ -465,7 +480,19 @@ plus écrits.
 **Limites connues.**
 
 - Un programme non listé lancé par un intermédiaire qui a vécu moins de deux
-  secondes, jamais vu, garde la priorité basse héritée.
+  secondes, jamais vu, garde la priorité basse héritée. Pendant un relevé
+  illisible de plusieurs pas, la même chose vaut pour tout intermédiaire né et
+  mort pendant l'aveuglement.
+- Au-delà de 2048 membres vivants dans la famille, les nouveaux héritiers ne sont
+  plus suivis, donc plus relevés.
+- Une remise en attente (un processus illisible ou un relevé illisible) bloque
+  l'ouverture d'une nouvelle partie jusqu'à ce qu'elle finisse (au plus dix
+  minutes), et le jeu n'est pas surveillé pendant ce temps.
+- Un processus sorti avec le code 259 et dont une poignée reste ouverte ailleurs
+  est vu vivant par `exe_path` et `apply` (jamais un abaissement à tort ; `liveness`
+  n'a pas ce défaut).
+- Un plantage entre une remise en cours de partie et le pas suivant laisse
+  passer l'enfant né dans cet intervalle (quelques millisecondes).
 - Reprise après plantage : les enfants nés pendant que l'agent était arrêté, de
   parents déjà morts, ne sont pas retrouvés ; sans mémoire, un assistant qui
   s'était baissé lui-même peut être relevé.

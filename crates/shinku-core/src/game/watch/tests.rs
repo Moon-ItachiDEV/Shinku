@@ -697,7 +697,7 @@ fn a_recycled_pid_is_not_a_parent() {
     bench.host.kill(onedrive);
     // Le pas qui constate la mort de OneDrive : son pid n'est plus une racine
     // ensuite.
-    bench.tick();
+    bench.ticks(3);
     assert!(bench.session().quieted.is_empty());
     // Le pid de OneDrive est repris par un programme sans rapport, dont un
     // enfant est resté en priorité basse pour une autre raison.
@@ -1520,10 +1520,11 @@ fn a_chain_born_in_one_step_is_followed_even_through_a_process_that_raised_itsel
     bench.play();
     bench.host.advance(STEP);
     // A (OneDrive) lance C, qui se remet en « normale », qui lance G : G a
-    // hérité de la classe de A à travers C.
-    let middle = bench.host.spawn(230, 200, r"C:\x\relais.exe");
+    // hérité de la classe de A à travers C. G précède C dans le relevé : un seul
+    // tour sur la liste ne suffirait pas.
     let grandchild = bench.host.spawn(231, 230, r"C:\x\petit.exe");
     bench.host.set_state(grandchild, inherited());
+    let middle = bench.host.spawn(230, 200, r"C:\x\relais.exe");
     bench.tick();
     assert_eq!(bench.state(middle), normal(), "le relais n'est pas touché");
     assert_eq!(bench.state(grandchild), normal(), "le petit-enfant est relevé");
@@ -1621,14 +1622,16 @@ fn a_listed_heir_whose_throttle_cannot_be_set_stays_in_the_journal() {
     let game = bench.play();
     let tab = born_low(&bench, 211, 210, CHROME);
     bench.host.break_throttle(tab, true);
+    bench.host.break_rollback(tab, true);
     bench.ticks(16);
     let entry = bench.session().quieted.into_iter().find(|entry| entry.pid == 211);
     assert_eq!(
         entry.map(|entry| entry.priority),
         Some(priority::NORMAL),
-        "à moitié modifié : il reste au journal, avec son état d'avant"
+        "à moitié modifié : il reste au journal, avec son état d'avant « normale »"
     );
     bench.host.break_throttle(tab, false);
+    bench.host.break_rollback(tab, false);
     bench.quit(game);
     assert_eq!(bench.state(tab), normal());
 }
@@ -1700,8 +1703,15 @@ fn an_unreadable_snapshot_decides_nothing_but_the_end_settings_still_apply() {
     // Le mode automatique éteint termine la partie quand même.
     bench.settings.game_mode_auto = false;
     bench.tick();
-    assert!(!bench.watcher.has_session(), "le réglage s'applique sans relevé");
     assert_eq!(bench.state(dropbox), normal(), "chaque entrée est remise par identité");
+    assert!(bench.session().restore_pending, "mais sans relevé frais la remise n'est pas finie");
+    assert_eq!(bench.session().quieted.len(), 2, "le journal reste tel quel");
+    // Le relevé revient : la remise est rejouée, et l'enfant né pendant
+    // l'aveuglement est relevé.
+    bench.host.break_snapshot(false);
+    bench.ticks(16);
+    assert!(!bench.watcher.has_session(), "la remise est finie");
+    assert_eq!(bench.state(child), normal(), "l'enfant né pendant l'aveuglement est relevé");
 }
 
 #[test]
@@ -1760,7 +1770,7 @@ fn a_recycled_pid_after_the_death_noted_never_makes_a_stranger_a_child() {
     let child = born_low(&bench, 230, 200, r"C:\x\FileCoAuth.exe");
     bench.tick();
     bench.host.kill(onedrive);
-    bench.tick();
+    bench.ticks(3);
     // Le pid 200 est repris, puis un enfant de ce nouveau programme se met lui-même en bas.
     bench.host.spawn(200, 1, r"C:\x\autre.exe");
     let stranger_child = born_low(&bench, 301, 200, r"C:\x\enfant.exe");
@@ -1768,6 +1778,171 @@ fn a_recycled_pid_after_the_death_noted_never_makes_a_stranger_a_child() {
     bench.quit(game);
     assert_eq!(bench.state(stranger_child), inherited());
     assert_eq!(bench.state(child), normal());
+}
+
+#[test]
+fn a_child_born_just_before_an_unticked_app_is_put_back_is_relieved() {
+    let mut bench = Bench::new();
+    bench.app(200, ONEDRIVE);
+    let game = bench.play();
+    bench.host.advance(STEP);
+    let child = bench.host.spawn(230, 200, r"C:\x\FileCoAuth.exe");
+    bench.host.set_state(child, inherited());
+    // Né après la capture du pas : absent de ce relevé-là.
+    bench.host.hide_from_snapshot(child, true);
+    bench.settings.game_mode_quiet_removed = vec!["onedrive.exe".to_owned()];
+    bench.tick();
+    assert!(bench.session().quieted.is_empty(), "OneDrive est remis et sort du journal");
+    bench.host.hide_from_snapshot(child, false);
+    bench.ticks(3);
+    assert_eq!(bench.state(child), normal(), "le relevé suivant cherche ses enfants");
+    bench.quit(game);
+}
+
+#[test]
+fn a_child_born_just_before_the_watched_app_is_put_back_is_relieved_then_quieted_as_normal() {
+    let mut bench = Bench::new();
+    bench.settings.game_mode_quiet_added = vec!["chrome.exe".to_owned()];
+    let main = bench.app(210, CHROME);
+    let game = bench.play();
+    assert_eq!(bench.state(main), low());
+    bench.host.advance(STEP);
+    let tab = bench.host.spawn(211, 210, CHROME);
+    bench.host.set_state(tab, inherited());
+    bench.host.hide_from_snapshot(tab, true);
+    bench.host.set_foreground(Some(main));
+    bench.tick();
+    assert_eq!(bench.state(main), normal(), "Chrome regardé est remis");
+    bench.host.hide_from_snapshot(tab, false);
+    bench.ticks(3);
+    bench.host.set_foreground(Some(game));
+    bench.ticks(20);
+    let noted = bench.session().quieted.iter().find(|e| e.pid == 211).map(|e| e.priority);
+    assert_eq!(noted, Some(priority::NORMAL), "l'état d'avant de l'onglet est « normale »");
+    bench.quit(game);
+    assert_eq!(bench.state(tab).priority, priority::NORMAL);
+}
+
+#[test]
+fn a_listed_heir_seen_in_the_step_the_ten_minutes_end_is_relieved() {
+    let mut bench = Bench::new();
+    bench.settings.game_mode_quiet_added = vec!["chrome.exe".to_owned()];
+    bench.app(210, CHROME);
+    bench.play();
+    let notepad = bench.app(300, NOTEPAD);
+    bench.host.set_foreground(Some(notepad));
+    bench.ticks(299);
+    assert!(bench.watcher.has_session(), "pas encore dix minutes");
+    let tab = bench.host.spawn(211, 210, CHROME);
+    bench.host.set_state(tab, inherited());
+    bench.tick();
+    assert!(!bench.watcher.has_session(), "les dix minutes sont passées");
+    assert_eq!(bench.state(tab).priority, priority::NORMAL, "l'héritier listé est relevé");
+}
+
+#[test]
+fn the_helper_of_a_game_relaunched_by_a_quieted_app_is_relieved_too() {
+    let mut bench = Bench::new();
+    bench.settings.game_mode_quiet_added = vec!["itch.exe".to_owned()];
+    let itch = bench.app(50, r"C:\Users\a\AppData\Local\itch\itch.exe");
+    let first = bench.play();
+    assert_eq!(bench.state(itch), low());
+    bench.host.advance(STEP);
+    // Le même jeu, relancé par l'app en veilleuse : il hérite, et son auxiliaire aussi.
+    let again = bench.host.spawn(102, 50, GAME);
+    bench.host.set_state(again, inherited());
+    let helper = bench.host.spawn(103, 102, r"D:\x\CrashHandler.exe");
+    bench.host.set_state(helper, inherited());
+    bench.host.kill(first);
+    bench.host.set_foreground(Some(again));
+    bench.ticks(5);
+    assert_eq!(bench.state(again), normal(), "le jeu est relevé, mode efficacité par défaut");
+    assert_eq!(bench.state(helper), normal(), "son auxiliaire aussi");
+    bench.quit(again);
+}
+
+#[test]
+fn the_end_of_the_new_game_ends_the_session_after_a_change_of_game() {
+    let mut bench = Bench::new();
+    bench.app(200, ONEDRIVE);
+    bench.play();
+    let second = bench.app(101, OTHER_GAME);
+    bench.host.set_foreground(Some(second));
+    bench.ticks(3);
+    assert_eq!(bench.session().game.path, OTHER_GAME);
+    let notepad = bench.app(300, NOTEPAD);
+    bench.host.set_foreground(Some(notepad));
+    bench.host.kill(second);
+    bench.ticks(3);
+    assert!(!bench.watcher.has_session(), "le nouveau jeu est fermé : la partie finit");
+}
+
+#[test]
+fn recovery_without_memory_gives_a_low_entry_from_before_the_game_nothing_but_its_own_state() {
+    let mut bench = Bench::new();
+    bench.settings.game_mode_quiet_added = vec!["chrome.exe".to_owned()];
+    bench.app(210, CHROME);
+    let own = bench.host.spawn(211, 210, CHROME);
+    bench.host.set_state(own, inherited());
+    let game = bench.play();
+    let noted = bench.session().quieted.iter().find(|e| e.pid == 211).map(|e| e.priority);
+    assert_eq!(noted, Some(priority::BELOW_NORMAL));
+    bench.host.kill(game);
+    let mut next = restart(&bench);
+    next.recover();
+    assert_eq!(bench.state(own), inherited(), "déjà basse avant la partie : elle le reste");
+}
+
+#[test]
+fn the_journal_on_disk_still_lists_the_entries_when_the_fresh_snapshot_is_taken() {
+    let mut bench = Bench::new();
+    bench.app(200, ONEDRIVE);
+    bench.play();
+    let store = bench.store.clone();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    bench.host.on_snapshot(move || {
+        if let Ok(mut log) = log.lock() {
+            log.push(store.load().session.map_or(0, |session| session.quieted.len()));
+        }
+    });
+    bench.watcher.release();
+    let seen = seen.lock().map(|log| log.clone()).unwrap_or_default();
+    assert_eq!(seen.last(), Some(&1), "le fichier n'est écrit qu'après le relevé frais");
+    assert!(bench.session().quieted.is_empty());
+}
+
+#[test]
+fn a_restore_that_cannot_take_a_fresh_snapshot_stays_pending_with_the_journal_as_it_was() {
+    let mut bench = Bench::new();
+    let onedrive = bench.app(200, ONEDRIVE);
+    bench.play();
+    bench.host.break_snapshot(true);
+    bench.watcher.release();
+    let session = bench.session();
+    assert!(session.restore_pending, "sans relevé frais, la remise n'est pas finie");
+    assert_eq!(session.quieted.len(), 1);
+    assert_eq!(bench.state(onedrive), normal(), "l'entrée a pourtant retrouvé son état");
+    bench.host.break_snapshot(false);
+    bench.ticks(16);
+    assert!(bench.session().quieted.is_empty());
+}
+
+#[test]
+fn the_sets_kept_for_a_game_are_forgotten_when_the_game_changes() {
+    let mut bench = Bench::new();
+    let onedrive = bench.app(200, ONEDRIVE);
+    bench.host.set_writable(onedrive, false);
+    bench.play();
+    bench.host.set_writable(onedrive, true);
+    let second = bench.app(101, OTHER_GAME);
+    bench.host.set_foreground(Some(second));
+    bench.ticks(3);
+    assert_eq!(bench.session().game.path, OTHER_GAME);
+    let live = bench.watcher.live.as_ref().expect("une partie suit");
+    assert!(live.unmodifiable.is_empty() && live.back_failed.is_empty());
+    assert!(live.guard_failed.is_empty());
+    assert!(live.game_ids.iter().all(|id| *id == second), "seul le nouveau jeu est connu");
 }
 
 // ----------------------------------------------------------- erreurs d'écriture

@@ -348,6 +348,16 @@ struct FakeProcess {
     rollback_broken: bool,
 }
 
+/// Un crochet appelé à chaque relevé (pour observer le disque à ce moment-là).
+#[derive(Clone)]
+struct SnapshotHook(Arc<dyn Fn() + Send + Sync>);
+
+impl fmt::Debug for SnapshotHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SnapshotHook")
+    }
+}
+
 #[derive(Debug)]
 struct Fake {
     now: Timestamp,
@@ -362,6 +372,8 @@ struct Fake {
     power_refused: bool,
     /// Le relevé des processus échoue : il rend une liste vide.
     snapshot_broken: bool,
+    /// Appelé à chaque relevé des processus, avant de rendre la liste.
+    on_snapshot: Option<SnapshotHook>,
     /// Nombre de changements d'alimentation encore refusés avant que Windows accepte.
     power_refusals_left: u32,
     /// Nombre de gestes refusés sur un processus (accès refusé).
@@ -414,6 +426,7 @@ impl FakeHost {
                 processor: "Intel(R) Core(TM) i7-13700K".to_owned(),
                 power_refused: false,
                 snapshot_broken: false,
+                on_snapshot: None,
                 power_refusals_left: 0,
                 apply_refusals: 0,
                 gestures: Vec::new(),
@@ -591,6 +604,11 @@ impl FakeHost {
         self.state().power_refusals_left = count;
     }
 
+    /// Appelle ce crochet à chaque relevé des processus, avant de rendre la liste.
+    pub fn on_snapshot(&self, hook: impl Fn() + Send + Sync + 'static) {
+        self.state().on_snapshot = Some(SnapshotHook(Arc::new(hook)));
+    }
+
     /// Le relevé des processus échoue (manque de mémoire…) : il rend une liste
     /// vide, alors que les processus vivent.
     pub fn break_snapshot(&self, broken: bool) {
@@ -659,6 +677,10 @@ impl GameHost for FakeHost {
     }
 
     fn processes(&self) -> Vec<RunningProcess> {
+        let hook = self.state().on_snapshot.clone();
+        if let Some(hook) = hook {
+            (hook.0)();
+        }
         let fake = self.state();
         if fake.snapshot_broken {
             return Vec::new();

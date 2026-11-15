@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{
     ERROR_INVALID_PARAMETER, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, FILETIME, HANDLE, HLOCAL,
-    LocalFree,
+    LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
@@ -38,7 +38,8 @@ use windows::Win32::System::Threading::{
     PROCESS_NAME_FORMAT, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
     PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
     PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-    ProcessPowerThrottling, QueryFullProcessImageNameW, SetPriorityClass, SetProcessInformation,
+    PROCESS_SYNCHRONIZE, ProcessPowerThrottling, QueryFullProcessImageNameW, SetPriorityClass,
+    SetProcessInformation, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 use windows::core::{GUID, HSTRING, PCWSTR, PWSTR};
@@ -109,25 +110,59 @@ fn alive(handle: &OwnedHandle) -> bool {
     unsafe { GetExitCodeProcess(raw(handle), &raw mut code) }.is_ok() && code == STILL_ACTIVE
 }
 
-/// Ce que Windows dit de ce processus, avec des droits limités : `Dead` si son
-/// numéro n'existe pas, si sa date de création diffère ou s'il a un code de
-/// sortie ; `Unknown` pour tout le reste (accès refusé, autre erreur).
-fn liveness_of(process: ProcessRef) -> Liveness {
+/// Ouvre un processus et rend l'erreur de Windows telle quelle.
+fn try_open(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> windows::core::Result<OwnedHandle> {
     // SAFETY: appel sans pointeur ; le handle rendu est vérifié avant tout usage.
-    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process.pid) }
-    {
-        Ok(handle) => handle,
+    let handle = unsafe { OpenProcess(access, false, pid) }?;
+    // SAFETY: handle ouvert à l'instant, qui n'appartient qu'à cette fonction :
+    // `OwnedHandle` le fermera, une seule fois.
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
+}
+
+/// Ce que Windows dit de ce processus, avec des droits limités : `Dead` si son
+/// numéro n'existe pas ou appartient maintenant à une autre session Windows (un
+/// processus ne change jamais de session), si sa date de création diffère ou
+/// s'il est terminé ; `Unknown` pour tout le reste (accès refusé, autre erreur).
+///
+/// « Terminé » se lit avec `SYNCHRONIZE` et une attente nulle, qui ne dépend pas
+/// du code de sortie (un processus peut sortir avec 259, `STILL_ACTIVE`) ; si
+/// `SYNCHRONIZE` est refusé, on se rabat sur le code de sortie.
+fn liveness_of(process: ProcessRef) -> Liveness {
+    let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+    let (handle, waitable) = match try_open(process.pid, access) {
+        Ok(handle) => (handle, true),
         Err(error) if error.code() == ERROR_INVALID_PARAMETER.to_hresult() => {
             return Liveness::Dead;
         }
-        Err(_) => return Liveness::Unknown,
+        Err(_) => match try_open(process.pid, PROCESS_QUERY_LIMITED_INFORMATION) {
+            Ok(handle) => (handle, false),
+            Err(error) if error.code() == ERROR_INVALID_PARAMETER.to_hresult() => {
+                return Liveness::Dead;
+            }
+            Err(_) => {
+                // SAFETY: appel sans argument.
+                let own = session_of(unsafe { GetCurrentProcessId() });
+                return match session_of(process.pid) {
+                    Some(session) if Some(session) != own => Liveness::Dead,
+                    _ => Liveness::Unknown,
+                };
+            }
+        },
     };
-    // SAFETY: handle ouvert à l'instant, qui n'appartient qu'à cette fonction :
-    // `OwnedHandle` le fermera, une seule fois.
-    let handle = unsafe { OwnedHandle::from_raw_handle(handle.0) };
     let Some(started) = created(&handle) else { return Liveness::Unknown };
     if started != process.started {
         return Liveness::Dead;
+    }
+    if waitable {
+        // SAFETY: le handle vit autant que `handle` ; une attente nulle ne bloque pas.
+        let waited = unsafe { WaitForSingleObject(raw(&handle), 0) };
+        return if waited == WAIT_TIMEOUT {
+            Liveness::Alive
+        } else if waited == WAIT_OBJECT_0 {
+            Liveness::Dead
+        } else {
+            Liveness::Unknown
+        };
     }
     let mut code = 0u32;
     // SAFETY: le handle vit autant que `handle` ; `code` est une variable locale.
@@ -147,11 +182,16 @@ fn open_verified(process: ProcessRef, access: PROCESS_ACCESS_RIGHTS) -> Option<O
 
 /// Le chemin complet de l'exécutable d'un processus ouvert.
 fn image_path(handle: &OwnedHandle) -> Option<String> {
-    let mut buffer = vec![0u16; 32_768];
+    image_path_in(handle, &mut vec![0u16; 32_768])
+}
+
+/// Comme [`image_path`], dans un tampon que l'appelant réutilise (un relevé en
+/// lit plusieurs centaines).
+fn image_path_in(handle: &OwnedHandle, buffer: &mut [u16]) -> Option<String> {
     let mut length = buffer.len() as u32;
-    // SAFETY: le handle vit autant que `handle` ; le tampon est local et
-    // `length` annonce sa taille en caractères ; Windows y écrit au plus
-    // autant, et met à jour `length`.
+    // SAFETY: le handle vit autant que `handle` ; le tampon est exclusif à cet
+    // appel et `length` annonce sa taille en caractères ; Windows y écrit au
+    // plus autant, et met à jour `length`.
     unsafe {
         QueryFullProcessImageNameW(
             raw(handle),
@@ -269,6 +309,7 @@ impl GameHost for SystemHost {
         // SAFETY: appel sans pointeur.
         let own = session_of(unsafe { GetCurrentProcessId() });
         let mut found = Vec::new();
+        let mut buffer = vec![0u16; 32_768];
         // SAFETY: le handle vit autant que `snapshot`, et `entry` est une
         // structure locale dont le champ `dwSize` annonce la taille.
         let mut more = unsafe { Process32FirstW(raw(&snapshot), &raw mut entry) }.is_ok();
@@ -284,7 +325,7 @@ impl GameHost for SystemHost {
                 // de la capture n'est plus celui de ce processus, et la ligne
                 // est écartée (sinon un étranger porterait un nom listé).
                 let listed = text_from(&entry.szExeFile).to_lowercase();
-                let opened = image_path(&handle)
+                let opened = image_path_in(&handle, &mut buffer)
                     .map(|path| path.rsplit(['\\', '/']).next().unwrap_or("").to_lowercase());
                 if opened.as_deref() == Some(listed.as_str()) {
                     found.push(RunningProcess {
@@ -601,6 +642,13 @@ mod tests {
         assert_eq!(host.liveness(me), Liveness::Alive);
         me.started += 1;
         assert_eq!(host.liveness(me), Liveness::Dead, "un pid repris n'est pas ce processus");
+    }
+
+    #[test]
+    fn a_pid_that_does_not_exist_is_dead() {
+        let host = SystemHost::new();
+        let nobody = ProcessRef { pid: 0xFFFF_FFF0, started: 1 };
+        assert_eq!(host.liveness(nobody), Liveness::Dead, "OpenProcess : paramètre invalide");
     }
 
     #[test]
