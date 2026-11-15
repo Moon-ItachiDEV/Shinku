@@ -839,6 +839,179 @@ button.row:focus-visible {
   transform: translate(-50%, 0);
 }
 
+/* ── Grand vide ─────────────────────────────────────────────────────────── */
+
+/* Une légende longue passe à la ligne sans perdre son centre. */
+.dock .cap {
+  max-width: 560px;
+  line-height: 1.5;
+  text-align: center;
+  text-wrap: balance;
+}
+
+/* Dans un écran centré, l'étiquette, le grand chiffre et sa suite gardent leur propre taille. */
+.hero .eb {
+  max-width: none;
+  margin: 22px 0 0;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: normal;
+  letter-spacing: 0.28em;
+  color: var(--text-3);
+}
+
+.hero .big {
+  max-width: none;
+  margin: 12px 0 0;
+  font-size: 64px;
+  font-weight: 200;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.hero .rec {
+  margin: 12px 0 0;
+  font-size: 15px;
+  line-height: normal;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+
+/* Une précision, sous le texte d'un écran centré. */
+.hero .fine {
+  max-width: 520px;
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  letter-spacing: 0.03em;
+  color: var(--text-3);
+}
+
+/* Les chiffres qui défilent ne font pas danser le texte ; leur ligne garde sa place avant le premier. */
+.hero .num,
+.hero .sofar {
+  font-variant-numeric: tabular-nums;
+}
+
+.hero .sofar {
+  min-height: 1.6em;
+}
+
+/*
+ * Le bilan : le détail par catégorie, puis ce qu'il faut avoir lu. Trop long
+ * pour la fenêtre, il défile, et son bas s'estompe au lieu d'être coupé net.
+ */
+.bilan {
+  padding-bottom: 24px;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+
+/* Un bilan qui a des choses à dire laisse moins de place à son dessin. */
+.bilan.dense .ill {
+  width: 120px;
+}
+
+.bilan h1 {
+  margin-top: 14px;
+}
+
+.bilan .segbox {
+  width: 100%;
+  max-width: 360px;
+  margin: 22px 0 0;
+}
+
+.bilan .chips {
+  margin-top: 18px;
+}
+
+.bilan .alert {
+  margin-top: 20px;
+}
+
+.hero .alert p + p {
+  margin-top: 8px;
+}
+
+.fines {
+  margin-top: 14px;
+}
+
+.fines .fine:first-child {
+  margin-top: 0;
+}
+
+.core:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.core:disabled:active {
+  transform: none;
+}
+
+/* ── Confirmation ───────────────────────────────────────────────────────── */
+
+dialog.ask {
+  box-sizing: border-box;
+  width: min(500px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  overflow: hidden auto;
+  border: 1px solid rgb(var(--ov) / calc(0.1 * var(--ov-k)));
+  border-radius: 22px;
+  background: var(--surface-solid);
+  color: var(--text);
+  box-shadow: 0 30px 80px -30px rgb(10 6 20 / 0.7);
+}
+
+dialog.ask[open] {
+  animation: enter 260ms var(--e) both;
+}
+
+/* Le voile : le reste de la fenêtre ne répond plus tant que la question est posée. */
+dialog.ask::backdrop {
+  background: rgb(16 11 26 / 0.52);
+}
+
+dialog.ask[open]::backdrop {
+  animation: fadeonly 200ms ease both;
+}
+
+.askbox {
+  padding: 26px 26px 22px;
+}
+
+.askbox h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 300;
+  line-height: 1.3;
+  letter-spacing: 0.05em;
+}
+
+.askintro {
+  margin: 8px 0 18px;
+  font-size: 13.5px;
+  font-weight: 300;
+  line-height: 1.6;
+  letter-spacing: 0.025em;
+  color: var(--text-2);
+}
+
+.askbox .note {
+  margin: 12px 2px 0;
+}
+
+.askbtns {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
 /* ── Survol ─────────────────────────────────────────────────────────────── */
 
 @media (hover: hover) and (pointer: fine) {
@@ -884,7 +1057,8 @@ button.row:focus-visible {
     margin-top: 18px;
   }
 
-  .head .big {
+  .head .big,
+  .hero .big {
     font-size: 52px;
   }
 
@@ -942,12 +1116,21 @@ button.row:focus-visible {
     padding: 4px 0 16px;
   }
 
-  .head .big {
+  .head .big,
+  .hero .big {
     font-size: 44px;
   }
 
   .big.mid {
     font-size: 42px;
+  }
+
+  .hero .eb {
+    margin-top: 14px;
+  }
+
+  .bilan .segbox {
+    margin-top: 16px;
   }
 }
 
@@ -965,7 +1148,8 @@ button.row:focus-visible {
     transition: none !important;
   }
 
-  .tick {
+  .tick,
+  dialog.ask[open] {
     animation-name: fadeonly;
   }
 }

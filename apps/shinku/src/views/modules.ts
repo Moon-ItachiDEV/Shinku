@@ -1,6 +1,7 @@
-// Les pages des modules. À cette étape elles montrent ce que l'analyse a
-// trouvé, sans rien supprimer : les boutons d'action sont visibles mais
-// inactifs, et l'écran le dit.
+// Les pages des modules. Elles montrent ce que l'analyse a trouvé, sans rien
+// supprimer elles-mêmes : pour l'instant, tout ce qui part passe par le grand
+// vide et sa confirmation. Leurs boutons d'action sont visibles mais inactifs,
+// et l'écran dit où aller.
 
 import { html, nothing, type TemplateResult } from 'lit-html';
 
@@ -17,12 +18,16 @@ type Content = TemplateResult | typeof nothing;
 /** L'introduction d'un module qui sait analyser : rien n'a encore été cherché. */
 function introStage(state: AppState, actions: Actions, art: ModuleArt, title: string, text: string): TemplateResult {
   const blocked = state.overview?.scanBlocked ?? false;
+  // Tant qu'un grand vide tourne, aucune analyse ne démarre.
+  const cleaning = state.session.state === 'cleaning';
   return stage({
     key: 'intro',
     body: hero(moduleArt(art), title, text),
     dock: html`<div class="dock">
-      ${orb(fr.common.analyse, blocked ? null : actions.startScan)}
-      <p class="cap">${blocked ? fr.home.checkFirst : fr.common.nothingWithoutConsent}</p>
+      ${orb(fr.common.analyse, blocked || cleaning ? null : actions.startScan)}
+      <p class="cap">
+        ${cleaning ? fr.clean.title : blocked ? fr.home.checkFirst : fr.common.nothingWithoutConsent}
+      </p>
     </div>`,
   });
 }
@@ -43,7 +48,7 @@ function scanStage(state: AppState, actions: Actions, art: ModuleArt, title: str
   });
 }
 
-/** La liste des trouvailles d'un module, avec son bouton d'action à venir. */
+/** La liste des trouvailles d'un module, avec son bouton d'action, encore inactif. */
 function listStage(parts: {
   name: string;
   title: string;
@@ -121,7 +126,7 @@ export function junkView(state: AppState, actions: Actions): TemplateResult {
     hint: fr.junk.hint,
     body: report === null ? loadingNote() : junkBody(report),
     action: fr.junk.remove,
-    cap: entry.bytes > 0 ? fr.junk.soon(entry.bytes) : fr.junk.soonEmpty,
+    cap: entry.bytes > 0 ? fr.junk.viaClean(entry.bytes) : fr.junk.nothing,
   });
 }
 
@@ -236,7 +241,7 @@ export function duplicatesView(state: AppState, actions: Actions): TemplateResul
     hint: off ? fr.duplicates.offText : entry.items > 0 ? fr.duplicates.hint : fr.duplicates.hintNone,
     body,
     action: fr.duplicates.remove,
-    cap: entry.bytes > 0 ? fr.duplicates.soon(entry.bytes) : fr.duplicates.soonEmpty,
+    cap: entry.bytes > 0 ? fr.duplicates.viaClean(entry.bytes) : fr.duplicates.nothing,
   });
 }
 
@@ -261,7 +266,7 @@ export function binView(state: AppState): TemplateResult {
     body: hero(binArt('bin', level), over ? fr.bin.titleOver : fr.bin.title, text),
     dock: html`<div class="dock">
       ${orb(fr.bin.emptyIt, null)}
-      <p class="cap">${fr.bin.soon}</p>
+      ${bin === null ? nothing : html`<p class="cap">${bin.items > 0 ? fr.bin.viaClean : fr.bin.nothing}</p>`}
     </div>`,
   });
 }

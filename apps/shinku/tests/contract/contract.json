@@ -6,6 +6,9 @@
       "monthly"
     ],
     "backendError": [
+      "cleanNotStarted",
+      "cleanRefused",
+      "cleanRunning",
       "folderRefused",
       "scanNotStarted",
       "settingsNotSaved",
@@ -15,6 +18,23 @@
       "ready",
       "pending",
       "unavailable"
+    ],
+    "cleanOutcome": [
+      "completed",
+      "cancelled"
+    ],
+    "cleanPhase": [
+      "preparing",
+      "recycleBin",
+      "junkFiles",
+      "duplicates",
+      "done"
+    ],
+    "cleanRefusal": [
+      "noResults",
+      "staleResults",
+      "otherAnalysis",
+      "nothingToClean"
     ],
     "duplicatesState": [
       "done",
@@ -69,11 +89,29 @@
       "C",
       "D"
     ],
+    "runState": [
+      "running",
+      "completed",
+      "cancelled",
+      "interrupted"
+    ],
     "sessionState": [
       "idle",
       "scanning",
       "results",
+      "failed",
+      "cleaning",
+      "cleaned"
+    ],
+    "stepState": [
+      "notRequested",
+      "done",
+      "stopped",
       "failed"
+    ],
+    "stopReason": [
+      "notInRecycleBin",
+      "keptCopyChanged"
     ],
     "theme": [
       "system",
@@ -82,6 +120,39 @@
     ]
   },
   "shapes": {
+    "cleanPreview": {
+      "analysis": "number",
+      "duplicates": {
+        "bytes": "number",
+        "copies": "number",
+        "otherDiskCopies": "number",
+        "syncedCopies": "number"
+      },
+      "junk": {
+        "bytes": "number",
+        "files": "number",
+        "openApps": [
+          {
+            "bytes": "number",
+            "label": "string"
+          }
+        ]
+      },
+      "recycleBin": {
+        "bytes": "number",
+        "items": "number"
+      }
+    },
+    "cleanRequest": {
+      "analysis": "number",
+      "duplicates": "boolean",
+      "junkFiles": "boolean",
+      "recycleBin": "boolean"
+    },
+    "cleanStop": {
+      "file": "string",
+      "reason": "string"
+    },
     "duplicates": {
       "bytes": "number",
       "candidates": "number",
@@ -108,6 +179,17 @@
       "offset": "number",
       "skippedFiles": "number",
       "state": "string"
+    },
+    "error.cleanNotStarted": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "error.cleanRefused": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "error.cleanRunning": {
+      "kind": "string"
     },
     "error.folderRefused": {
       "kind": "string",
@@ -178,6 +260,14 @@
       "reason": "string"
     },
     "overview": {
+      "interruptedClean": {
+        "finishedMs": "null",
+        "freedBytes": "number",
+        "recoverableBytes": "number",
+        "skippedFiles": "number",
+        "startedMs": "number",
+        "state": "string"
+      },
       "recycleBin": {
         "bytes": "number",
         "items": "number"
@@ -216,7 +306,79 @@
         }
       ]
     },
+    "sessionView.cleaned": {
+      "clean": {
+        "progress": {
+          "files": "number",
+          "freedBytes": "number",
+          "phase": "string",
+          "recycledBytes": "number",
+          "skippedFiles": "number",
+          "workDone": "number",
+          "workTotal": "number"
+        },
+        "report": {
+          "duplicates": {
+            "bytes": "number",
+            "copies": "number",
+            "state": "string",
+            "stop": "null"
+          },
+          "durationMs": "number",
+          "finished": "number",
+          "freedBytes": "number",
+          "junk": {
+            "bytes": "number",
+            "files": "number",
+            "leftOpen": [
+              {
+                "bytes": "number",
+                "label": "string"
+              }
+            ],
+            "state": "string"
+          },
+          "outcome": "string",
+          "recoverableBytes": "number",
+          "recycleBin": {
+            "bytes": "number",
+            "items": "number",
+            "state": "string"
+          },
+          "skipped": {
+            "changed": "number",
+            "denied": "number",
+            "inUse": "number",
+            "other": "number",
+            "unrecyclable": "number"
+          },
+          "started": "number"
+        },
+        "request": {
+          "analysis": "number",
+          "duplicates": "boolean",
+          "junkFiles": "boolean",
+          "recycleBin": "boolean"
+        }
+      },
+      "progress": {
+        "files": "number",
+        "folders": "number",
+        "foundBytes": "number",
+        "phase": "string",
+        "workDone": "number",
+        "workTotal": "number"
+      },
+      "skipped": {
+        "folders": "number",
+        "refusedRoots": "number"
+      },
+      "stale": "boolean",
+      "state": "string",
+      "summary": "null"
+    },
     "sessionView.idle": {
+      "clean": "null",
       "progress": {
         "files": "number",
         "folders": "number",
@@ -234,6 +396,7 @@
       "summary": "null"
     },
     "sessionView.results": {
+      "clean": "null",
       "progress": {
         "files": "number",
         "folders": "number",

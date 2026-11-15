@@ -12,13 +12,16 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf, PrefixComponent};
 
-use super::{EntryFlags, EntryKind, EntryMeta, Fingerprint, Identity, OpenError, ReadDirError};
+use super::{
+    EntryFlags, EntryKind, EntryMeta, Expected, Fingerprint, Identity, OpenError, ReadDirError,
+    RemoveError,
+};
 use crate::model::{FileId, Timestamp};
 
-/// Traduit des métadonnées obtenues sans suivre de lien.
-fn meta_from(name: &OsStr, metadata: &Metadata) -> EntryMeta {
+/// Nature d'une entrée, lue sans suivre de lien.
+fn kind_of(metadata: &Metadata) -> EntryKind {
     let file_type = metadata.file_type();
-    let kind = if file_type.is_symlink() {
+    if file_type.is_symlink() {
         EntryKind::Link
     } else if file_type.is_dir() {
         EntryKind::Dir
@@ -26,7 +29,12 @@ fn meta_from(name: &OsStr, metadata: &Metadata) -> EntryMeta {
         EntryKind::File
     } else {
         EntryKind::Other
-    };
+    }
+}
+
+/// Traduit des métadonnées obtenues sans suivre de lien.
+fn meta_from(name: &OsStr, metadata: &Metadata) -> EntryMeta {
+    let kind = kind_of(metadata);
     // Convention Unix : un nom qui commence par un point est caché.
     let flags = if name.as_bytes().first() == Some(&b'.') {
         EntryFlags::HIDDEN
@@ -124,6 +132,61 @@ pub(super) fn check_open_file(file: &File, expected: &Fingerprint) -> Result<(),
         return Err(OpenError::Changed);
     }
     Ok(())
+}
+
+fn remove_error(error: io::Error) -> RemoveError {
+    match error.kind() {
+        io::ErrorKind::PermissionDenied => RemoveError::AccessDenied,
+        io::ErrorKind::NotFound => RemoveError::NotFound,
+        io::ErrorKind::DirectoryNotEmpty => RemoveError::NotEmpty,
+        _ => RemoveError::Io(error),
+    }
+}
+
+/// Une entrée vérifiée, à supprimer par son chemin.
+///
+/// Rien ne permet ici de tenir l'entrée entre la vérification et la
+/// suppression : cette implémentation n'est pas livrée.
+pub(super) struct Removal {
+    path: PathBuf,
+    dir: bool,
+}
+
+impl Removal {
+    pub(super) fn open(path: &Path, expected: &Expected) -> Result<Self, RemoveError> {
+        let metadata = fs::symlink_metadata(path).map_err(remove_error)?;
+        let kind = kind_of(&metadata);
+        if kind != expected.kind || kind == EntryKind::Other {
+            return Err(RemoveError::Changed);
+        }
+        let same_id =
+            expected.file_id.is_none_or(|expected| expected == FileId(u128::from(metadata.ino())));
+        let same_content = kind == EntryKind::Dir
+            || (metadata.len() == expected.size && modified_of(&metadata) == expected.modified);
+        if !same_id || !same_content {
+            return Err(RemoveError::Changed);
+        }
+        Ok(Self { path: path.to_path_buf(), dir: kind == EntryKind::Dir })
+    }
+
+    pub(super) fn modified(&self) -> Result<Timestamp, RemoveError> {
+        fs::symlink_metadata(&self.path)
+            .map(|metadata| modified_of(&metadata))
+            .map_err(remove_error)
+    }
+
+    pub(super) fn mark(&mut self) -> Result<(), RemoveError> {
+        // Rien à réserver : la suppression a lieu à la confirmation.
+        Ok(())
+    }
+
+    pub(super) fn commit(self) -> Result<(), RemoveError> {
+        // `remove_file` supprime un lien en tant que lien, et `remove_dir`
+        // refuse un dossier qui n'est pas vide.
+        let removed =
+            if self.dir { fs::remove_dir(&self.path) } else { fs::remove_file(&self.path) };
+        removed.map_err(remove_error)
+    }
 }
 
 pub(super) fn is_real_dir(path: &Path) -> io::Result<bool> {

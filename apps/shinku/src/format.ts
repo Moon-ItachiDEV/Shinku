@@ -64,6 +64,15 @@ export function countOf(count: number, one: string, many: string): string {
   return `${formatCount(count)}${NBSP}${plural(count, one, many)}`;
 }
 
+/** « Chrome », « Chrome et Discord », « Chrome, Discord et Steam ». */
+export function listOf(items: readonly string[]): string {
+  const last = items[items.length - 1];
+  if (last === undefined) {
+    return '';
+  }
+  return items.length === 1 ? last : `${items.slice(0, -1).join(', ')} et ${last}`;
+}
+
 /** Part faite, en pour cent entiers, bornée entre 0 et 100. */
 export function percent(done: number, total: number): number {
   if (total <= 0) {

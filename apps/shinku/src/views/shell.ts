@@ -3,13 +3,13 @@
 import { html, nothing, type TemplateResult } from 'lit-html';
 import { keyed } from 'lit-html/directives/keyed.js';
 
-import type { Volume } from '../backend/types.ts';
 import { driveName, formatBytes } from '../format.ts';
 import { fr } from '../i18n/fr.ts';
-import { binOverThreshold } from '../model/scan.ts';
+import { binOverThreshold, mainVolume } from '../model/scan.ts';
 import type { Actions, AppState, Route } from '../state.ts';
 import { closeIcon, hole, type IconName, mark, maximizeIcon, minimizeIcon, navIcon } from './art.ts';
-import { homeView } from './home.ts';
+import { confirmDialog } from './clean.ts';
+import { homeView, shownPane } from './home.ts';
 import { binView, duplicatesView, junkView, largeView, soonView } from './modules.ts';
 import { settingsView } from './settings.ts';
 import { styles } from './style.ts';
@@ -77,11 +77,6 @@ function navButton(state: AppState, actions: Actions, item: NavItem): TemplateRe
   >
     ${navIcon(item.icon)}<span>${item.label}</span>${item.route === 'bin' ? binBadge(state) : nothing}
   </button>`;
-}
-
-/** Le disque à montrer dans la jauge : celui de Windows, sinon le premier disque interne. */
-function mainVolume(volumes: readonly Volume[]): Volume | undefined {
-  return volumes.find((volume) => volume.system) ?? volumes.find((volume) => volume.fixed) ?? volumes[0];
 }
 
 function diskGauge(state: AppState): TemplateResult | typeof nothing {
@@ -159,7 +154,8 @@ export function appView(state: AppState, actions: Actions): TemplateResult {
     ${windowButtons(actions)}
     ${ready
       ? html`${sidebar(state, actions)}
-          <main class="main">${keyed(`${state.route}:${state.pane}`, page(state, actions))}</main>`
+          <main class="main">${keyed(`${state.route}:${shownPane(state)}`, page(state, actions))}</main>
+          ${confirmDialog(state, actions)}`
       : bootScreen(state)}
     <div class="toast ${state.toastShown ? 'show' : ''}" role="status">${state.toast}</div>
   </div>`;

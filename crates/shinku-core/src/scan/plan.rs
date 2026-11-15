@@ -21,6 +21,10 @@ use crate::platform::{Environment, KnownFolder, Volume};
 use crate::rules::{CATALOG, RootCheck, Rule};
 use crate::scope::{ScopeTree, path_segments};
 
+/// Nom, dans les emplacements refusés, d'un « dossier jamais touché » que le
+/// plan n'a pas su appliquer.
+const EXCLUSION: &str = "exclusion";
+
 /// Ce qu'un emplacement de l'arbre signifie pour l'analyse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mark {
@@ -45,7 +49,8 @@ pub(crate) enum Mark {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PlannedRule {
     pub rule: &'static Rule,
-    /// Ce qui a été créé ou modifié après cet instant est épargné.
+    /// Ce qui a été créé ou modifié après cet instant est épargné : le début
+    /// de l'analyse, reculé de l'âge minimal de la règle.
     pub cutoff: Timestamp,
 }
 
@@ -81,8 +86,16 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    pub(crate) fn build(environment: &dyn Environment, options: &ScanOptions) -> Self {
-        let now = environment.now();
+    /// Le plan d'une analyse qui commence à l'instant `now`.
+    ///
+    /// Le grand vide rebâtit ce plan avant de supprimer, avec l'instant où
+    /// l'analyse affichée a commencé : les mêmes âges s'appliquent, et rien
+    /// de plus récent que cette analyse n'est touché.
+    pub(crate) fn build(
+        environment: &dyn Environment,
+        options: &ScanOptions,
+        now: Timestamp,
+    ) -> Self {
         let guard = Guard::for_machine(environment);
         let volumes = environment.volumes();
         let mut tree = ScopeTree::new();
@@ -128,7 +141,7 @@ impl Plan {
                 }
                 // Une exclusion qu'on ne sait pas appliquer doit se voir : elle
                 // ne protège rien.
-                _ => refused.push(refusal("exclusion", path, "le chemin n'est pas absolu")),
+                _ => refused.push(refusal(EXCLUSION, path, "le chemin n'est pas absolu")),
             }
         }
 
@@ -213,6 +226,43 @@ impl Plan {
     /// Nombre de lectures en parallèle pour le disque désigné par `volume_key`.
     pub(crate) fn threads_for(&self, volume_key: u64) -> usize {
         self.roots.iter().find(|root| root.volume_key == volume_key).map_or(1, |root| root.threads)
+    }
+
+    /// Vrai si un « dossier jamais touché » n'a pas pu être appliqué. Il ne
+    /// protège alors rien : le grand vide refuse de supprimer dans ces
+    /// conditions.
+    pub(crate) fn misses_an_exclusion(&self) -> bool {
+        self.refused.iter().any(|refused| refused.purpose == EXCLUSION)
+    }
+
+    /// Vrai si `path` se trouve sous un dossier où ce plan cherche des
+    /// doublons, sans passer par un emplacement exclu ou interdit.
+    ///
+    /// C'est une lecture de l'arbre seulement, d'après le chemin : elle ne
+    /// regarde pas le disque.
+    pub(crate) fn covers_duplicate(&self, path: &Path) -> bool {
+        let Some(components) = fold_path(path) else { return false };
+        let mut nodes = vec![ScopeTree::<Mark>::ROOT];
+        let mut next = Vec::new();
+        let mut covered = false;
+        // Sous Windows, la racine de l'arbre ne désigne rien. Ailleurs, elle
+        // désigne `/` : ce qui la marque s'applique dès le départ.
+        for depth in 0..=components.len() {
+            for &node in &nodes {
+                for mark in self.tree.marks(node) {
+                    match mark {
+                        Mark::Excluded | Mark::Forbidden => return false,
+                        Mark::Dups => covered = true,
+                        Mark::Keep | Mark::Junk(_) | Mark::Large | Mark::Sync => {}
+                    }
+                }
+            }
+            let Some(component) = components.get(depth) else { break };
+            next.clear();
+            self.tree.step(&nodes, component, &mut next);
+            std::mem::swap(&mut nodes, &mut next);
+        }
+        covered
     }
 }
 

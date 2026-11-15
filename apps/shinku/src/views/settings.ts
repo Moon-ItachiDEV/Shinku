@@ -19,6 +19,8 @@ export function settingsView(state: AppState, actions: Actions): TemplateResult 
   const settings = state.overview?.settings;
   const current = settings?.theme ?? 'system';
   const folders = settings?.excludedFolders ?? [];
+  // La liste protège le grand vide en cours : elle ne change pas sous ses pieds.
+  const cleaning = state.session.state === 'cleaning';
 
   const swatches = THEMES.map(
     ({ theme, label }) =>
@@ -46,6 +48,7 @@ export function settingsView(state: AppState, actions: Actions): TemplateResult 
                   type="button"
                   class="icb"
                   aria-label=${fr.settings.removeFolder(path)}
+                  ?disabled=${cleaning}
                   @click=${() => actions.removeFolder(path)}
                 >
                   ${crossIcon()}
@@ -81,7 +84,12 @@ export function settingsView(state: AppState, actions: Actions): TemplateResult 
                   <span class="d">${fr.settings.foldersHint}</span>
                 </div>
                 ${folderList}
-                <button type="button" class="ghost small add" ?disabled=${state.pickingFolder} @click=${actions.addFolder}>
+                <button
+                  type="button"
+                  class="ghost small add"
+                  ?disabled=${state.pickingFolder || cleaning}
+                  @click=${actions.addFolder}
+                >
                   ${fr.settings.addFolder}
                 </button>
                 <p class="d fnote">${fr.settings.foldersNote}</p>

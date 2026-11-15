@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import type {
   Backend,
+  CleanPreview,
   DuplicatesPage,
   JunkReport,
   LargeFilesPage,
@@ -27,6 +28,9 @@ export function tauriBackend(): Backend {
     startScan: () => invoke<SessionView>('start_scan'),
     cancelScan: () => invoke<SessionView>('cancel_scan'),
     sessionView: () => invoke<SessionView>('session_view'),
+    cleanPreview: () => invoke<CleanPreview>('clean_preview'),
+    startClean: (request) => invoke<SessionView>('start_clean', { request }),
+    cancelClean: () => invoke<SessionView>('cancel_clean'),
     junk: () => invoke<JunkReport | null>('junk_details'),
     largeFiles: (offset, limit) => invoke<LargeFilesPage | null>('large_files_page', { offset, limit }),
     duplicates: (offset, limit) => invoke<DuplicatesPage | null>('duplicates_page', { offset, limit }),

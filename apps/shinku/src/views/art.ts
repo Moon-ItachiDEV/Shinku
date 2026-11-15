@@ -366,6 +366,18 @@ function privacyArt(p: string): TemplateResult {
   );
 }
 
+/** Le grand vide est allé au bout : une coche se dessine. */
+export function doneArt(p: string): TemplateResult {
+  return frame(
+    p,
+    svg`<circle class="s-hair" cx="110" cy="86" r="58" fill="none" stroke-opacity="0.06" stroke-width="1"></circle>
+      <circle class="f-ill" cx="110" cy="86" r="46" stroke="url(#${p}-edge)" stroke-width="1.4"></circle>
+      <circle cx="110" cy="86" r="46" fill="url(#${p}-glass)"></circle>
+      <path class="draw s-cream" d="M90 87l14 14 26-28" fill="none" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></path>`,
+    false,
+  );
+}
+
 export type ModuleArt = 'junk' | 'duplicates' | 'large' | 'startup' | 'gameMode' | 'uninstall' | 'privacy';
 
 /** L'illustration d'un module. `scan` : un rayon la balaie pendant l'analyse. */

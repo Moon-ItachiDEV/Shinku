@@ -2,9 +2,11 @@
 //!
 //! Chacune ne fait que transmettre la demande au guichet du cœur
 //! ([`shinku_core::backend::Backend`]), qui décide et qui se teste sans
-//! fenêtre. Aucune ne reçoit de chemin à lire ou à écrire : le seul chemin
-//! accepté, dans [`remove_excluded_folder`], est comparé à la liste des
-//! dossiers exclus et à rien d'autre.
+//! fenêtre. Aucune ne reçoit de chemin à lire, à écrire ou à supprimer : le
+//! seul chemin accepté, dans [`remove_excluded_folder`], est comparé à la
+//! liste des dossiers exclus et à rien d'autre. Même [`start_clean`] ne reçoit
+//! que trois cases cochées et la date de l'analyse affichée : ce qui part est
+//! décidé par le cœur.
 //!
 //! Toutes s'exécutent hors du fil de la fenêtre (`async`) : une question à un
 //! disque endormi ne fige pas l'interface.
@@ -16,6 +18,7 @@
 use std::path::Path;
 
 use shinku_core::backend::{Backend, BackendError, DuplicatesPage, LargeFilesPage, Overview};
+use shinku_core::clean::{CleanPreview, CleanRequest};
 use shinku_core::scan::report::JunkReport;
 use shinku_core::session::SessionView;
 use shinku_core::settings::{Settings, Theme};
@@ -42,16 +45,41 @@ pub fn start_scan(backend: State<'_, Backend>) -> Result<SessionView, BackendErr
     backend.start_scan()
 }
 
-/// Arrête l'analyse en cours et oublie ses résultats.
+/// Arrête l'analyse en cours et oublie ses résultats, ou referme le bilan
+/// d'un grand vide terminé.
 #[tauri::command(async)]
 pub fn cancel_scan(backend: State<'_, Backend>) -> SessionView {
     backend.cancel_scan()
 }
 
-/// Où en est l'analyse. L'interface le demande plusieurs fois par seconde.
+/// Où en est l'analyse ou le grand vide. L'interface le demande plusieurs
+/// fois par seconde.
 #[tauri::command(async)]
 pub fn session_view(backend: State<'_, Backend>) -> SessionView {
     backend.view()
+}
+
+/// Ce que l'écran de confirmation doit dire avant un grand vide.
+#[tauri::command(async)]
+pub fn clean_preview(backend: State<'_, Backend>) -> Result<CleanPreview, BackendError> {
+    backend.clean_preview()
+}
+
+/// Lance le grand vide que l'utilisateur vient de confirmer. C'est la seule
+/// commande qui supprime.
+#[tauri::command(async)]
+pub fn start_clean(
+    backend: State<'_, Backend>,
+    request: CleanRequest,
+) -> Result<SessionView, BackendError> {
+    backend.start_clean(request)
+}
+
+/// Demande l'arrêt du grand vide en cours : le fichier en cours est mené à
+/// son terme, puis le bilan partiel arrive.
+#[tauri::command(async)]
+pub fn cancel_clean(backend: State<'_, Backend>) -> SessionView {
+    backend.cancel_clean()
 }
 
 /// Le détail des fichiers inutiles.

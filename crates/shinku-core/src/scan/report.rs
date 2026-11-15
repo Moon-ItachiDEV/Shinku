@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::model::{Lot, ModuleId, RiskLevel, Timestamp, Trigger};
+use crate::model::{FileId, Lot, ModuleId, RiskLevel, Timestamp, Trigger};
 use crate::platform::{RecycleBin, Volume, serialize_display_path};
 use crate::rules::JunkCategory;
 
@@ -346,6 +346,14 @@ pub struct DuplicateFile {
     pub keep: bool,
     /// Dans un dossier synchronisé : le supprimer le supprime aussi dans le cloud.
     pub synced: bool,
+    /// Identifiant du fichier sur son volume, tel que l'analyse l'a vu. Il
+    /// reste dans le cœur : le grand vide s'en sert pour revérifier le
+    /// fichier avant d'y toucher.
+    #[serde(skip)]
+    pub file_id: Option<FileId>,
+    /// Numéro de série du volume où se trouve le fichier.
+    #[serde(skip)]
+    pub volume: u64,
 }
 
 /// Ce que l'analyse n'a pas pu ou pas voulu lire.

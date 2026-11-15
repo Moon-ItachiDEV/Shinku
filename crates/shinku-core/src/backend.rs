@@ -2,9 +2,13 @@
 //!
 //! La fenêtre affiche une page web. On ne lui confie donc que des demandes
 //! précises et bornées : lancer une analyse, lire une page de résultats,
-//! changer un réglage. Aucune demande ne prend un chemin pour le lire ou
-//! l'écrire. Le seul chemin accepté désigne un dossier à ne jamais toucher :
-//! il ne peut que réduire ce que Shinku regarde.
+//! changer un réglage, faire le vide. Aucune demande ne prend un chemin pour
+//! le lire, l'écrire ou le supprimer. Le seul chemin accepté désigne un
+//! dossier à ne jamais toucher : il ne peut que réduire ce que Shinku regarde.
+//!
+//! Le grand vide lui-même se demande avec trois cases cochées et la date de
+//! l'analyse affichée : ce qui part est décidé par le cœur, à partir du
+//! rapport qu'il a gardé et du disque tel qu'il est.
 //!
 //! Ce module ne dépend pas de Tauri : il se teste comme le reste du cœur, et
 //! les commandes de l'application ne font que l'appeler.
@@ -12,16 +16,19 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::clean::journal::{JournalStore, Run};
+use crate::clean::{CleanPreview, CleanRefusal, CleanRequest};
 use crate::fs::{fold_path, to_display_path, to_internal_path};
 use crate::hash::{DigestCache, MemoryCache};
 use crate::model::Trigger;
 use crate::platform::{self, Environment, RecycleBin, Volume};
 use crate::scan::ScanOptions;
 use crate::scan::report::{DuplicateGroup, DuplicatesState, JunkReport, LargeFile};
-use crate::session::{Session, SessionView};
+use crate::session::{Session, SessionError, SessionView};
 use crate::settings::{LoadIssue, Loaded, Settings, SettingsStore, Theme};
 
 /// Nombre maximal d'éléments rendus par page, quelle que soit la demande.
@@ -29,6 +36,10 @@ pub const PAGE_LIMIT: usize = 200;
 
 /// Nom du réglage des « dossiers jamais touchés » dans `settings.json`.
 const EXCLUDED_FIELD: &str = "excludedFolders";
+
+/// Temps laissé à un grand vide pour finir son fichier en cours et noter son
+/// bilan quand Shinku se ferme.
+const SHUTDOWN_PATIENCE: Duration = Duration::from_secs(5);
 
 /// Ce que la fenêtre affiche dès son ouverture.
 #[derive(Clone, Debug, Serialize)]
@@ -48,6 +59,10 @@ pub struct Overview {
     /// Vrai si ce problème empêche d'analyser : des « dossiers jamais
     /// touchés » ont pu être oubliés.
     pub scan_blocked: bool,
+    /// Le grand vide que Shinku n'a pas pu conclure la dernière fois (PC
+    /// éteint, Shinku fermé de force), avec ce qu'il avait déjà fait. Rien
+    /// n'est rejoué. Annoncé jusqu'à la prochaine analyse.
+    pub interrupted_clean: Option<Run>,
 }
 
 /// Une page de la liste des gros fichiers.
@@ -127,6 +142,18 @@ pub enum BackendError {
         /// La raison.
         reason: FolderRefusal,
     },
+    /// Un grand vide tourne : cette demande attendra qu'il ait fini.
+    CleanRunning,
+    /// Le grand vide est refusé : rien n'a été touché.
+    CleanRefused {
+        /// La raison.
+        reason: CleanRefusal,
+    },
+    /// Le grand vide n'a pas pu démarrer : rien n'a été touché.
+    CleanNotStarted {
+        /// Ce que le système en dit.
+        reason: String,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -142,6 +169,11 @@ impl fmt::Display for BackendError {
                 write!(f, "les réglages n'ont pas pu être enregistrés : {reason}")
             }
             Self::FolderRefused { reason } => write!(f, "dossier refusé : {reason:?}"),
+            Self::CleanRunning => f.write_str("un grand vide est en cours"),
+            Self::CleanRefused { reason } => write!(f, "grand vide refusé : {reason}"),
+            Self::CleanNotStarted { reason } => {
+                write!(f, "le grand vide n'a pas pu démarrer : {reason}")
+            }
         }
     }
 }
@@ -155,30 +187,45 @@ struct Desk {
     /// Ce qui n'a pas pu être relu au démarrage, tant que l'utilisateur n'en
     /// a pas pris connaissance.
     issue: Option<LoadIssue>,
+    /// Le grand vide coupé la dernière fois, tant qu'il reste à annoncer.
+    interrupted: Option<Run>,
 }
 
 /// Le guichet de Shinku.
+///
+/// Lancer une analyse, lancer un grand vide et changer les « dossiers jamais
+/// touchés » se font chacun d'un seul tenant, sous le verrou des réglages :
+/// une analyse ou un grand vide ne part jamais avec une liste de dossiers
+/// exclus qui vient de changer.
 #[derive(Debug)]
 pub struct Backend {
     environment: Arc<dyn Environment>,
     session: Session,
     store: Option<SettingsStore>,
+    journal: Option<JournalStore>,
     desk: Mutex<Desk>,
     scan_defaults: ScanOptions,
 }
 
 impl Backend {
-    /// Le guichet de cette machine : la vraie machine, ses réglages, et un
-    /// cache d'empreintes qui vit le temps du processus.
+    /// Le guichet de cette machine : la vraie machine, ses réglages, son
+    /// journal des grands vides, et un cache d'empreintes qui vit le temps du
+    /// processus.
     pub fn for_machine() -> Self {
         let environment: Arc<dyn Environment> = Arc::new(platform::system());
         let store = SettingsStore::for_machine(environment.as_ref());
-        Self::new(environment, Arc::new(MemoryCache::new()), store)
+        let journal = JournalStore::for_machine(environment.as_ref());
+        let backend = Self::new(environment, Arc::new(MemoryCache::new()), store);
+        match journal {
+            Some(journal) => backend.with_journal(journal),
+            None => backend,
+        }
     }
 
     /// Un guichet sur cette machine, ce cache et ce fichier de réglages.
     /// Sans fichier, les réglages par défaut s'appliquent et ne peuvent pas
-    /// être changés.
+    /// être changés. Sans journal ([`Backend::with_journal`]), les grands
+    /// vides ne laissent pas de trace.
     pub fn new(
         environment: Arc<dyn Environment>,
         cache: Arc<dyn DigestCache>,
@@ -192,9 +239,22 @@ impl Backend {
             session: Session::new(Arc::clone(&environment), cache),
             environment,
             store,
-            desk: Mutex::new(Desk { settings, issue }),
+            journal: None,
+            desk: Mutex::new(Desk { settings, issue, interrupted: None }),
             scan_defaults: ScanOptions::new(Trigger::Button),
         }
+    }
+
+    /// Branche le journal des grands vides.
+    ///
+    /// Un grand vide resté « en cours » dans ce journal n'a pas pu être
+    /// conclu la dernière fois : il y est noté comme coupé, et annoncé dans
+    /// [`Overview::interrupted_clean`]. Rien n'est rejoué.
+    pub fn with_journal(mut self, journal: JournalStore) -> Self {
+        let interrupted = journal.close_interrupted();
+        self.desk.get_mut().unwrap_or_else(PoisonError::into_inner).interrupted = interrupted;
+        self.journal = Some(journal);
+        self
     }
 
     /// Remplace les réglages de base des analyses (seuils, modules). Les
@@ -211,9 +271,9 @@ impl Backend {
 
     /// Ce que la fenêtre affiche dès son ouverture, et rafraîchit ensuite.
     pub fn overview(&self) -> Overview {
-        let (settings, settings_issue) = {
+        let (settings, settings_issue, interrupted_clean) = {
             let desk = self.desk();
-            (desk.settings.clone(), desk.issue.clone())
+            (desk.settings.clone(), desk.issue.clone(), desk.interrupted)
         };
         Overview {
             version: env!("CARGO_PKG_VERSION"),
@@ -222,6 +282,7 @@ impl Backend {
             scan_blocked: settings_issue.as_ref().is_some_and(blocks_scan),
             settings,
             settings_issue,
+            interrupted_clean,
         }
     }
 
@@ -232,27 +293,88 @@ impl Backend {
     }
 
     /// Lance une analyse avec les réglages en vigueur. Celle qui tournait,
-    /// s'il y en avait une, est arrêtée.
+    /// s'il y en avait une, est arrêtée. Refusé tant qu'un grand vide tourne.
     pub fn start_scan(&self) -> Result<SessionView, BackendError> {
-        let options = {
-            let desk = self.desk();
+        {
+            let mut desk = self.desk();
             // Des dossiers à ne jamais toucher ont pu être oubliés : on
             // n'analyse pas dans le dos de l'utilisateur.
             if desk.issue.as_ref().is_some_and(blocks_scan) {
                 return Err(BackendError::SettingsUnchecked);
             }
-            self.scan_defaults.clone().with_settings(&desk.settings)
-        };
-        self.session
-            .start_scan(options)
-            .map_err(|error| BackendError::ScanNotStarted { reason: error.to_string() })?;
+            let options = self.scan_defaults.clone().with_settings(&desk.settings);
+            self.session.start_scan(options).map_err(|error| match error {
+                SessionError::CleanRunning => BackendError::CleanRunning,
+                SessionError::Thread(error) => {
+                    BackendError::ScanNotStarted { reason: error.to_string() }
+                }
+                // Une analyse n'est jamais refusée comme un grand vide.
+                SessionError::CleanRefused(refusal) => {
+                    BackendError::ScanNotStarted { reason: refusal.to_string() }
+                }
+            })?;
+            // Cette analyse repart du disque tel qu'il est : le grand vide
+            // coupé la dernière fois n'a plus à être annoncé.
+            desk.interrupted = None;
+        }
         Ok(self.session.view())
     }
 
-    /// Arrête l'analyse en cours et oublie ses résultats.
+    /// Arrête l'analyse en cours et oublie ses résultats, ou referme le bilan
+    /// d'un grand vide terminé. Sans effet sur un grand vide qui tourne.
     pub fn cancel_scan(&self) -> SessionView {
         self.session.cancel_scan();
         self.session.view()
+    }
+
+    /// Ce que l'écran de confirmation doit dire avant un grand vide : la
+    /// corbeille telle qu'elle est, les apps ouvertes, les copies rangées
+    /// dans un dossier synchronisé ou sur un autre disque.
+    pub fn clean_preview(&self) -> Result<CleanPreview, BackendError> {
+        self.session.clean_preview().map_err(|reason| BackendError::CleanRefused { reason })
+    }
+
+    /// Lance le grand vide que l'utilisateur vient de confirmer.
+    ///
+    /// La demande ne porte que trois cases et la date de l'analyse affichée.
+    /// Les « dossiers jamais touchés » sont ceux des réglages en vigueur.
+    /// Refusée, elle ne touche à rien et les résultats restent affichés.
+    pub fn start_clean(&self, request: CleanRequest) -> Result<SessionView, BackendError> {
+        {
+            let desk = self.desk();
+            // Même règle que pour analyser : avec une liste de dossiers à ne
+            // jamais toucher peut-être incomplète, rien ne se supprime.
+            if desk.issue.as_ref().is_some_and(blocks_scan) {
+                return Err(BackendError::SettingsUnchecked);
+            }
+            let excluded = desk.settings.excluded_folders.clone();
+            self.session.start_clean(request, excluded, self.journal.clone()).map_err(|error| {
+                match error {
+                    SessionError::CleanRunning => BackendError::CleanRunning,
+                    SessionError::CleanRefused(reason) => BackendError::CleanRefused { reason },
+                    SessionError::Thread(error) => {
+                        BackendError::CleanNotStarted { reason: error.to_string() }
+                    }
+                }
+            })?;
+        }
+        Ok(self.session.view())
+    }
+
+    /// Demande l'arrêt du grand vide en cours. Le fichier en cours est mené à
+    /// son terme, puis le bilan partiel arrive : ce qui est parti reste parti.
+    /// Sans effet s'il n'y en a pas, ou s'il vient de finir.
+    pub fn cancel_clean(&self) -> SessionView {
+        self.session.cancel_clean();
+        self.session.view()
+    }
+
+    /// À appeler quand Shinku se ferme. Ce qui tourne est arrêté ; un grand
+    /// vide a quelques secondes pour finir son fichier en cours et noter son
+    /// bilan au journal. S'il n'y arrive pas, Shinku se ferme quand même, et
+    /// l'annoncera au prochain lancement.
+    pub fn shutdown(&self) {
+        self.session.shutdown(SHUTDOWN_PATIENCE);
     }
 
     /// Où en est la session : état, avancement, totaux.
@@ -310,36 +432,58 @@ impl Backend {
     /// Ajoute un dossier aux « dossiers jamais touchés ».
     ///
     /// Les résultats en cours sont oubliés : ils ont été établis avec
-    /// l'ancienne liste.
+    /// l'ancienne liste. Refusé tant qu'un grand vide tourne.
     pub fn exclude_folder(&self, path: &Path) -> Result<Settings, BackendError> {
         let folder = checked_folder(path)?;
         let wanted = fold_path(&folder);
-        let settings = self.change_settings(|settings| {
+        self.change_exclusions(|settings| {
             let known = settings.excluded_folders.iter().any(|other| fold_path(other) == wanted);
             if !known {
                 settings.excluded_folders.push(folder);
             }
-        })?;
-        self.session.cancel_scan();
-        Ok(settings)
+        })
     }
 
     /// Retire un dossier des « dossiers jamais touchés ». Sans effet s'il n'y
     /// est pas.
     ///
     /// Les résultats en cours sont oubliés : ils ont été établis avec
-    /// l'ancienne liste.
+    /// l'ancienne liste. Refusé tant qu'un grand vide tourne.
     pub fn include_folder(&self, path: &Path) -> Result<Settings, BackendError> {
-        let settings = self
-            .change_settings(|settings| settings.excluded_folders.retain(|other| other != path))?;
+        self.change_exclusions(|settings| settings.excluded_folders.retain(|other| other != path))
+    }
+
+    /// Change la liste des « dossiers jamais touchés » et oublie les résultats
+    /// établis avec l'ancienne.
+    ///
+    /// Un grand vide qui tourne a démarré avec la liste d'avant : lui en
+    /// donner une autre en route ne protégerait rien. La demande est refusée
+    /// jusqu'à ce qu'il ait fini.
+    fn change_exclusions(
+        &self,
+        edit: impl FnOnce(&mut Settings),
+    ) -> Result<Settings, BackendError> {
+        let mut desk = self.desk();
+        if self.session.is_cleaning() {
+            return Err(BackendError::CleanRunning);
+        }
+        let settings = self.save_settings(&mut desk, edit)?;
         self.session.cancel_scan();
         Ok(settings)
     }
 
+    /// Applique un changement aux réglages et l'enregistre.
+    fn change_settings(&self, edit: impl FnOnce(&mut Settings)) -> Result<Settings, BackendError> {
+        self.save_settings(&mut self.desk(), edit)
+    }
+
     /// Applique un changement aux réglages et l'enregistre. Si
     /// l'enregistrement échoue, rien ne change, ni en mémoire ni sur le disque.
-    fn change_settings(&self, edit: impl FnOnce(&mut Settings)) -> Result<Settings, BackendError> {
-        let mut desk = self.desk();
+    fn save_settings(
+        &self,
+        desk: &mut Desk,
+        edit: impl FnOnce(&mut Settings),
+    ) -> Result<Settings, BackendError> {
         let mut next = desk.settings.clone();
         edit(&mut next);
         next.sanitize();
@@ -389,17 +533,38 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime};
 
     use super::*;
+    use crate::clean::journal::RunState;
+    use crate::clean::report::{CleanOutcome, CleanReport, StepState};
     use crate::model::{ModuleId, Timestamp};
     use crate::platform::{KnownFolder, StaticEnvironment};
     use crate::session::SessionState;
+    use crate::testing::SlowBin;
 
     /// Un petit PC : un fichier temporaire ancien, deux photos identiques,
-    /// une vidéo, et un dossier privé qui contient une copie de la photo.
+    /// une vidéo, un dossier privé qui contient une copie de la photo, et une
+    /// corbeille qui contient déjà trois éléments.
     struct Pc {
         _workspace: tempfile::TempDir,
         environment: StaticEnvironment,
         profile: PathBuf,
         store: SettingsStore,
+        journal: JournalStore,
+    }
+
+    impl Pc {
+        fn temp(&self) -> PathBuf {
+            self.profile.join("AppData").join("Local").join("Temp")
+        }
+
+        /// Les trois exemplaires de la photo.
+        fn photos(&self) -> [PathBuf; 3] {
+            let documents = self.profile.join("Documents");
+            [
+                documents.join("photo.jpg"),
+                self.profile.join("Pictures").join("photo.jpg"),
+                documents.join("Privé").join("photo.jpg"),
+            ]
+        }
     }
 
     fn pc() -> Pc {
@@ -413,6 +578,7 @@ mod tests {
         fs::create_dir_all(profile.join("Documents").join("Privé")).unwrap();
         fs::create_dir_all(profile.join("Pictures")).unwrap();
         fs::create_dir_all(profile.join("Videos")).unwrap();
+        fs::create_dir_all(root.join("$Recycle.Bin")).unwrap();
         fs::write(local.join("Temp").join("vieux.tmp"), [7u8; 9000]).unwrap();
         fs::write(profile.join("Documents").join("photo.jpg"), [3u8; 8000]).unwrap();
         fs::write(profile.join("Pictures").join("photo.jpg"), [3u8; 8000]).unwrap();
@@ -433,6 +599,7 @@ mod tests {
                 system: true,
             })
             .with_recycle_bin(RecycleBin { bytes: 4096, items: 3 })
+            .with_recycle_folder(root.join("$Recycle.Bin"))
             .with_folder(KnownFolder::Profile, profile.clone())
             .with_folder(KnownFolder::Documents, profile.join("Documents"))
             .with_folder(KnownFolder::Pictures, profile.join("Pictures"))
@@ -441,30 +608,54 @@ mod tests {
             .with_folder(KnownFolder::RoamingAppData, roaming)
             .with_folder(KnownFolder::Temp, local.join("Temp"));
         let store = SettingsStore::for_machine(&environment).unwrap();
-        Pc { _workspace: workspace, environment, profile, store }
+        let journal = JournalStore::for_machine(&environment).unwrap();
+        Pc { _workspace: workspace, environment, profile, store, journal }
     }
 
     fn backend(pc: &Pc) -> Backend {
+        backend_on(pc.environment.clone(), pc)
+    }
+
+    /// Le guichet de ce PC, vu à travers une autre machine que la sienne.
+    fn backend_on(environment: impl Environment + 'static, pc: &Pc) -> Backend {
         let mut options = ScanOptions::new(Trigger::Button);
         options.duplicate_min_size = 4096;
         options.large_threshold = 32 * 1024;
-        Backend::new(
-            Arc::new(pc.environment.clone()),
-            Arc::new(MemoryCache::new()),
-            Some(pc.store.clone()),
-        )
-        .with_scan_defaults(options)
+        Backend::new(Arc::new(environment), Arc::new(MemoryCache::new()), Some(pc.store.clone()))
+            .with_scan_defaults(options)
+            .with_journal(pc.journal.clone())
     }
 
-    fn wait_for_results(backend: &Backend) -> SessionView {
+    fn wait_for(backend: &Backend, wanted: SessionState) -> SessionView {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let view = backend.view();
-            if view.state == SessionState::Results {
+            if view.state == wanted {
                 return view;
             }
-            assert!(Instant::now() < deadline, "pas de résultats : {:?}", view.state);
+            assert!(Instant::now() < deadline, "état attendu : {wanted:?}, vu : {:?}", view.state);
             std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_for_results(backend: &Backend) -> SessionView {
+        wait_for(backend, SessionState::Results)
+    }
+
+    /// Attend la fin du grand vide et rend son bilan.
+    fn wait_for_the_report(backend: &Backend) -> CleanReport {
+        let view = wait_for(backend, SessionState::Cleaned);
+        view.clean.and_then(|clean| clean.report).expect("le bilan")
+    }
+
+    /// La demande que l'écran de confirmation enverrait, toutes cases cochées.
+    fn everything(backend: &Backend) -> CleanRequest {
+        let preview = backend.clean_preview().expect("l'écran de confirmation");
+        CleanRequest {
+            analysis: preview.analysis,
+            recycle_bin: true,
+            junk_files: true,
+            duplicates: true,
         }
     }
 
@@ -491,6 +682,7 @@ mod tests {
         assert_eq!(json["settings"]["theme"], "system");
         assert_eq!(json["settingsIssue"], serde_json::Value::Null);
         assert_eq!(json["scanBlocked"], false);
+        assert_eq!(json["interruptedClean"], serde_json::Value::Null);
     }
 
     #[test]
@@ -681,5 +873,179 @@ mod tests {
                 .unwrap();
         assert_eq!(json["kind"], "settingsNotSaved");
         assert_eq!(json["reason"], "disque plein");
+        let json = serde_json::to_value(BackendError::CleanRunning).unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "cleanRunning" }));
+        let json =
+            serde_json::to_value(BackendError::CleanRefused { reason: CleanRefusal::StaleResults })
+                .unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "cleanRefused", "reason": "staleResults" }));
+        let json = serde_json::to_value(BackendError::CleanNotStarted {
+            reason: "plus de mémoire".into(),
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "cleanNotStarted");
+        assert_eq!(json["reason"], "plus de mémoire");
+    }
+
+    #[test]
+    fn a_clean_goes_from_the_confirmation_to_its_report() {
+        let pc = pc();
+        let backend = backend(&pc);
+        // Sans résultats, il n'y a rien à annoncer ni à lancer.
+        let no_results = BackendError::CleanRefused { reason: CleanRefusal::NoResults };
+        assert_eq!(backend.clean_preview().unwrap_err(), no_results);
+        let blind =
+            CleanRequest { analysis: 0, recycle_bin: true, junk_files: true, duplicates: true };
+        assert_eq!(backend.start_clean(blind).unwrap_err(), no_results);
+
+        backend.start_scan().unwrap();
+        wait_for_results(&backend);
+        let preview = backend.clean_preview().unwrap();
+        assert_eq!(preview.recycle_bin, Some(RecycleBin { bytes: 4096, items: 3 }));
+        assert_eq!((preview.junk.files, preview.duplicates.copies), (1, 2));
+
+        let started = backend.start_clean(everything(&backend)).unwrap();
+        assert!(matches!(started.state, SessionState::Cleaning | SessionState::Cleaned));
+        let report = wait_for_the_report(&backend);
+        assert_eq!(report.outcome, CleanOutcome::Completed);
+        assert_eq!((report.recycle_bin.state, report.recycle_bin.items), (StepState::Done, 3));
+        assert_eq!((report.junk.state, report.junk.files), (StepState::Done, 1));
+        assert_eq!((report.duplicates.state, report.duplicates.copies), (StepState::Done, 2));
+        assert_eq!(report.skipped.total(), 0);
+
+        // Sur le disque : le fichier temporaire est parti, un exemplaire de la
+        // photo est resté, la vidéo n'a pas bougé.
+        assert!(!pc.temp().join("vieux.tmp").exists());
+        assert_eq!(pc.photos().iter().filter(|photo| photo.exists()).count(), 1);
+        assert!(pc.profile.join("Videos").join("film.mkv").exists());
+        // La corbeille a d'abord été vidée, puis a reçu les deux copies : elles
+        // sont récupérables.
+        assert_eq!(backend.overview().recycle_bin, Some(RecycleBin { bytes: 16_000, items: 2 }));
+
+        // Les listes de l'analyse ne sont plus proposées : le disque a changé.
+        assert!(backend.junk().is_none());
+        assert!(backend.duplicates(0, 10).is_none());
+        assert!(backend.large_files(0, 10).is_none());
+        assert_eq!(backend.clean_preview().unwrap_err(), no_results);
+
+        // Le journal garde les totaux de ce grand vide.
+        let noted = pc.journal.runs();
+        assert_eq!(noted.len(), 1);
+        assert_eq!(noted[0].state, RunState::Completed);
+        assert_eq!(noted[0].freed_bytes, report.freed_bytes);
+        assert_eq!(noted[0].recoverable_bytes, report.recoverable_bytes);
+        assert_eq!(backend.overview().interrupted_clean, None);
+
+        // Refermer le bilan ramène à l'accueil.
+        assert_eq!(backend.cancel_clean().state, SessionState::Cleaned);
+        assert_eq!(backend.cancel_scan().state, SessionState::Idle);
+        backend.shutdown();
+        assert_eq!(backend.view().state, SessionState::Idle);
+    }
+
+    #[test]
+    fn a_clean_never_enters_a_folder_never_to_touch() {
+        let pc = pc();
+        let backend = backend(&pc);
+        // Un dossier à ne jamais toucher, rangé au milieu des fichiers temporaires.
+        let kept = pc.temp().join("garde");
+        fs::create_dir_all(&kept).unwrap();
+        fs::write(kept.join("important.tmp"), [5u8; 5000]).unwrap();
+        backend.exclude_folder(&kept).unwrap();
+
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        assert_eq!(items(&view, ModuleId::JunkFiles), 1);
+        let request =
+            CleanRequest { recycle_bin: false, duplicates: false, ..everything(&backend) };
+        backend.start_clean(request).unwrap();
+        let report = wait_for_the_report(&backend);
+        assert_eq!((report.junk.state, report.junk.files), (StepState::Done, 1));
+        assert!(!pc.temp().join("vieux.tmp").exists());
+        assert!(kept.join("important.tmp").exists(), "le dossier exclu a été nettoyé");
+    }
+
+    #[test]
+    fn while_a_clean_runs_everything_else_waits() {
+        let pc = pc();
+        let (slow, gate) = SlowBin::new(pc.environment.clone());
+        let backend = backend_on(slow, &pc);
+        backend.start_scan().unwrap();
+        wait_for_results(&backend);
+        let bin_only =
+            CleanRequest { junk_files: false, duplicates: false, ..everything(&backend) };
+        assert_eq!(backend.start_clean(bin_only).unwrap().state, SessionState::Cleaning);
+        gate.wait_until_reached();
+
+        assert_eq!(backend.start_scan().unwrap_err(), BackendError::CleanRunning);
+        assert_eq!(backend.start_clean(bin_only).unwrap_err(), BackendError::CleanRunning);
+        // Changer les dossiers à ne jamais toucher en plein grand vide ne
+        // protégerait rien : il a démarré avec la liste d'avant.
+        let private = pc.profile.join("Documents").join("Privé");
+        assert_eq!(backend.exclude_folder(&private).unwrap_err(), BackendError::CleanRunning);
+        assert_eq!(backend.include_folder(&private).unwrap_err(), BackendError::CleanRunning);
+        assert!(backend.overview().settings.excluded_folders.is_empty());
+        assert!(pc.store.load().settings.excluded_folders.is_empty());
+        // L'apparence, elle, ne change rien à ce qui est nettoyé.
+        backend.set_theme(Theme::Dark).unwrap();
+        assert_eq!(backend.cancel_scan().state, SessionState::Cleaning);
+
+        // Demander l'arrêt ne coupe pas l'étape en cours : elle se termine,
+        // puis le bilan arrive.
+        assert_eq!(backend.cancel_clean().state, SessionState::Cleaning);
+        gate.open();
+        let report = wait_for_the_report(&backend);
+        assert_eq!((report.recycle_bin.state, report.recycle_bin.items), (StepState::Done, 3));
+
+        // Le grand vide fini, les réglages se changent à nouveau.
+        let settings = backend.exclude_folder(&private).unwrap();
+        assert_eq!(settings.excluded_folders, [to_display_path(&private)]);
+        assert_eq!(backend.view().state, SessionState::Idle);
+    }
+
+    #[test]
+    fn a_clean_cut_short_is_announced_until_the_next_scan() {
+        let pc = pc();
+        // La dernière fois, le PC s'est éteint en plein grand vide.
+        let mut cut = Run::starting(pc.environment.now());
+        cut.freed_bytes = 7_200_000_000;
+        cut.skipped_files = 2;
+        pc.journal.record(&cut).unwrap();
+
+        let backend = backend(&pc);
+        let announced = backend.overview().interrupted_clean.expect("le grand vide coupé");
+        assert_eq!(announced, Run { state: RunState::Interrupted, ..cut });
+        let json = serde_json::to_value(backend.overview()).unwrap();
+        assert_eq!(json["interruptedClean"]["state"], "interrupted");
+        assert_eq!(json["interruptedClean"]["freedBytes"], 7_200_000_000_u64);
+        assert_eq!(json["interruptedClean"]["finishedMs"], serde_json::Value::Null);
+
+        // Une nouvelle analyse repart du disque tel qu'il est : l'annonce a servi.
+        backend.start_scan().unwrap();
+        assert_eq!(backend.overview().interrupted_clean, None);
+        // Rien n'est rejoué, et il n'est annoncé qu'au lancement qui suit.
+        assert_eq!(pc.journal.runs(), [Run { state: RunState::Interrupted, ..cut }]);
+        assert_eq!(self::backend(&pc).overview().interrupted_clean, None);
+    }
+
+    #[test]
+    fn forgotten_exclusions_block_the_clean_too() {
+        let pc = pc();
+        let backend = backend(&pc);
+        backend.start_scan().unwrap();
+        wait_for_results(&backend);
+        let request = everything(&backend);
+        // Cas d'école : le doute sur les dossiers exclus n'apparaît qu'une
+        // fois l'analyse faite.
+        backend.desk().issue = Some(LoadIssue::Partial { fields: vec![EXCLUDED_FIELD] });
+        assert_eq!(backend.start_clean(request).unwrap_err(), BackendError::SettingsUnchecked);
+        assert_eq!(backend.view().state, SessionState::Results);
+        assert!(pc.temp().join("vieux.tmp").exists());
+        assert!(pc.photos().iter().all(|photo| photo.exists()));
+
+        backend.acknowledge_settings_issue();
+        backend.start_clean(request).unwrap();
+        wait_for_the_report(&backend);
+        assert!(!pc.temp().join("vieux.tmp").exists());
     }
 }

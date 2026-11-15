@@ -30,6 +30,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 windows = "0.62"
+# Demandée par la macro `implement` de `windows`, qui écrit `::windows_core`.
+windows-core = "0.62"
 
 [workspace.lints.rust]
 # Le code `unsafe` est interdit partout, sauf dans les rares modules qui

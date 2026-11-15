@@ -2,11 +2,15 @@
 //!
 //! Chaque question posée par le moteur correspond à un appel documenté de
 //! l'API Windows, sans droits particuliers. Rien ici ne modifie la machine,
-//! à part la priorité du fil d'exécution courant.
+//! à part la priorité du fil d'exécution courant et les deux gestes de la
+//! corbeille (module [`shell`]).
 #![allow(unsafe_code)]
+
+mod shell;
 
 use std::ffi::{OsString, c_void};
 use std::fs::OpenOptions;
+use std::io;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -21,6 +25,9 @@ use windows::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{
     IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery, STORAGE_PROPERTY_QUERY,
@@ -36,12 +43,12 @@ use windows::Win32::UI::Shell::{
     FOLDERID_LocalAppDataLow, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile,
     FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_RoamingAppData,
     FOLDERID_SkyDrive, FOLDERID_Videos, FOLDERID_Windows, KF_FLAG_DONT_VERIFY,
-    SHGetKnownFolderPath, SHQUERYRBINFO, SHQueryRecycleBinW,
+    SHGetKnownFolderPath,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
 use windows::core::{GUID, HSTRING};
 
-use super::{Desktop, Environment, KnownFolder, RecycleBin, Rights, Volume};
+use super::{Desktop, Environment, KnownFolder, RecycleBin, RecycleError, Rights, Volume};
 use crate::fs::{fold_path, to_internal_path};
 use crate::model::Timestamp;
 
@@ -173,10 +180,24 @@ fn drive_letter(path: &Path) -> Option<char> {
     }
 }
 
-fn fixed_drive_letters() -> impl Iterator<Item = char> {
+/// Les lettres de lecteur attribuées, tous types de disques confondus.
+fn drive_letters() -> impl Iterator<Item = char> {
     // SAFETY: appel sans paramètre, qui rend un masque de bits.
     let mask = unsafe { GetLogicalDrives() };
     ('A'..='Z').enumerate().filter(move |(index, _)| mask & (1 << index) != 0).map(|(_, l)| l)
+}
+
+/// Racines (`C:\`) des disques internes : les seuls dont Shinku regarde et
+/// vide la corbeille.
+fn fixed_drive_roots() -> Vec<String> {
+    drive_letters()
+        .map(|letter| format!(r"{letter}:\"))
+        .filter(|root| {
+            // SAFETY: la chaîne est en UTF-16, terminée par zéro, et vit
+            // pendant l'appel.
+            unsafe { GetDriveTypeW(&HSTRING::from(root.as_str())) == DRIVE_FIXED }
+        })
+        .collect()
 }
 
 impl Environment for SystemEnvironment {
@@ -211,7 +232,7 @@ impl Environment for SystemEnvironment {
     fn volumes(&self) -> Vec<Volume> {
         let system_drive =
             self.known_folder(KnownFolder::Windows).as_deref().and_then(drive_letter);
-        fixed_drive_letters().filter_map(|letter| volume_for(letter, system_drive)).collect()
+        drive_letters().filter_map(|letter| volume_for(letter, system_drive)).collect()
     }
 
     fn sync_roots(&self) -> Vec<PathBuf> {
@@ -237,21 +258,46 @@ impl Environment for SystemEnvironment {
     fn recycle_bin(&self) -> Option<RecycleBin> {
         let mut total = RecycleBin::default();
         let mut answered = false;
-        for letter in fixed_drive_letters() {
-            let root = HSTRING::from(format!(r"{letter}:\"));
-            let mut info =
-                SHQUERYRBINFO { cbSize: size_of::<SHQUERYRBINFO>() as u32, ..Default::default() };
-            // SAFETY: `root` est une chaîne UTF-16 terminée par zéro et `info`
-            // une structure locale dont le champ `cbSize` annonce la taille.
-            if unsafe { SHQueryRecycleBinW(&root, &raw mut info) }.is_ok() {
+        for root in fixed_drive_roots() {
+            if let Some(bin) = shell::bin_of(&HSTRING::from(root)) {
                 answered = true;
-                // Copies par valeur : la structure peut être compactée.
-                let (bytes, items) = (info.i64Size, info.i64NumItems);
-                total.bytes = total.bytes.saturating_add(bytes.max(0) as u64);
-                total.items = total.items.saturating_add(items.max(0) as u64);
+                total.bytes = total.bytes.saturating_add(bin.bytes);
+                total.items = total.items.saturating_add(bin.items);
             }
         }
         answered.then_some(total)
+    }
+
+    fn running_processes(&self) -> Option<Vec<String>> {
+        // SAFETY: appel sans pointeur ; le second paramètre est ignoré pour
+        // une liste de processus.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
+        // SAFETY: handle ouvert à l'instant, qui n'appartient qu'à cette
+        // fonction : `OwnedHandle` le fermera, une seule fois.
+        let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot.0) };
+        let handle = HANDLE(snapshot.as_raw_handle());
+        let mut entry =
+            PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut names = Vec::new();
+        // SAFETY: le handle vit autant que `snapshot`, et `entry` est une
+        // structure locale dont le champ `dwSize` annonce la taille.
+        let mut more = unsafe { Process32FirstW(handle, &raw mut entry) }.is_ok();
+        while more {
+            names.push(text_from(&entry.szExeFile));
+            // SAFETY: comme ci-dessus.
+            more = unsafe { Process32NextW(handle, &raw mut entry) }.is_ok();
+        }
+        // Une liste vide n'existe pas (Windows y figure toujours) : c'est une
+        // lecture qui a échoué, donc une réponse inconnue.
+        (!names.is_empty()).then_some(names)
+    }
+
+    fn empty_recycle_bin(&self) -> io::Result<()> {
+        shell::empty_bins(fixed_drive_roots())
+    }
+
+    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
+        shell::recycle(path)
     }
 }
 
@@ -373,6 +419,26 @@ mod tests {
         let buffer: Vec<u16> = "NTFS\0reste".encode_utf16().collect();
         assert_eq!(text_from(&buffer), "NTFS");
         assert_eq!(text_from(&[]), "");
+    }
+
+    #[test]
+    fn this_program_is_among_the_running_ones() {
+        let machine = SystemEnvironment::new();
+        let names = machine.running_processes().expect("Windows liste ses processus");
+        let own = std::env::current_exe().unwrap();
+        let own = own.file_name().unwrap().to_string_lossy().to_lowercase();
+        assert!(names.iter().any(|name| name.to_lowercase() == own), "{own} absent de {names:?}");
+    }
+
+    #[test]
+    fn only_internal_disks_have_a_recycle_bin_for_shinku() {
+        let machine = SystemEnvironment::new();
+        let roots = fixed_drive_roots();
+        for root in &roots {
+            assert!(root.len() == 3 && root.ends_with(r":\"), "{root}");
+        }
+        // Autant de corbeilles regardées que de disques internes déclarés.
+        assert_eq!(roots.len(), machine.volumes().len());
     }
 
     #[test]

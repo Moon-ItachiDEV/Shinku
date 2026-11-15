@@ -3,11 +3,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { CategorySummary, Lot, Phase, SessionView, Summary } from '../src/backend/types.ts';
+import type { CategorySummary, Lot, Phase, SessionView, Summary, Volume } from '../src/backend/types.ts';
 import {
   binOverThreshold,
   counterBytes,
   duplicatesPercent,
+  mainVolume,
   reportKey,
   ringFraction,
   scanRows,
@@ -49,6 +50,7 @@ function view(
     summary: report,
     skipped: { folders: 0, refusedRoots: 0 },
     stale: false,
+    clean: null,
   };
 }
 
@@ -233,4 +235,24 @@ test('le seuil de la corbeille se compte en Go binaires', () => {
   // Une corbeille vide ne déborde jamais.
   assert.equal(binOverThreshold(0, 0), false);
   assert.equal(binOverThreshold(1, 0), true);
+});
+
+test('le disque montré est celui de Windows, sinon le premier disque interne', () => {
+  const volume = (root: string, fixed: boolean, system: boolean): Volume => ({
+    root,
+    label: '',
+    fileSystem: 'NTFS',
+    total: 100 * GB,
+    free: 40 * GB,
+    fixed,
+    seekPenalty: null,
+    system,
+  });
+  const usb = volume('E:\\', false, false);
+  const data = volume('D:\\', true, false);
+  const windows = volume('C:\\', true, true);
+  assert.equal(mainVolume([usb, data, windows]), windows);
+  assert.equal(mainVolume([usb, data]), data);
+  assert.equal(mainVolume([usb]), usb);
+  assert.equal(mainVolume([]), undefined);
 });

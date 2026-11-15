@@ -1,13 +1,15 @@
-//! Lecture du système de fichiers, sans jamais suivre un lien.
+//! Accès au système de fichiers, sans jamais suivre un lien.
 //!
-//! Tout le moteur d'analyse passe par ce module. Il garantit trois choses :
+//! Tout le moteur passe par ce module. Il garantit quatre choses :
 //!
 //! - une jonction ou un lien symbolique n'est jamais traversé, ni pour lister
 //!   un dossier ni pour lire un fichier ;
 //! - un fichier « en ligne uniquement » (OneDrive et autres) n'est jamais
 //!   ouvert : le lire le téléchargerait ;
 //! - la taille, les dates et l'identifiant d'un fichier viennent de la liste
-//!   de son dossier, sans ouvrir le fichier.
+//!   de son dossier, sans ouvrir le fichier ;
+//! - une suppression porte sur une entrée ouverte et revérifiée ([`Removal`]),
+//!   jamais sur un simple chemin : ce qui part est ce que le parcours a vu.
 //!
 //! Sous Windows, l'implémentation ouvre chaque dossier par un handle et le lit
 //! par blocs. L'implémentation Unix sert au développement et aux tests : elle
@@ -137,6 +139,16 @@ impl EntryMeta {
     /// Ce qu'il faut retrouver à l'identique pour considérer le fichier inchangé.
     pub fn fingerprint(&self) -> Fingerprint {
         Fingerprint { size: self.size, modified: self.modified, file_id: self.file_id }
+    }
+
+    /// Ce qu'il faudra retrouver, sur l'entrée ouverte, pour la supprimer.
+    pub fn expected(&self) -> Expected {
+        Expected {
+            kind: self.kind,
+            size: self.size,
+            modified: self.modified,
+            file_id: self.file_id,
+        }
     }
 }
 
@@ -324,6 +336,112 @@ impl VerifiedFile {
     /// le lisait, ce qu'on a lu ne vaut rien.
     pub fn recheck(&self) -> Result<(), OpenError> {
         imp::check_open_file(&self.file, &self.expected)
+    }
+}
+
+/// Ce que le parcours a vu d'une entrée, à retrouver au moment de la supprimer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Expected {
+    /// Nature de l'entrée.
+    pub kind: EntryKind,
+    /// Taille logique. Elle n'est pas comparée pour un dossier.
+    pub size: u64,
+    /// Date de dernière modification. Elle n'est pas comparée pour un
+    /// dossier : y supprimer un fichier la change.
+    pub modified: Timestamp,
+    /// Identifiant sur le volume, s'il existe.
+    pub file_id: Option<FileId>,
+}
+
+/// Pourquoi une entrée n'a pas été supprimée.
+#[derive(Debug)]
+pub enum RemoveError {
+    /// Ce n'est plus l'entrée que le parcours a vue : sa nature, sa taille,
+    /// sa date ou son identifiant ont changé.
+    Changed,
+    /// Une app la tient ouverte, ou s'en sert.
+    Locked,
+    /// Le compte n'a pas le droit de la supprimer.
+    AccessDenied,
+    /// Elle a déjà disparu : il n'y a plus rien à supprimer.
+    NotFound,
+    /// C'est un dossier, et il n'est pas vide.
+    NotEmpty,
+    /// Autre erreur du système.
+    Io(io::Error),
+}
+
+impl fmt::Display for RemoveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Changed => f.write_str("l'entrée a changé depuis qu'elle a été vue"),
+            Self::Locked => f.write_str("l'entrée est utilisée par une app"),
+            Self::AccessDenied => f.write_str("accès refusé"),
+            Self::NotFound => f.write_str("l'entrée a déjà disparu"),
+            Self::NotEmpty => f.write_str("le dossier n'est pas vide"),
+            Self::Io(error) => write!(f, "erreur du système : {error}"),
+        }
+    }
+}
+
+impl std::error::Error for RemoveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Une entrée prête à être supprimée : fichier, lien ou dossier vide.
+///
+/// La suppression se fait en trois temps, pour pouvoir traiter un lot « tout
+/// ou rien » :
+///
+/// 1. [`Removal::open`] ouvre l'entrée sans suivre de lien et vérifie, sur
+///    l'entrée ouverte, que c'est bien celle que le parcours a vue. Une entrée
+///    qu'une app tient ouverte est refusée ici : Shinku ne force jamais ;
+/// 2. [`Removal::mark`] demande la suppression. Tant que rien n'est confirmé,
+///    lâcher la valeur annule la demande : l'entrée reste en place ;
+/// 3. [`Removal::commit`] confirme : l'entrée disparaît.
+///
+/// Un lien est supprimé en tant que lien : sa cible n'est jamais touchée. Un
+/// dossier n'est supprimé que s'il est vide, jamais avec son contenu.
+///
+/// Sous Windows, les trois temps portent sur le même handle : remplacer
+/// l'entrée par autre chose entre deux temps ne change rien à ce qui part.
+/// L'implémentation Unix, non livrée, vérifie puis supprime par le chemin.
+pub struct Removal {
+    inner: imp::Removal,
+}
+
+impl Removal {
+    /// Ouvre `path` pour le supprimer, s'il correspond à `expected`.
+    pub fn open(path: &Path, expected: &Expected) -> Result<Self, RemoveError> {
+        Ok(Self { inner: imp::Removal::open(path, expected)? })
+    }
+
+    /// Date de dernière modification de l'entrée ouverte, relue à l'instant.
+    /// Celle d'un dossier dit si quelque chose y est entré ou en est sorti
+    /// depuis : la liste de son parent, elle, peut avoir du retard.
+    pub fn modified(&self) -> Result<Timestamp, RemoveError> {
+        self.inner.modified()
+    }
+
+    /// Demande la suppression. Elle n'a lieu qu'avec [`Removal::commit`].
+    pub fn mark(&mut self) -> Result<(), RemoveError> {
+        self.inner.mark()
+    }
+
+    /// Confirme la suppression, en la demandant d'abord si ce n'est pas fait.
+    pub fn commit(self) -> Result<(), RemoveError> {
+        self.inner.commit()
+    }
+}
+
+impl fmt::Debug for Removal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Removal").finish_non_exhaustive()
     }
 }
 

@@ -21,6 +21,10 @@ import type {
   BackendError,
   CategoryState,
   CategorySummary,
+  CleanOutcome,
+  CleanPhase,
+  CleanRefusal,
+  CleanRequest,
   DuplicatesPage,
   FolderRefusal,
   JunkCategory,
@@ -28,8 +32,11 @@ import type {
   Lot,
   ModuleId,
   Phase,
+  RunState,
   SessionState,
   Settings,
+  StepState,
+  StopReason,
   Theme,
 } from '../src/backend/types.ts';
 
@@ -55,7 +62,13 @@ function allOf<Union extends string>() {
 
 const enums: Record<string, readonly string[]> = {
   phase: allOf<Phase>()(['preparing', 'walking', 'duplicatesQuick', 'duplicatesFull', 'done', 'cancelled']),
-  sessionState: allOf<SessionState>()(['idle', 'scanning', 'results', 'failed']),
+  sessionState: allOf<SessionState>()(['idle', 'scanning', 'results', 'failed', 'cleaning', 'cleaned']),
+  cleanPhase: allOf<CleanPhase>()(['preparing', 'recycleBin', 'junkFiles', 'duplicates', 'done']),
+  cleanRefusal: allOf<CleanRefusal>()(['noResults', 'staleResults', 'otherAnalysis', 'nothingToClean']),
+  cleanOutcome: allOf<CleanOutcome>()(['completed', 'cancelled']),
+  stepState: allOf<StepState>()(['notRequested', 'done', 'stopped', 'failed']),
+  stopReason: allOf<StopReason>()(['notInRecycleBin', 'keptCopyChanged']),
+  runState: allOf<RunState>()(['running', 'completed', 'cancelled', 'interrupted']),
   moduleId: allOf<ModuleId>()([
     'junkFiles',
     'duplicates',
@@ -75,7 +88,15 @@ const enums: Record<string, readonly string[]> = {
   autoScan: allOf<Settings['autoScan']>()(['never', 'weekly', 'monthly']),
   language: allOf<Settings['language']>()(['fr', 'en']),
   folderRefusal: allOf<FolderRefusal>()(['notAbsolute', 'notAFolder', 'notUnicode']),
-  backendError: allOf<BackendError['kind']>()(['settingsUnchecked', 'scanNotStarted', 'settingsNotSaved', 'folderRefused']),
+  backendError: allOf<BackendError['kind']>()([
+    'settingsUnchecked',
+    'scanNotStarted',
+    'settingsNotSaved',
+    'folderRefused',
+    'cleanRunning',
+    'cleanRefused',
+    'cleanNotStarted',
+  ]),
   loadIssue: allOf<LoadIssue['kind']>()(['unreadable', 'partial']),
 };
 
@@ -153,19 +174,59 @@ function differences(expected: Shape, actual: Shape, path: string): string[] {
   return expected === actual ? [] : [`${path} : ${JSON.stringify(expected)} côté cœur, ${JSON.stringify(actual)} côté interface`];
 }
 
-const OPTIONS: MockOptions = { speed: 1_000_000, issue: 'none', emptyBin: false, theme: 'system' };
+/**
+ * Le faux cœur le plus bavard : un grand vide interrompu à annoncer, une app
+ * restée ouverte, des fichiers laissés en place. Chaque champ a ainsi une
+ * valeur à montrer.
+ */
+const OPTIONS: MockOptions = {
+  speed: 1_000_000,
+  issue: 'none',
+  emptyBin: false,
+  theme: 'system',
+  clean: 'rough',
+  interrupted: true,
+};
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+/** Mène le faux cœur jusqu'à des résultats complets, et les rend. */
+async function scanned(backend: ReturnType<typeof mockBackend>) {
+  await backend.startScan();
+  await pause(20);
+  const results = await backend.sessionView();
+  assert.equal(results.state, 'results');
+  assert.ok(results.summary !== null);
+  return { results, analysis: results.summary.started };
+}
 
 /** Les mêmes échantillons que ceux du cœur, pris cette fois dans le faux cœur de la démo. */
 async function samples(): Promise<Record<string, unknown>> {
   const backend = mockBackend(OPTIONS);
   const idle = await backend.sessionView();
   const overview = await backend.overview();
+  assert.ok(overview.interruptedClean !== null);
   const settings = await backend.setTheme('dark');
-  await backend.startScan();
+  const { results, analysis } = await scanned(backend);
+  const lists = {
+    junk: await backend.junk(),
+    largeFiles: await backend.largeFiles(0, 10),
+    duplicates: await backend.duplicates(0, 10),
+  };
+
+  // Le grand vide : sa confirmation, sa demande, puis son bilan.
+  const cleanPreview = await backend.cleanPreview();
+  const cleanRequest: CleanRequest = { analysis, recycleBin: true, junkFiles: true, duplicates: true };
+  await backend.startClean(cleanRequest);
   await pause(20);
-  const results = await backend.sessionView();
-  assert.equal(results.state, 'results');
+  const cleaned = await backend.sessionView();
+  assert.equal(cleaned.state, 'cleaned');
+
+  // L'arrêt de sécurité de l'étape « Doublons ».
+  const halting = mockBackend({ ...OPTIONS, clean: 'halt' });
+  await halting.startClean({ ...cleanRequest, analysis: (await scanned(halting)).analysis });
+  await pause(20);
+  const cleanStop = (await halting.sessionView()).clean?.report?.duplicates.stop;
+  assert.ok(cleanStop != null);
 
   const unreadable = (await mockBackend({ ...OPTIONS, issue: 'unreadable' }).overview()).settingsIssue;
   const partial = (await mockBackend({ ...OPTIONS, issue: 'partial' }).overview()).settingsIssue;
@@ -175,6 +236,9 @@ async function samples(): Promise<Record<string, unknown>> {
     scanNotStarted: { kind: 'scanNotStarted', reason: 'raison' },
     settingsNotSaved: { kind: 'settingsNotSaved', reason: 'raison' },
     folderRefused: { kind: 'folderRefused', reason: 'notAFolder' },
+    cleanRunning: { kind: 'cleanRunning' },
+    cleanRefused: { kind: 'cleanRefused', reason: 'staleResults' },
+    cleanNotStarted: { kind: 'cleanNotStarted', reason: 'raison' },
   };
 
   return {
@@ -182,15 +246,20 @@ async function samples(): Promise<Record<string, unknown>> {
     settings,
     'sessionView.idle': idle,
     'sessionView.results': results,
-    junk: await backend.junk(),
-    largeFiles: await backend.largeFiles(0, 10),
-    duplicates: await backend.duplicates(0, 10),
+    'sessionView.cleaned': cleaned,
+    ...lists,
+    cleanPreview,
+    cleanRequest,
+    cleanStop,
     'loadIssue.unreadable': unreadable,
     'loadIssue.partial': partial,
     'error.settingsUnchecked': errors.settingsUnchecked,
     'error.scanNotStarted': errors.scanNotStarted,
     'error.settingsNotSaved': errors.settingsNotSaved,
     'error.folderRefused': errors.folderRefused,
+    'error.cleanRunning': errors.cleanRunning,
+    'error.cleanRefused': errors.cleanRefused,
+    'error.cleanNotStarted': errors.cleanNotStarted,
   };
 }
 

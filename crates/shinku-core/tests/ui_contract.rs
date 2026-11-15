@@ -23,10 +23,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
 use shinku_core::backend::{Backend, BackendError, FolderRefusal};
+use shinku_core::clean::journal::{JournalStore, Run, RunState};
+use shinku_core::clean::report::{CleanOutcome, DuplicatesStop, StepState, StopReason};
+use shinku_core::clean::{CleanPhase, CleanRefusal, CleanRequest};
 use shinku_core::fs::to_internal_path;
 use shinku_core::hash::MemoryCache;
 use shinku_core::model::{Lot, ModuleId, RiskLevel, Timestamp, Trigger};
-use shinku_core::platform::{KnownFolder, RecycleBin, StaticEnvironment, Volume};
+use shinku_core::platform::{Environment, KnownFolder, RecycleBin, StaticEnvironment, Volume};
 use shinku_core::rules::JunkCategory;
 use shinku_core::scan::report::{CategoryState, DuplicatesState};
 use shinku_core::scan::{Phase, ScanOptions};
@@ -112,8 +115,8 @@ fn to_json<T: serde::Serialize>(value: &T) -> Value {
 
 #[test]
 fn the_json_sent_to_the_window_keeps_its_shape() {
-    // Un petit PC : un fichier temporaire ancien, un cache de navigateur,
-    // deux photos identiques et une vidéo.
+    // Un petit PC : un fichier temporaire ancien, le cache d'un navigateur
+    // resté ouvert, deux photos identiques, une vidéo et une corbeille.
     let workspace = tempfile::tempdir().expect("dossier temporaire");
     let root = to_internal_path(&fs::canonicalize(workspace.path()).expect("chemin réel"))
         .expect("chemin interne");
@@ -129,6 +132,7 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         profile.join("Documents"),
         profile.join("Pictures"),
         profile.join("Videos"),
+        root.join("$Recycle.Bin"),
     ] {
         fs::create_dir_all(folder).expect("dossier du faux PC");
     }
@@ -154,6 +158,10 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             system: true,
         })
         .with_recycle_bin(RecycleBin { bytes: 4096, items: 3 })
+        .with_recycle_folder(root.join("$Recycle.Bin"))
+        // Le navigateur tourne : son cache ne sera pas touché, et le grand
+        // vide le dira (`openApps`, `leftOpen`).
+        .with_process("chrome.exe")
         .with_folder(KnownFolder::Profile, profile.clone())
         .with_folder(KnownFolder::Documents, profile.join("Documents"))
         .with_folder(KnownFolder::Pictures, profile.join("Pictures"))
@@ -162,12 +170,16 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         .with_folder(KnownFolder::RoamingAppData, roaming)
         .with_folder(KnownFolder::Temp, local.join("Temp"));
     let store = SettingsStore::for_machine(&environment).expect("un emplacement pour les réglages");
+    // La dernière fois, un grand vide a été coupé en route : l'accueil le dira.
+    let journal = JournalStore::for_machine(&environment).expect("un emplacement pour le journal");
+    journal.record(&Run::starting(environment.now())).expect("journal écrit");
 
     let mut options = ScanOptions::new(Trigger::Button);
     options.duplicate_min_size = 4096;
     options.large_threshold = 32 * 1024;
     let backend = Backend::new(Arc::new(environment), Arc::new(MemoryCache::new()), Some(store))
-        .with_scan_defaults(options);
+        .with_scan_defaults(options)
+        .with_journal(journal);
 
     let mut samples: BTreeMap<&str, Value> = BTreeMap::new();
     samples.insert("sessionView.idle", to_json(&backend.view()));
@@ -196,6 +208,38 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     samples.insert("largeFiles", to_json(&backend.large_files(0, 10).expect("gros fichiers")));
     samples.insert("duplicates", to_json(&backend.duplicates(0, 10).expect("doublons")));
 
+    // Le grand vide : l'écran de confirmation, puis le bilan.
+    let preview = backend.clean_preview().expect("écran de confirmation");
+    samples.insert("cleanPreview", to_json(&preview));
+    let request = CleanRequest {
+        analysis: preview.analysis,
+        recycle_bin: true,
+        junk_files: true,
+        duplicates: true,
+    };
+    // La demande est la seule chose que la fenêtre envoie au cœur : sa forme
+    // fait partie du contrat, elle aussi.
+    samples.insert("cleanRequest", to_json(&request));
+    backend.start_clean(request).expect("grand vide lancé");
+    let cleaned = loop {
+        let view = backend.view();
+        if view.state == SessionState::Cleaned {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "pas de bilan : {:?}", view.state);
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    samples.insert("sessionView.cleaned", to_json(&cleaned));
+    // L'arrêt de sécurité de l'étape « Doublons », absent d'un grand vide
+    // qui se passe bien.
+    samples.insert(
+        "cleanStop",
+        to_json(&DuplicatesStop {
+            reason: StopReason::KeptCopyChanged,
+            file: profile.join("Pictures").join("photo.jpg"),
+        }),
+    );
+
     // Les deux façons dont un fichier de réglages peut être abîmé.
     samples.insert(
         "loadIssue.unreadable",
@@ -217,6 +261,15 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         "error.folderRefused",
         to_json(&BackendError::FolderRefused { reason: FolderRefusal::NotAFolder }),
     );
+    samples.insert("error.cleanRunning", to_json(&BackendError::CleanRunning));
+    samples.insert(
+        "error.cleanRefused",
+        to_json(&BackendError::CleanRefused { reason: CleanRefusal::StaleResults }),
+    );
+    samples.insert(
+        "error.cleanNotStarted",
+        to_json(&BackendError::CleanNotStarted { reason: "raison".to_owned() }),
+    );
 
     // Les valeurs de chaque énumération.
     let mut enums: BTreeMap<&str, Value> = BTreeMap::new();
@@ -224,7 +277,10 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         "phase",
         variants!(Phase: Preparing, Walking, DuplicatesQuick, DuplicatesFull, Done, Cancelled),
     );
-    enums.insert("sessionState", variants!(SessionState: Idle, Scanning, Results, Failed));
+    enums.insert(
+        "sessionState",
+        variants!(SessionState: Idle, Scanning, Results, Failed, Cleaning, Cleaned),
+    );
     enums.insert(
         "moduleId",
         variants!(ModuleId: JunkFiles, Duplicates, LargeFiles, RecycleBin, Startup, GameMode, Uninstall, Privacy),
@@ -241,6 +297,18 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     enums.insert("autoScan", variants!(AutoScan: Never, Weekly, Monthly));
     enums.insert("language", variants!(Language: Fr, En));
     enums.insert("folderRefusal", variants!(FolderRefusal: NotAbsolute, NotAFolder, NotUnicode));
+    enums.insert(
+        "cleanPhase",
+        variants!(CleanPhase: Preparing, RecycleBin, JunkFiles, Duplicates, Done),
+    );
+    enums.insert(
+        "cleanRefusal",
+        variants!(CleanRefusal: NoResults, StaleResults, OtherAnalysis, NothingToClean),
+    );
+    enums.insert("cleanOutcome", variants!(CleanOutcome: Completed, Cancelled));
+    enums.insert("stepState", variants!(StepState: NotRequested, Done, Stopped, Failed));
+    enums.insert("stopReason", variants!(StopReason: NotInRecycleBin, KeptCopyChanged));
+    enums.insert("runState", variants!(RunState: Running, Completed, Cancelled, Interrupted));
     // Les énumérations dont les variantes portent des champs : la liste vient
     // des échantillons ci-dessus, et le `match` veille à ce qu'il n'en manque pas.
     fn every_error_has_a_sample(error: BackendError) {
@@ -248,7 +316,10 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             BackendError::SettingsUnchecked
             | BackendError::ScanNotStarted { .. }
             | BackendError::SettingsNotSaved { .. }
-            | BackendError::FolderRefused { .. } => {}
+            | BackendError::FolderRefused { .. }
+            | BackendError::CleanRunning
+            | BackendError::CleanRefused { .. }
+            | BackendError::CleanNotStarted { .. } => {}
         }
     }
     fn every_issue_has_a_sample(issue: LoadIssue) {

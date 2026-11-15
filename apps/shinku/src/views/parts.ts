@@ -4,9 +4,24 @@ import { html, nothing, type TemplateResult } from 'lit-html';
 import { keyed } from 'lit-html/directives/keyed.js';
 
 import { fr } from '../i18n/fr.ts';
+import type { CleanRowId } from '../model/scan.ts';
 import { backIcon } from './art.ts';
 
 type Content = TemplateResult | typeof nothing;
+
+/** Le nom des trois catégories que le grand vide nettoie. */
+export const CLEAN_NAMES: Record<CleanRowId, string> = {
+  junkFiles: fr.nav.junk,
+  duplicates: fr.nav.duplicates,
+  recycleBin: fr.nav.bin,
+};
+
+/** Leur couleur : la même sur la barre des Résultats, la confirmation et le bilan. */
+export const SEGMENT_CLASS: Record<CleanRowId, string> = {
+  junkFiles: 'seg-1',
+  duplicates: 'seg-2',
+  recycleBin: 'seg-3',
+};
 
 /**
  * Un écran : une barre en haut (qui sert aussi à déplacer la fenêtre), un

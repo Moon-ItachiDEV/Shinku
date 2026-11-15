@@ -28,8 +28,8 @@ use crate::settings::Settings;
 use crate::walk::{Root, WalkOptions, walk};
 
 mod duplicates;
-mod index;
-mod plan;
+pub(crate) mod index;
+pub(crate) mod plan;
 pub mod report;
 
 use duplicates::Finder;
@@ -267,13 +267,14 @@ fn analyse(
     let cancelled = || control.is_cancelled();
 
     control.progress.set_phase(Phase::Preparing);
-    let plan = Plan::build(environment, options);
+    let plan = Plan::build(environment, options, started);
     if cancelled() {
         return None;
     }
 
     control.progress.set_phase(Phase::Walking);
-    let mut indexed = index_disks(&plan, options.background, control)?;
+    let mut indexed =
+        index_disks(&plan, options.background, &control.progress, &control.cancel, false)?;
     let walk_ms = clock.elapsed().as_millis() as u64;
 
     let recycle_bin = if options.modules.recycle_bin { environment.recycle_bin() } else { None };
@@ -332,8 +333,17 @@ fn analyse(
 }
 
 /// Parcourt les disques du plan, l'un après l'autre : chacun avec le nombre
-/// de lectures en parallèle qui lui convient. `None` si l'analyse est annulée.
-fn index_disks(plan: &Plan, background: bool, control: &Control) -> Option<Indexed> {
+/// de lectures en parallèle qui lui convient. `None` si `cancel` passe à vrai.
+///
+/// Avec `record`, le parcours relève aussi ce qu'il compte « à nettoyer » :
+/// c'est ainsi que le grand vide obtient la liste de ce qu'il supprime.
+pub(crate) fn index_disks(
+    plan: &Plan,
+    background: bool,
+    progress: &Progress,
+    cancel: &AtomicBool,
+    record: bool,
+) -> Option<Indexed> {
     // Numérote les éléments jugés en bloc, tous disques confondus.
     let units = AtomicU32::new(0);
     let mut indexed = Indexed::new(plan);
@@ -341,7 +351,8 @@ fn index_disks(plan: &Plan, background: bool, control: &Control) -> Option<Index
     volume_keys.sort_unstable();
     volume_keys.dedup();
     for volume_key in volume_keys {
-        let index = Index::new(plan, &control.progress, volume_key, &units);
+        let index = Index::new(plan, progress, volume_key, &units);
+        let index = if record { index.recording() } else { index };
         let on_volume = || plan.roots.iter().filter(|root| root.volume_key == volume_key);
         let roots: Vec<Root<_>> = on_volume()
             .filter_map(|root| {
@@ -356,8 +367,8 @@ fn index_disks(plan: &Plan, background: bool, control: &Control) -> Option<Index
             threads: on_volume().map(|root| root.threads).min().unwrap_or(1),
             background,
         };
-        let sinks = walk(roots, &index, walk_options, &control.cancel);
-        if control.is_cancelled() {
+        let sinks = walk(roots, &index, walk_options, cancel);
+        if cancel.load(Ordering::Relaxed) {
             return None;
         }
         indexed.absorb(plan, sinks);
@@ -519,14 +530,16 @@ mod tests {
             .with_folder(KnownFolder::Temp, temp.clone());
         let mut options = ScanOptions::new(Trigger::Button);
         options.excluded = vec![secret.clone()];
-        let plan = Plan::build(&environment, &options);
+        let plan = Plan::build(&environment, &options, environment.now());
         assert!(plan.refused.is_empty(), "{:?}", plan.refused);
 
         // Entre le plan et le parcours, le dossier exclu change de place : le
         // chemin donné par l'utilisateur ne le désigne plus, son identité si.
         fs::rename(&secret, temp.join("autre").join("secret")).unwrap();
 
-        let indexed = index_disks(&plan, false, &Control::new()).expect("pas d'annulation");
+        let indexed =
+            index_disks(&plan, false, &Progress::default(), &AtomicBool::new(false), false)
+                .expect("pas d'annulation");
         let rule = plan
             .rules
             .iter()

@@ -1,23 +1,34 @@
 // Un faux guichet, pour voir l'interface dans un navigateur sans Windows ni
 // Tauri : `npm run demo`. Il n'est jamais embarqué dans l'application.
 //
-// Les chiffres sont ceux du canevas de design. L'analyse est une simple
-// animation : rien n'est lu sur le disque.
+// Les chiffres sont ceux du canevas de design. L'analyse et le grand vide
+// sont de simples animations : rien n'est lu sur le disque, rien n'y est
+// supprimé.
 
 import type {
   Backend,
   BackendError,
   CategorySummary,
+  CleanPhase,
+  CleanProgress,
+  CleanReport,
+  CleanRequest,
+  CleanRun,
+  CleanStop,
   DuplicateGroup,
   DuplicatesPage,
   JunkReport,
   LargeFile,
   LargeFilesPage,
+  LeftOpen,
   LoadIssue,
   Overview,
   Phase,
+  Progress,
+  RecycleBin,
   SessionView,
   Settings,
+  StepState,
   Summary,
   Theme,
 } from './types.ts';
@@ -35,22 +46,33 @@ export interface MockOptions {
   emptyBin: boolean;
   /** Mode d'affichage enregistré dans les faux réglages. */
   theme: Theme;
+  /**
+   * Comment se passe le grand vide simulé. `smooth` : sans histoire. `rough` :
+   * une app est restée ouverte et des fichiers sont laissés en place. `halt` :
+   * l'étape « Doublons » s'arrête d'elle-même, par sécurité.
+   */
+  clean: 'smooth' | 'rough' | 'halt';
+  /** Annonce, à l'Accueil, un grand vide interrompu au lancement précédent. */
+  interrupted: boolean;
 }
 
 /**
  * Lit les options de la démo dans l'adresse de la page :
- * `?speed=4&theme=light&issue=unreadable&bin=empty`.
+ * `?speed=4&theme=light&issue=unreadable&bin=empty&clean=rough&interrupted=1`.
  */
 export function demoOptions(search: string): MockOptions {
   const query = new URLSearchParams(search);
   const speed = Number(query.get('speed') ?? '1');
   const issue = query.get('issue');
   const theme = query.get('theme');
+  const clean = query.get('clean');
   return {
     speed: Number.isFinite(speed) && speed > 0 ? speed : 1,
     issue: issue === 'unreadable' || issue === 'partial' ? issue : 'none',
     emptyBin: query.get('bin') === 'empty',
     theme: theme === 'light' || theme === 'dark' ? theme : 'system',
+    clean: clean === 'rough' || clean === 'halt' ? clean : 'smooth',
+    interrupted: query.get('interrupted') === '1',
   };
 }
 
@@ -138,6 +160,65 @@ function duplicateGroups(now: number): DuplicateGroup[] {
 
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
+const IDLE_PROGRESS: Progress = { phase: 'preparing', folders: 0, files: 0, foundBytes: 0, workDone: 0, workTotal: 0 };
+
+/** Les étapes du grand vide, dans l'ordre où le cœur les mène. */
+const STEPS = ['recycleBin', 'junkFiles', 'duplicates'] as const;
+type Step = (typeof STEPS)[number];
+
+/** Durées du grand vide simulé, en millisecondes à vitesse normale. */
+const STEP_TIME: Record<Step, number> = { recycleBin: 900, junkFiles: 3000, duplicates: 2400 };
+/** Début de l'étape « Fichiers inutiles » : ils sont recomptés, le volume de travail n'est pas encore connu. */
+const RECOUNT_TIME = 600;
+/** Entre la fin de la dernière étape (ou la demande d'arrêt) et le bilan. */
+const WRAP_UP_TIME = 200;
+/** Dans le scénario `halt`, la part des doublons déjà partie quand l'étape s'arrête. */
+const HALT_AT = 0.4;
+
+/** Une étape du grand vide simulé, sur la ligne du temps. */
+interface Stage {
+  id: Step;
+  from: number;
+  to: number;
+}
+
+/** Un grand vide simulé : ce qu'il a à faire, et où il en est. */
+interface Cleaning {
+  request: CleanRequest;
+  began: number;
+  stages: Stage[];
+  /** Instant de la demande d'arrêt, sur la ligne du temps du grand vide. */
+  stopAt: number | null;
+  bin: RecycleBin;
+  junk: { bytes: number; files: number; leftOpen: LeftOpen[]; skipped: number };
+  duplicates: { bytes: number; copies: number; unrecyclable: number; halts: CleanStop | null };
+  report: CleanReport | null;
+}
+
+/** Part d'une étape déjà faite à cet instant, ou `null` si elle n'a pas commencé. */
+function fraction(run: Cleaning, id: Step, time: number): number | null {
+  const stage = run.stages.find((entry) => entry.id === id);
+  // Une étape qui n'avait pas commencé à la demande d'arrêt ne commence pas.
+  const reached = Math.min(time, run.stopAt ?? Infinity);
+  if (stage === undefined || reached < stage.from) {
+    return null;
+  }
+  if (id === 'recycleBin') {
+    // La corbeille se vide d'un bloc : commencée, elle va au bout.
+    return time >= stage.to ? 1 : 0;
+  }
+  const lead = id === 'junkFiles' ? RECOUNT_TIME : 0;
+  const whole = STEP_TIME[id] - lead;
+  const done = Math.max(0, Math.min(reached, stage.to) - stage.from - lead) / whole;
+  return Math.min(1, done);
+}
+
+/** Instant où le grand vide rend son bilan. */
+function endOf(run: Cleaning): number {
+  const last = run.stages[run.stages.length - 1]?.to ?? 0;
+  return (run.stopAt === null ? last : Math.min(last, run.stopAt)) + WRAP_UP_TIME;
+}
+
 export function mockBackend(options: MockOptions): Backend {
   let settings: Settings = {
     version: 1,
@@ -162,7 +243,49 @@ export function mockBackend(options: MockOptions): Backend {
       : options.issue === 'partial'
         ? { kind: 'partial', fields: ['theme'] }
         : null;
-  const bin = options.emptyBin ? { bytes: 0, items: 0 } : { bytes: 6.8 * GB, items: 1284 };
+  let bin: RecycleBin = options.emptyBin ? { bytes: 0, items: 0 } : { bytes: 6.8 * GB, items: 1284 };
+  let free = 312 * GB;
+  let interrupted: CleanRun | null = options.interrupted
+    ? {
+        startedMs: Date.now() - 2 * 3600 * 1000,
+        finishedMs: null,
+        state: 'interrupted',
+        freedBytes: 2.1 * GB,
+        recoverableBytes: 300 * MB,
+        skippedFiles: 3,
+      }
+    : null;
+  // Ce qu'un grand vide a emporté : l'analyse suivante ne le retrouve pas.
+  let junkGone = false;
+  let duplicatesGone = false;
+  let cleaning: Cleaning | null = null;
+
+  /** L'app que le scénario `rough` laisse ouverte : ses fichiers ne partent pas. */
+  const openApps = (): LeftOpen[] => (options.clean === 'rough' ? [{ label: 'Discord', bytes: 388 * MB }] : []);
+
+  /** Les fichiers inutiles que l'analyse trouve : tout, ou ce qu'un grand vide a laissé. */
+  function junkFound(): JunkReport {
+    if (!junkGone) {
+      return structuredClone(JUNK);
+    }
+    const left = new Set(openApps().map((app) => app.label));
+    const categories = JUNK.categories.map((entry) => {
+      const lines = entry.lines.filter((line) => left.has(line.label));
+      return {
+        ...entry,
+        lines,
+        bytes: lines.reduce((total, line) => total + line.bytes, 0),
+        files: lines.reduce((total, line) => total + line.files, 0),
+      };
+    });
+    return {
+      bytes: categories.reduce((total, entry) => total + entry.bytes, 0),
+      files: categories.reduce((total, entry) => total + entry.files, 0),
+      sparedBytes: JUNK.sparedBytes,
+      sparedFiles: JUNK.sparedFiles,
+      categories,
+    };
+  }
 
   // L'analyse simulée : `started` est l'instant du lancement, ou `null`.
   let started: number | null = null;
@@ -177,23 +300,25 @@ export function mockBackend(options: MockOptions): Backend {
   const overview = (): Overview => ({
     version: '0.1.0',
     volumes: [
-      { root: 'C:\\', label: '', fileSystem: 'NTFS', total: 931.5 * GB, free: 312 * GB, fixed: true, seekPenalty: false, system: true },
+      { root: 'C:\\', label: '', fileSystem: 'NTFS', total: 931.5 * GB, free, fixed: true, seekPenalty: false, system: true },
     ],
-    recycleBin: bin,
+    recycleBin: { ...bin },
     settings: structuredClone(settings),
     settingsIssue: issue,
     scanBlocked: blocked(),
+    interruptedClean: interrupted,
   });
 
-  const groups = () => duplicateGroups(Date.now());
+  const groups = () => (duplicatesGone ? [] : duplicateGroups(Date.now()));
   const duplicateBytes = () => groups().reduce((total, group) => total + group.reclaimable, 0);
   const duplicateCopies = () => groups().reduce((total, group) => total + group.files.length - 1, 0);
 
   function summary(complete: boolean, begun: number, finished: number): Summary {
     const large = largeFiles(finished);
+    const junk = junkFound();
     const categories: CategorySummary[] = [
       { module: 'recycleBin', lot: 'auto', risk: 'D', bytes: bin.bytes, items: bin.items, state: 'ready' },
-      { module: 'junkFiles', lot: 'auto', risk: 'A', bytes: JUNK.bytes, items: JUNK.files, state: 'ready' },
+      { module: 'junkFiles', lot: 'auto', risk: 'A', bytes: junk.bytes, items: junk.files, state: 'ready' },
       {
         module: 'duplicates',
         lot: 'optional',
@@ -218,14 +343,150 @@ export function mockBackend(options: MockOptions): Backend {
     return { complete, started: begun, finished, autoBytes, categories };
   }
 
+  // ── Le grand vide simulé ─────────────────────────────────────────────────
+
+  const cleanTime = (run: Cleaning) => (Date.now() - run.began) * options.speed;
+
+  /** Ce qu'une étape est devenue, d'après la part qu'elle a faite. */
+  function stepState(run: Cleaning, id: Step, done: number | null): StepState {
+    if (!run.request[id]) {
+      return 'notRequested';
+    }
+    return done !== null && done >= 1 ? 'done' : 'stopped';
+  }
+
+  /** Dresse le bilan d'un grand vide arrivé au bout, et en applique les effets au faux PC. */
+  function conclude(run: Cleaning): CleanReport {
+    const end = endOf(run);
+    const part = (id: Step) => fraction(run, id, end);
+    const [binPart, junkPart, copiesPart] = [part('recycleBin'), part('junkFiles'), part('duplicates')];
+
+    const emptied = binPart !== null && binPart >= 1;
+    const halt = run.duplicates.halts;
+    const halted = halt !== null && copiesPart !== null && copiesPart >= HALT_AT;
+    const copiesDone = halted ? HALT_AT : (copiesPart ?? 0);
+    const junk = {
+      state: stepState(run, 'junkFiles', junkPart),
+      bytes: Math.round(run.junk.bytes * (junkPart ?? 0)),
+      files: Math.round(run.junk.files * (junkPart ?? 0)),
+      leftOpen: junkPart === null ? [] : run.junk.leftOpen,
+    };
+    const duplicates = {
+      state: halted ? ('stopped' as const) : stepState(run, 'duplicates', copiesPart),
+      bytes: Math.round(run.duplicates.bytes * copiesDone),
+      copies: Math.round(run.duplicates.copies * copiesDone),
+      stop: halted ? halt : null,
+    };
+    const recycleBin = {
+      state: stepState(run, 'recycleBin', binPart),
+      bytes: emptied ? run.bin.bytes : 0,
+      items: emptied ? run.bin.items : 0,
+    };
+    // Sans l'avoir vidée d'abord, la corbeille du scénario `rough` était pleine.
+    const kept = options.clean === 'rough' && !run.request.recycleBin ? 0.8 : 1;
+    const cancelled =
+      recycleBin.state === 'stopped' || junk.state === 'stopped' || (duplicates.state === 'stopped' && !halted);
+    const report: CleanReport = {
+      started: run.began,
+      finished: Date.now(),
+      outcome: cancelled ? 'cancelled' : 'completed',
+      freedBytes: recycleBin.bytes + junk.bytes,
+      recoverableBytes: Math.round(duplicates.bytes * kept),
+      recycleBin,
+      junk,
+      duplicates,
+      skipped: {
+        inUse: Math.round(run.junk.skipped * 0.6 * (junkPart ?? 0)),
+        changed: Math.round(run.junk.skipped * 0.4 * (junkPart ?? 0)),
+        denied: 0,
+        unrecyclable: copiesDone >= 1 ? run.duplicates.unrecyclable : 0,
+        other: 0,
+      },
+      durationMs: Date.now() - run.began,
+    };
+
+    if (emptied) {
+      bin = { bytes: 0, items: 0 };
+    }
+    bin = { bytes: bin.bytes + report.recoverableBytes, items: bin.items + duplicates.copies };
+    free += report.freedBytes;
+    junkGone ||= junk.state === 'done';
+    duplicatesGone ||= duplicates.state === 'done';
+    return report;
+  }
+
+  /** Conclut le grand vide simulé dès que son temps est écoulé. */
+  function settle(): void {
+    const run = cleaning;
+    if (run !== null && run.report === null && cleanTime(run) >= endOf(run)) {
+      run.report = conclude(run);
+    }
+  }
+
+  /** Vrai tant qu'un grand vide simulé n'a pas rendu son bilan. */
+  function cleanRunning(): boolean {
+    settle();
+    return cleaning !== null && cleaning.report === null;
+  }
+
+  function cleanProgress(run: Cleaning): CleanProgress {
+    const time = Math.min(cleanTime(run), endOf(run));
+    const part = (id: Step) => fraction(run, id, time) ?? 0;
+    const halted = run.duplicates.halts !== null;
+    const copiesPart = halted ? Math.min(HALT_AT, part('duplicates')) : part('duplicates');
+    const freedBytes = Math.round(run.bin.bytes * part('recycleBin') + run.junk.bytes * part('junkFiles'));
+    const recycledBytes = Math.round(run.duplicates.bytes * copiesPart);
+
+    let phase: CleanPhase = 'preparing';
+    if (run.report !== null) {
+      phase = 'done';
+    } else {
+      // L'étape en cours ; après une demande d'arrêt, celle où il s'est arrêté.
+      const reached = Math.min(time, run.stopAt ?? Infinity);
+      for (const stage of run.stages) {
+        if (reached >= stage.from) {
+          phase = stage.id;
+        }
+      }
+    }
+    const work =
+      phase === 'junkFiles' && part('junkFiles') > 0
+        ? { workDone: Math.round(run.junk.bytes * part('junkFiles')), workTotal: run.junk.bytes }
+        : phase === 'duplicates'
+          ? { workDone: Math.round(run.duplicates.bytes * part('duplicates')), workTotal: run.duplicates.bytes }
+          : { workDone: 0, workTotal: 0 };
+    return {
+      phase,
+      freedBytes,
+      recycledBytes,
+      files: Math.round(run.junk.files * part('junkFiles') + run.duplicates.copies * copiesPart),
+      skippedFiles: Math.round(run.junk.skipped * part('junkFiles')),
+      ...work,
+    };
+  }
+
+  // ── La session ───────────────────────────────────────────────────────────
+
   function view(): SessionView {
-    if (started === null) {
+    settle();
+    if (cleaning !== null) {
       return {
-        state: 'idle',
-        progress: { phase: 'preparing', folders: 0, files: 0, foundBytes: 0, workDone: 0, workTotal: 0 },
+        state: cleaning.report === null ? 'cleaning' : 'cleaned',
+        progress: IDLE_PROGRESS,
         summary: null,
         skipped: { folders: 0, refusedRoots: 0 },
         stale: false,
+        clean: { request: cleaning.request, progress: cleanProgress(cleaning), report: cleaning.report },
+      };
+    }
+    if (started === null) {
+      return {
+        state: 'idle',
+        progress: IDLE_PROGRESS,
+        summary: null,
+        skipped: { folders: 0, refusedRoots: 0 },
+        stale: false,
+        clean: null,
       };
     }
     const time = elapsed();
@@ -233,7 +494,7 @@ export function mockBackend(options: MockOptions): Backend {
     const base = {
       folders: Math.round(27_320 * walked),
       files: Math.round(196_295 * walked),
-      foundBytes: Math.round(JUNK.bytes * walked),
+      foundBytes: Math.round(junkFound().bytes * walked),
     };
     let phase: Phase = 'walking';
     let workDone = 0;
@@ -257,11 +518,21 @@ export function mockBackend(options: MockOptions): Backend {
       summary: time >= WALK ? summary(complete, started, finished) : null,
       skipped: { folders: time >= WALK ? 3 : 0, refusedRoots: 0 },
       stale: Date.now() - finished > 10 * 60 * 1000,
+      clean: null,
     };
   }
 
   const hasReport = () => view().summary !== null;
   const refuse = (error: BackendError): Promise<never> => Promise.reject(error);
+
+  /** Les résultats sur lesquels un grand vide peut s'appuyer, ou la raison du refus : comme le cœur. */
+  function cleanable(): Summary | Extract<BackendError, { kind: 'cleanRefused' }> {
+    const current = view();
+    if (current.state !== 'results' || current.summary === null || !current.summary.complete) {
+      return { kind: 'cleanRefused', reason: 'noResults' };
+    }
+    return current.stale ? { kind: 'cleanRefused', reason: 'staleResults' } : current.summary;
+  }
 
   return {
     overview: async () => {
@@ -276,15 +547,113 @@ export function mockBackend(options: MockOptions): Backend {
       if (blocked()) {
         return refuse({ kind: 'settingsUnchecked' });
       }
+      if (cleanRunning()) {
+        return refuse({ kind: 'cleanRunning' });
+      }
+      cleaning = null;
+      interrupted = null;
       started = Date.now();
       return view();
     },
     cancelScan: async () => {
-      started = null;
+      // Sans effet sur un grand vide en cours ; referme le bilan d'un grand vide terminé.
+      if (!cleanRunning()) {
+        cleaning = null;
+        started = null;
+      }
       return view();
     },
     sessionView: async () => view(),
-    junk: async () => (hasReport() ? structuredClone(JUNK) : null),
+    cleanPreview: async () => {
+      const summary = cleanable();
+      if ('kind' in summary) {
+        return refuse(summary);
+      }
+      const junk = junkFound();
+      const copies = groups().flatMap((group) => group.files.filter((file) => !file.keep));
+      return {
+        analysis: summary.started,
+        recycleBin: { ...bin },
+        junk: { bytes: junk.bytes, files: junk.files, openApps: junkGone ? [] : openApps() },
+        duplicates: {
+          bytes: duplicateBytes(),
+          copies: copies.length,
+          syncedCopies: copies.filter((file) => file.synced).length,
+          otherDiskCopies: options.clean === 'rough' && copies.length > 0 ? 1 : 0,
+        },
+      };
+    },
+    startClean: async (request) => {
+      if (blocked()) {
+        return refuse({ kind: 'settingsUnchecked' });
+      }
+      if (cleanRunning()) {
+        return refuse({ kind: 'cleanRunning' });
+      }
+      const summary = cleanable();
+      if ('kind' in summary && summary.reason === 'noResults') {
+        return refuse(summary);
+      }
+      if (!('kind' in summary) && summary.started !== request.analysis) {
+        return refuse({ kind: 'cleanRefused', reason: 'otherAnalysis' });
+      }
+      if ('kind' in summary) {
+        return refuse(summary);
+      }
+      const junk = junkFound();
+      const wanted: CleanRequest = {
+        analysis: request.analysis,
+        recycleBin: request.recycleBin && bin.items > 0,
+        junkFiles: request.junkFiles && junk.files > 0,
+        duplicates: request.duplicates && duplicateCopies() > 0,
+      };
+      if (!wanted.recycleBin && !wanted.junkFiles && !wanted.duplicates) {
+        return refuse({ kind: 'cleanRefused', reason: 'nothingToClean' });
+      }
+
+      // Les étapes demandées s'enchaînent sur la ligne du temps.
+      const stages: Stage[] = [];
+      let clock = 100;
+      for (const id of STEPS) {
+        if (wanted[id]) {
+          stages.push({ id, from: clock, to: clock + STEP_TIME[id] });
+          clock += STEP_TIME[id];
+        }
+      }
+      const leftOpen = junkGone ? [] : openApps();
+      const kept = groups().find((group) => group.files.length > 2)?.files[0];
+      cleaning = {
+        request,
+        began: Date.now(),
+        stages,
+        stopAt: null,
+        bin: { ...bin },
+        junk: {
+          bytes: junk.bytes - leftOpen.reduce((total, app) => total + app.bytes, 0),
+          files: junk.files - (leftOpen.length > 0 ? 2140 : 0),
+          leftOpen,
+          skipped: options.clean === 'rough' ? 15 : 0,
+        },
+        duplicates: {
+          bytes: duplicateBytes(),
+          copies: duplicateCopies(),
+          unrecyclable: options.clean === 'rough' ? 1 : 0,
+          halts:
+            options.clean === 'halt' && kept !== undefined ? { reason: 'keptCopyChanged', file: kept.path } : null,
+        },
+        report: null,
+      };
+      // Dès que le grand vide démarre, les résultats de l'analyse sont oubliés.
+      started = null;
+      return view();
+    },
+    cancelClean: async () => {
+      if (cleanRunning() && cleaning !== null) {
+        cleaning.stopAt ??= cleanTime(cleaning);
+      }
+      return view();
+    },
+    junk: async () => (hasReport() ? junkFound() : null),
     largeFiles: async (offset, limit): Promise<LargeFilesPage | null> => {
       if (!hasReport()) {
         return null;
@@ -323,6 +692,9 @@ export function mockBackend(options: MockOptions): Backend {
       return structuredClone(settings);
     },
     addExcludedFolder: async () => {
+      if (cleanRunning()) {
+        return refuse({ kind: 'cleanRunning' });
+      }
       await delay(250);
       const extra = 'D:\\Jeux\\Captures';
       if (!settings.excludedFolders.includes(extra)) {
@@ -332,6 +704,9 @@ export function mockBackend(options: MockOptions): Backend {
       return structuredClone(settings);
     },
     removeExcludedFolder: async (path) => {
+      if (cleanRunning()) {
+        return refuse({ kind: 'cleanRunning' });
+      }
       settings = { ...settings, excludedFolders: settings.excludedFolders.filter((other) => other !== path) };
       started = null;
       return structuredClone(settings);
