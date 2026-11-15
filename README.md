@@ -89,7 +89,9 @@ npm run tauri build  # Windows : shinku.exe, shinku-agent.exe et l'installeur
 
 L'installeur est écrit dans `target/release/bundle/nsis/`. Il embarque
 `shinku-agent.exe`, compilé juste avant par `beforeBuildCommand`
-(`target/release/`) : un `tauri build` avec `--target` ne le trouverait pas.
+(`target/release/`) : un `tauri build` avec `--target` ne le trouverait pas. Les
+crochets qui le déposent et le font sortir sont dans
+`apps/shinku/src-tauri/installeur/agent.nsh`.
 
 La démo accepte quelques réglages dans son adresse : `?theme=light` ou
 `?theme=dark`, `?speed=20` (analyse accélérée), `?bin=empty` (corbeille vide),
@@ -143,19 +145,35 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   `apps/shinku/scripts/essai-mode-jeu.ps1`, sur un vrai Windows : l'agent
   installé reconnaît un faux jeu (une petite fenêtre compilée à l'instant) au
   premier plan, met un `ping` en veilleuse, change le mode d'alimentation, puis
-  remet tout en place à la fermeture du jeu. Il remet à la fin le mode
-  d'alimentation et les réglages d'origine ; à réserver, lui aussi, à un PC
-  d'essai. Depuis `apps/shinku` :
+  remet tout en place à la fermeture du jeu. Une sonde dit d'abord si un compte
+  ordinaire peut changer le mode d'alimentation : sur un Windows Server (les
+  machines de GitHub), non, et l'essai exige alors `refused` de l'agent, en
+  écrivant que le passage en « Performances élevées » n'est pas prouvé ici. Il
+  remet à la fin le mode d'alimentation et les réglages d'origine, et efface son
+  dossier temporaire ; à réserver, lui aussi, à un PC d'essai. Depuis
+  `apps/shinku` :
 
   ```sh
   powershell -File scripts/essai-mode-jeu.ps1 -Agent "C:\Program Files\Shinku\shinku-agent.exe"
   ```
 
+- Les crochets de l'installeur sont essayés par
+  `apps/shinku/scripts/essai-installeur-agent.ps1` : mise à jour par-dessus
+  l'installation, puis désinstallation, avec un agent qui tourne. Plus aucun
+  agent, la valeur de démarrage (conservée à la mise à jour, effacée à la
+  désinstallation), le dossier d'installation et l'alimentation sont vérifiés.
+  Shinku n'est plus installé ensuite : machine jetable seulement. Depuis
+  `apps/shinku` :
+
+  ```sh
+  powershell -File scripts/essai-installeur-agent.ps1 -Installeur "..\..\target\release\bundle\nsis\Shinku_0.1.0_x64-setup.exe"
+  ```
+
 - L'intégration continue (`.github/workflows/ci.yml`) rejoue le tout sous
   Linux, passe le code propre à Windows au lint, puis, sur un vrai Windows,
   lance les tests du cœur, fabrique l'installeur, l'installe et essaie la
-  fenêtre, puis le mode jeu. L'installeur n'est publié que si ces essais
-  passent.
+  fenêtre, puis le mode jeu, puis la mise à jour et la désinstallation.
+  L'installeur n'est publié que si ces essais passent.
 
 ## Pour aller plus loin
 
