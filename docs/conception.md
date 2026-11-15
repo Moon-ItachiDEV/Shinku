@@ -289,6 +289,92 @@ Microsoft).
 Pour l'instant, l'installeur ne contient que `shinku.exe`. Le helper et l'agent
 y entreront avec leurs premières fonctions.
 
+### L'habillage
+
+L'installeur reste l'assistant NSIS standard de Tauri, habillé : fond Brume
+(`F4F1EE`) sur les pages Bienvenue et Terminé et sur le bandeau d'en-tête, le
+trou noir de l'Accueil et le logotype à gauche, un petit signe au bord droit de
+l'en-tête, une barre de progression plate couleur pêche, Segoe UI, tous les
+textes en français et au tutoiement. Les pages intérieures gardent le gris
+natif de Windows, volontairement. La liste des détails est masquée : la page
+d'installation passe seule à la page Terminé, où la case « Lancer Shinku » est
+cochée et le raccourci du bureau ne l'est pas.
+
+Le modèle NSIS de Tauri n'est pas bifurqué (`template` reste absent de la
+configuration) : toute la logique d'installation, de mise à jour et de
+désinstallation est celle de Tauri, et suit ses versions. L'habillage passe
+par trois réglages de `bundle.windows.nsis`, qui pointent sur
+`apps/shinku/src-tauri/installeur/` :
+
+1. `habillage.nsh` (`installerHooks`) : la mécanique. Le modèle l'inclut avant
+   les pages. Il fixe les réglages de Modern UI (couleurs, images, hooks
+   d'initialisation), inclut `textes.nsh`, redéclare cinq macros de page (voir
+   plus bas) et porte deux hooks de Tauri. Il est en ASCII strict : les textes
+   n'y sont pas, ils ne dépendent donc pas de l'option `-INPUTCHARSET` que Tauri
+   passe à makensis ;
+2. `textes.nsh` : tous les textes de Modern UI (en UTF-8, inclus par le
+   premier avec `/CHARSET=UTF8`). Le fichier de langue de Modern UI ne définit
+   une chaîne que si elle ne l'est pas déjà : une pré-définition l'emporte. Cela
+   vaut parce que l'installeur n'a qu'une langue ;
+3. `francais.nsh` (`customLanguageFiles`) : les 27 chaînes de Tauri, les textes
+   fixés par commande (boutons, textes des pages Dossier et Désinstaller,
+   message d'erreur d'écriture), la police, et les fonctions d'habillage. Tauri
+   l'inclut après les pages : les fonctions peuvent donc utiliser les variables
+   `$mui.*` des pages, qui n'existent pas avant. Tauri en fait une copie
+   ailleurs : le fichier retrouve les images par `SHINKU_INSTALLEUR`, jamais par
+   un chemin relatif.
+
+Pour accrocher une fonction à l'affichage d'une page (placer les contrôles de
+Bienvenue et Terminé, colorer la barre, poser « Installer » sur le bouton de
+la page Dossier), il faut définir
+`MUI_PAGE_CUSTOMFUNCTION_SHOW` juste avant la page. Le modèle de Tauri insère
+lui-même les pages : `habillage.nsh` redéclare donc `MUI_PAGE_WELCOME`,
+`MUI_PAGE_DIRECTORY`, `MUI_PAGE_INSTFILES`, `MUI_PAGE_FINISH` et
+`MUI_UNPAGE_INSTFILES` par une copie
+exacte du corps de Modern UI, précédée de cette seule définition. Le risque : si
+une version de NSIS change le corps d'une de ces macros, la copie garde
+l'ancienne. Une macro disparue ou une définition en double casse la
+compilation, bruyamment ; un contrôle ajouté à une page ne se verrait que sur
+les captures de l'essai. À chaque changement de version de NSIS, comparer les
+cinq copies avec `Pages/*.nsh`.
+
+La page Dossier est redéclarée pour une raison de plus : makensis ne met le
+texte « Installer » que sur la page qui précède immédiatement la page
+d'installation, et dans le modèle de Tauri c'est la page Menu Démarrer, toujours
+sautée. Sans `ShinkuDirectoryShow`, le bouton de la page Dossier dirait
+« Suivant ».
+
+**Les images** (`installeur/images/`, versionnées) sont fabriquées par
+`apps/shinku/scripts/images-installeur.mjs`, qui reprend le dessin de
+l'interface (`src/views/art.ts` : le script doit le suivre). Chacune existe en
+cinq tailles, de 100 à 200 % : le bandeau de gauche (191 × 362 pixels à 100 %)
+et le signe de l'en-tête (76 × 58). Elles sont affichées à leur taille réelle,
+sans étirement : leur fond est celui de la page, aucune couture ne se voit (un
+test vérifie la couleur exacte de leurs coins). À l'ouverture, l'installeur lit
+la résolution de la fenêtre (`GetDpiForWindow`) et prend la taille la plus
+proche ; la configuration pointe sur les images à 100 %, qui servent de repli.
+Le signe est posé à la main (bord droit de la fenêtre, haut à 0) : appeler la
+fonction d'alignement de Modern UI le décalerait hors de la fenêtre à 150 %.
+
+**Les réglages.** Shinku range ses réglages dans `%APPDATA%\Shinku`, pas sous
+l'identifiant du paquet : la case « Supprimer aussi mes réglages » de Tauri ne
+les supprimait donc pas. Le hook `NSIS_HOOK_POSTUNINSTALL`, que le modèle place
+à la fin de la section de désinstallation, nettoie `%APPDATA%\Shinku` quand la case
+est cochée, hors mise à jour. Il n'utilise pas `RMDir /r`, qui suit les
+jonctions, alors que le désinstalleur tourne avec les droits d'administrateur
+sur un dossier que n'importe quel programme de l'utilisateur peut modifier : il
+ne touche pas au dossier si c'est un point d'analyse, supprime un par un les
+fichiers que Shinku y écrit (`settings.json`, `settings.illisible.json`,
+`journal.json` et leurs fichiers temporaires `.tmp`), puis retire le dossier
+avec `RMDir` sans `/r`, qui ne part que s'il est vide. Tout nouveau fichier
+écrit par Shinku dans ce dossier doit être ajouté à la liste du hook.
+
+Le mode silencieux (`/S`) n'a pas de fenêtre : les fonctions d'interface n'y
+tournent pas, et aucun hook de section ne suppose une fenêtre. En mode passif
+(`/P`), la page d'installation s'affiche et nos fonctions d'interface tournent,
+sans danger ; les pages Bienvenue et Terminé sont sautées. La mise à jour
+(`/UPDATE`) ne touche pas aux réglages.
+
 ### Le manifeste de `shinku.exe`
 
 Le manifeste (`apps/shinku/src-tauri/windows-manifest.xml`) dit à Windows ce
@@ -317,6 +403,35 @@ essaient aussi la vraie corbeille de Windows (`SHINKU_ESSAI_CORBEILLE`).
 Une erreur dans la console de la page ou un message d'erreur à l'écran fait
 échouer l'essai. L'installeur n'est publié que s'il passe.
 
+L'habillage a son propre essai, `apps/shinku/scripts/essai-installeur.ps1`
+(Windows PowerShell 5.1, sans dépendance), lancé en trois étapes avant et
+après celui de la fenêtre. Il parcourt le vrai installeur comme une personne :
+il attend chaque page par son titre et ses textes, lit tout ce qu'elle
+affiche, échoue si un texte manque ou vouvoie, photographie la fenêtre, puis
+clique par `BM_CLICK`.
+
+- `installer` : Bienvenue, Dossier, Installation, Terminé (« Lancer Shinku » est
+  décoché, le raccourci du bureau doit l'être déjà), puis code de sortie,
+  `shinku.exe`, `uninstall.exe`, pas de raccourci sur le bureau, un raccourci
+  dans le menu Démarrer ;
+- `deja-installe` : la page « Shinku est déjà installé », puis Annuler. Rien ne
+  doit changer sur le disque ;
+- `desinstaller` : la page de désinstallation, la case « Supprimer aussi mes
+  réglages », puis le dossier d'installation et `%APPDATA%\Shinku` doivent
+  avoir disparu.
+
+Un aller-retour silencieux (`/S`) garde la preuve que ce mode marche. Les
+captures sont publiées (artefact `captures-de-l-installeur`) ; un lancement à
+la main avec `captures_dans_le_journal` les écrit aussi dans le journal, en
+JPEG base64 entre deux lignes repères, pour les lire sans télécharger
+l'artefact. Les pages d'installation et de désinstallation en cours sont
+guettées sans être exigées : elles ne durent que quelques secondes.
+
+Les limites : l'essai tourne à 100 % de mise à l'échelle seulement, comme la
+machine de GitHub. Le choix des images à 125, 150, 175 et 200 % et la mise en
+page à ces échelles n'ont été vus que sous Wine, dont les polices ne sont pas
+Segoe UI : seule la mise en page y est jugée.
+
 L'essai lit la page et clique par le port de débogage de WebView2, demandé de
 l'extérieur par une variable d'environnement : `shinku.exe` n'a aucune option
 d'essai.
@@ -332,11 +447,15 @@ d'environnement que dans un programme sans droits d'administrateur.
 - **Signature du code.** L'installeur et les exécutables ne sont pas signés.
   Voir la décision prise sur le certificat individuel.
 - **Désinstallation.** La case « supprimer les données » du modèle de Tauri
-  efface un dossier du profil avec les droits d'administrateur. Elle ne vise
-  pas `%APPDATA%\Shinku`, et un effacement élevé dans un dossier que
+  efface un dossier du profil avec les droits d'administrateur. Elle ne visait
+  pas `%APPDATA%\Shinku` : le hook de `habillage.nsh` le supprime maintenant,
+  mais avec les mêmes droits élevés, et un effacement élevé dans un dossier que
   l'utilisateur peut modifier est exactement ce que le document d'architecture
   interdit au helper. À remplacer par un effacement fait par `shinku.exe`
-  lui-même, sans élévation.
+  lui-même, sans élévation. Une limite reste : si la désinstallation est
+  élevée avec le compte d'un autre administrateur, ce sont les réglages de ce
+  compte-là qui sont visés, pas ceux de la personne connectée (même limite que
+  la suppression faite par Tauri).
 - **Port de débogage de WebView2.** Un programme qui tourne déjà sous le
   compte de l'utilisateur peut lancer Shinku avec ce port ouvert, comme le
   fait l'essai de la fenêtre, et piloter sa page. Depuis le grand vide, il

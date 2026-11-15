@@ -80,7 +80,9 @@ npm run tauri dev  # Windows : la vraie fenêtre, rechargée à chaque changemen
 npm run tauri build  # Windows : shinku.exe et son installeur
 ```
 
-L'installeur est écrit dans `target/release/bundle/nsis/`.
+L'installeur est écrit dans `target/release/bundle/nsis/`. Son habillage
+(images, textes) est dans `apps/shinku/src-tauri/installeur/` ; voir
+`docs/conception.md`.
 
 La démo accepte quelques réglages dans son adresse : `?theme=light` ou
 `?theme=dark`, `?speed=20` (analyse accélérée), `?bin=empty` (corbeille vide),
@@ -126,8 +128,9 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   bon : elle est réservée à une machine jetable.
 - L'intégration continue (`.github/workflows/ci.yml`) rejoue le tout sous
   Linux, passe le code propre à Windows au lint, puis, sur un vrai Windows,
-  lance les tests du cœur, fabrique l'installeur, l'installe et essaie la
-  fenêtre. L'installeur n'est publié que si cet essai passe.
+  lance les tests du cœur, fabrique l'installeur, le parcourt page par page
+  (`apps/shinku/scripts/essai-installeur.ps1`), l'installe, essaie la fenêtre,
+  puis le désinstalle. L'installeur n'est publié que si cet essai passe.
 
 ## Pour aller plus loin
 

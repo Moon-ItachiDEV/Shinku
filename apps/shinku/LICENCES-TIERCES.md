@@ -16,6 +16,11 @@ et `@fontsource/orbitron`). Elles sont embarquées telles quelles, sans
 modification, et uniquement pour les jeux de caractères utiles : latin, latin
 étendu, et les deux tranches japonaises qui contiennent 真 et 空.
 
+Les images de l'installeur (`src-tauri/installeur/images/`) contiennent le
+logotype « SHINKU 真空 », dessiné avec Orbitron et M PLUS 1, déjà cités
+ci-dessus : ces polices n'y sont pas embarquées, seules des images de leurs
+lettres le sont (`scripts/images-installeur.mjs`).
+
 Quand une dépendance change de version, recopier son fichier de licence :
 
 ```sh

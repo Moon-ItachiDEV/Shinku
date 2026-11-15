@@ -34,7 +34,14 @@
         "installMode": "perMachine",
         "languages": ["French"],
         "displayLanguageSelector": false,
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "sidebarImage": "installeur/images/bandeau-100.bmp",
+        "headerImage": "installeur/images/signe-100.bmp",
+        "installerHooks": "installeur/habillage.nsh",
+        "customLanguageFiles": {
+          "French": "installeur/francais.nsh"
+        }
       }
     }
   }
