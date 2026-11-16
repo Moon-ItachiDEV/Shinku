@@ -9,16 +9,23 @@
 #
 #   - la machine et l'exécutable : droits (EnableLUA, ConsentPromptBehavior*,
 #     icacls), manifeste `requireAdministrator`, sous-système graphique ;
+#   - le drapeau de chargement des bibliothèques du binaire installé
+#     (DependentLoadFlags = 0x0800, lu dans le fichier PE) ;
 #   - demandes refusées (code 2, aucune fenêtre), nom inconnu ou autre vue
 #     (code 4), copie hors de Program Files (code 6) ;
+#   - un refus d'emplacement causé par une entrée de droits : une copie dans un
+#     dossier créé sous Program Files est acceptée (code 4), refusée dès que
+#     Utilisateurs peut écrire dans ce dossier (code 6), acceptée de nouveau
+#     quand l'entrée est retirée (code 4) ;
 #   - la boîte, trouvée par le numéro du processus (classe #32770), son texte
 #     contient le nom ; Annuler (WM_COMMAND, IDCANCEL) : code 3, rien ne change ;
 #   - l'essai négatif : un processus sans droits (lancer-en-utilisateur.ps1)
 #     envoie le même message à la boîte, Windows le refuse ; l'assistant attend
 #     toujours, HKLM n'a pas changé ;
 #   - OK (IDOK) : code 0, les douze octets de « coupée » ; puis « déjà coupée » :
-#     code 1, sans fenêtre ; remettre : code 0, `02` et onze zéros ; remettre
-#     encore : code 1 ;
+#     code 9, sans fenêtre ; remettre : code 0, `02` et onze zéros ; remettre
+#     encore : code 9 (le code 1 est celui d'un processus tué : l'assistant ne le
+#     rend jamais) ;
 #   - aucune fenêtre de console ;
 #   - l'échéance : un assistant lancé au début sur une seconde entrée d'essai
 #     que ce script pose lui-même, sans jamais lui répondre, sort avec le code 3
@@ -75,6 +82,8 @@ $CopyDir = Join-Path $Work 'copie'
 # L'essai négatif tourne avec un jeton filtré : il lit et écrit dans le dossier
 # temporaire du compte, pas dans celui de l'intégration continue.
 $ProbeDir = Join-Path $env:TEMP 'essai-assistant-sonde'
+# Un dossier créé sous le vrai Program Files, pour l'essai des droits.
+$RightsDir = Join-Path $ProgramFiles 'Shinku Essai Droits'
 
 $Started = Get-Date
 function Say([string]$Line) {
@@ -517,6 +526,41 @@ function Test-Elevated {
 $Original = $null
 $OriginalNoted = $false
 
+# Ce que dit la machine des droits d'un objet : propriétaire, puis icacls.
+function Get-RightsText([string]$Path) {
+    $parts = New-Object System.Collections.ArrayList
+    try { [void]$parts.Add("propriétaire : $((Get-Acl -LiteralPath $Path).Owner)") } catch { [void]$parts.Add("propriétaire illisible : $($_.Exception.Message)") }
+    try {
+        foreach ($line in @(& icacls.exe $Path)) { if ("$line".Trim()) { [void]$parts.Add("$line".Trim().Replace($Path, '<objet>')) } }
+    } catch { [void]$parts.Add("icacls impossible : $($_.Exception.Message)") }
+    return ($parts -join ' | ')
+}
+
+# Les entrées de droits d'un objet, sans son chemin ni le bilan d'icacls, triées.
+function Get-AclLines([string]$Path) {
+    $lines = New-Object System.Collections.ArrayList
+    foreach ($line in @(& icacls.exe $Path)) {
+        $text = "$line".Replace($Path, '').Trim()
+        if ($text -and $text -notmatch '^(Successfully|Failed processing|Traitement)') { [void]$lines.Add($text) }
+    }
+    return @($lines | Sort-Object)
+}
+
+# Lance l'assistant depuis la copie du dossier d'essai des droits.
+function Assert-RightsCase([int]$Expected, [string]$Step, [string]$Name, [string]$Program) {
+    $run = Invoke-Quick "demarrage1 couper run $(ConvertTo-HexName $Name)" $Program
+    if ($run.Windows.Count -gt 0) {
+        Fail "droits, étape $Step : une fenêtre s'est ouverte ($($run.Windows -join ' ; '))"
+    }
+    if ($run.Code -ne $Expected) {
+        Fail ("droits, étape $Step : code $($run.Code) au lieu de $Expected. Dossier : $(Get-RightsText $RightsDir). Fichier : $(Get-RightsText $Program)")
+    }
+}
+
+function Remove-RightsDir {
+    if (Test-Path -LiteralPath $RightsDir) { Remove-Item -LiteralPath $RightsDir -Recurse -Force -ErrorAction Stop }
+}
+
 function Remove-Echo {
     Remove-HklmValue $RunKey $EntreeEcheance
     Remove-HklmValue $ApprovedRunKey $EntreeEcheance
@@ -544,7 +588,7 @@ function Clean-Up {
             Say "approbation de « $Entree » remise dans son état d'avant : $wasText"
         } catch { if ($null -eq $first) { $first = $_ }; Say "  remise de l'approbation impossible : $($_.Exception.Message)" }
     }
-    foreach ($dir in @($Work, $ProbeDir)) {
+    foreach ($dir in @($Work, $ProbeDir, $RightsDir)) {
         try { if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction Stop } } catch {
             Say "  impossible de retirer $dir : $($_.Exception.Message)"
         }
@@ -555,7 +599,8 @@ function Clean-Up {
 if ($Nettoyer) {
     Stop-Helpers
     Remove-Echo
-    Say "assistants arrêtés, entrée « $EntreeEcheance » retirée"
+    try { Remove-RightsDir } catch { Say "  impossible de retirer $RightsDir : $($_.Exception.Message)" }
+    Say "assistants arrêtés, entrée « $EntreeEcheance » retirée, dossier $RightsDir retiré"
     exit 0
 }
 
@@ -637,6 +682,65 @@ function Assert-Executable {
     $text = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
     if (-not $text.Contains('level="requireAdministrator"')) { Fail "le manifeste de l'assistant ne contient pas level=\"requireAdministrator\"" }
     Proof "le manifeste de l'assistant contient requireAdministrator et son sous-système est graphique (2), $($bytes.Length) octets"
+    Assert-LoadFlags $bytes $peAt
+}
+
+# De l'adresse relative d'un exécutable à sa place dans le fichier, par la table
+# des sections.
+function ConvertTo-FileOffset([byte[]]$Bytes, [long]$SectionsAt, [int]$Count, [long]$Rva) {
+    for ($i = 0; $i -lt $Count; $i++) {
+        $at = $SectionsAt + 40 * $i
+        $virtualSize = [long][BitConverter]::ToUInt32($Bytes, $at + 8)
+        $virtualAddress = [long][BitConverter]::ToUInt32($Bytes, $at + 12)
+        $rawSize = [long][BitConverter]::ToUInt32($Bytes, $at + 16)
+        $rawAt = [long][BitConverter]::ToUInt32($Bytes, $at + 20)
+        $span = [Math]::Max($virtualSize, $rawSize)
+        if ($Rva -ge $virtualAddress -and $Rva -lt ($virtualAddress + $span)) { return ($Rva - $virtualAddress + $rawAt) }
+    }
+    Fail ("l'adresse relative 0x{0:X} n'est dans aucune section du fichier" -f $Rva)
+}
+
+# Le drapeau de chargement des bibliothèques (éditeur de liens :
+# /DEPENDENTLOADFLAG:0x800) est dans la table « Load Config » : répertoire de
+# données n° 10, mot de 16 bits au décalage 0x4E de IMAGE_LOAD_CONFIG_DIRECTORY64.
+function Assert-LoadFlags([byte[]]$Bytes, [int]$PeAt) {
+    $optional = $PeAt + 24
+    $magic = [BitConverter]::ToUInt16($Bytes, $optional)
+    if ($magic -ne 0x20B) { Fail ("l'en-tête optionnel de l'assistant a le magic 0x{0:X} au lieu de 0x20B (PE32+)" -f $magic) }
+    $sectionCount = [int][BitConverter]::ToUInt16($Bytes, $PeAt + 6)
+    $optionalSize = [long][BitConverter]::ToUInt16($Bytes, $PeAt + 20)
+    $sectionsAt = $optional + $optionalSize
+    $directories = [long][BitConverter]::ToUInt32($Bytes, $optional + 108)
+    if ($directories -lt 11) { Fail "l'assistant n'a que $directories répertoires de données : pas de table Load Config" }
+    $loadRva = [long][BitConverter]::ToUInt32($Bytes, $optional + 112 + 8 * 10)
+    $loadSize = [long][BitConverter]::ToUInt32($Bytes, $optional + 112 + 8 * 10 + 4)
+    if ($loadRva -eq 0 -or $loadSize -eq 0) { Fail 'le répertoire Load Config de l''assistant est absent : aucun DependentLoadFlags' }
+    $loadAt = ConvertTo-FileOffset $Bytes $sectionsAt $sectionCount $loadRva
+    $structureSize = [long][BitConverter]::ToUInt32($Bytes, $loadAt)
+    if ($structureSize -lt 0x50) { Fail ("la table Load Config de l'assistant fait {0} octets : elle n'atteint pas DependentLoadFlags (décalage 0x4E)" -f $structureSize) }
+    $flags = [BitConverter]::ToUInt16($Bytes, $loadAt + 0x4E)
+    if ($flags -ne 0x0800) { Fail ("DependentLoadFlags de l'assistant vaut 0x{0:X4} au lieu de 0x0800" -f $flags) }
+    Proof "l'assistant installé porte DependentLoadFlags = 0x0800 : ses bibliothèques liées ne se chargent que depuis System32"
+
+    # Pour information, pas une preuve : les bibliothèques de sa table d'importation.
+    try {
+        $importRva = [long][BitConverter]::ToUInt32($Bytes, $optional + 112 + 8)
+        $names = New-Object System.Collections.ArrayList
+        if ($importRva -ne 0) {
+            $entry = ConvertTo-FileOffset $Bytes $sectionsAt $sectionCount $importRva
+            for ($i = 0; $i -lt 500; $i++) {
+                $at = $entry + 20 * $i
+                $nameRva = [long][BitConverter]::ToUInt32($Bytes, $at + 12)
+                $thunk = [long][BitConverter]::ToUInt32($Bytes, $at + 16)
+                if ($nameRva -eq 0 -and $thunk -eq 0) { break }
+                $nameAt = ConvertTo-FileOffset $Bytes $sectionsAt $sectionCount $nameRva
+                $end = $nameAt
+                while ($end -lt $Bytes.Length -and $Bytes[$end] -ne 0) { $end++ }
+                [void]$names.Add([Text.Encoding]::ASCII.GetString($Bytes, $nameAt, $end - $nameAt))
+            }
+        }
+        Say "  information (pas une preuve) : bibliothèques importées par l'assistant : $($names -join ', ')"
+    } catch { Say "  information : table d'importation illisible ($($_.Exception.Message))" }
 }
 
 # ── L'essai ────────────────────────────────────────────────────────────────
@@ -735,8 +839,43 @@ try {
     Proof "copie de l'assistant dans $CopyDir : code $code (emplacement non sûr), aucune fenêtre"
     Assert-Unchanged 'après la copie' $before @()
 
-    # ── Déjà dans l'état : code 1 ──────────────────────────────────────────
-    $code = Assert-Quick "demarrage1 remettre run $hex" @(1) "remettre une entrée déjà active"
+    # ── Un refus d'emplacement causé par une entrée de droits ──────────────
+    # Le propriétaire de la copie est celui qu'il faut (Administrateurs) : seule
+    # une entrée de droits donnant l'écriture à Utilisateurs sur le dossier peut
+    # la faire refuser. Le nom demandé n'existe pas : si l'emplacement est
+    # accepté, l'assistant rend 4 et n'ouvre aucune boîte.
+    Say "emplacement et droits : dossier $RightsDir"
+    Remove-RightsDir
+    New-Item -ItemType Directory -Path $RightsDir | Out-Null
+    $rightsCopy = Join-Path $RightsDir 'shinku-helper.exe'
+    Copy-Item -LiteralPath $Assistant -Destination $rightsCopy -Force
+    $rightsBefore = @(Get-AclLines $RightsDir)
+    Say "  dossier : $(Get-RightsText $RightsDir)"
+    Say "  fichier : $(Get-RightsText $rightsCopy)"
+    Assert-RightsCase 4 'A (droits de départ)' 'Essai Shinku Inconnue' $rightsCopy
+    Proof "copie dans $RightsDir (droits de départ) : code 4, l'emplacement est accepté, aucune fenêtre"
+
+    $grant = '*S-1-5-32-545:(W)'
+    & icacls.exe $RightsDir /grant $grant | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "icacls /grant $grant sur $RightsDir rend le code $LASTEXITCODE" }
+    $rightsGranted = @(Get-AclLines $RightsDir)
+    if (($rightsGranted -join "`n") -eq ($rightsBefore -join "`n")) { Fail "l'entrée d'écriture pour Utilisateurs n'apparaît pas dans les droits de $RightsDir" }
+    Say "  dossier, écriture donnée à Utilisateurs : $(Get-RightsText $RightsDir)"
+    Assert-RightsCase 6 'B (écriture pour Utilisateurs sur le dossier)' 'Essai Shinku Inconnue' $rightsCopy
+    Proof "copie dans $RightsDir avec l'écriture donnée à Utilisateurs sur le dossier : code 6, l'emplacement est refusé à cause de l'entrée de droits, aucune fenêtre"
+
+    & icacls.exe $RightsDir /remove:g '*S-1-5-32-545' | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "icacls /remove:g sur $RightsDir rend le code $LASTEXITCODE" }
+    $rightsAfter = @(Get-AclLines $RightsDir)
+    if (($rightsAfter -join "`n") -ne ($rightsBefore -join "`n")) {
+        Fail "après le retrait, les droits de $RightsDir ne sont pas ceux de départ : avant [$($rightsBefore -join ' ; ')] après [$($rightsAfter -join ' ; ')]"
+    }
+    Assert-RightsCase 4 'C (entrée retirée)' 'Essai Shinku Inconnue' $rightsCopy
+    Proof "copie dans $RightsDir une fois l'entrée retirée (droits revenus à ceux de départ) : code 4, aucune fenêtre"
+    Assert-Unchanged 'après l''essai des droits' $before @()
+
+    # ── Déjà dans l'état : code 9 ──────────────────────────────────────────
+    $code = Assert-Quick "demarrage1 remettre run $hex" @(9) "remettre une entrée déjà active"
     Proof "remettre « $Entree » déjà active : code $code, aucune fenêtre, rien d'écrit"
     Assert-Unchanged 'après « déjà active »' $before @()
 
@@ -814,9 +953,9 @@ try {
     Assert-Unchanged 'après OK (couper)' $before @("approuve-run|$Entree")
     Proof "OK (WM_COMMAND, IDOK) : code $code, 12 octets $([BitConverter]::ToString($bytes)) (03 00 00 00 puis la date $when UTC), rien d'autre n'a changé dans HKLM"
 
-    # ── Déjà coupée : code 1, rien n'est écrit ─────────────────────────────
+    # ── Déjà coupée : code 9, rien n'est écrit ─────────────────────────────
     $cutText = (Read-Value $ApprovedRunKey $Entree).Text
-    $code = Assert-Quick "demarrage1 couper run $hex" @(1) 'couper une entrée déjà coupée'
+    $code = Assert-Quick "demarrage1 couper run $hex" @(9) 'couper une entrée déjà coupée'
     if ((Read-Value $ApprovedRunKey $Entree).Text -ne $cutText) { Fail "couper une entrée déjà coupée : l'approbation a été réécrite" }
     Proof "couper une entrée déjà coupée : code $code, aucune fenêtre, l'approbation n'est pas réécrite"
 
@@ -834,7 +973,7 @@ try {
     Assert-Unchanged 'après OK (remettre)' $before @()
     Proof "remettre : code $code, 12 octets 02 puis onze zéros, rien d'autre n'a changé dans HKLM"
 
-    $code = Assert-Quick "demarrage1 remettre run $hex" @(1) 'remettre une entrée déjà remise'
+    $code = Assert-Quick "demarrage1 remettre run $hex" @(9) 'remettre une entrée déjà remise'
     Proof "remettre une entrée déjà remise : code $code, aucune fenêtre"
 
     # ── L'échéance ─────────────────────────────────────────────────────────
