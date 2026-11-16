@@ -18,6 +18,7 @@ import type {
   GameView,
   KeepChoice,
   LeftoverRow,
+  PrivacyView,
   SessionView,
   Settings,
   StartupView,
@@ -25,6 +26,15 @@ import type {
   WindowsPage,
 } from './backend/types.ts';
 import { fr } from './i18n/fr.ts';
+import {
+  announceLines,
+  askFor as askForPrivacy,
+  lastLines,
+  PRIVACY_RELOAD_GAP,
+  privacyFocus,
+  stillChecked,
+  toggled as toggledTrace,
+} from './model/privacy.ts';
 import { cleanRequest, confirmedRequest, readiness, requestedSteps } from './model/clean.ts';
 import {
   busyKey,
@@ -124,6 +134,8 @@ function errorMessage(error: unknown): string {
       return fr.toast.cleanNotStarted;
     case 'gameRefused':
       return fr.game.toast[error.reason];
+    case 'privacyRefused':
+      return fr.privacy.refused[error.reason];
     default:
       return fr.toast.unexpected;
   }
@@ -169,6 +181,11 @@ const NO_ACTIONS: Actions = {
   rescanLeftovers: () => {},
   toggleLeftover: () => {},
   removeLeftovers: () => {},
+  toggleTrace: () => {},
+  askErase: () => {},
+  confirmErase: () => {},
+  dismissErase: () => {},
+  retryPrivacy: () => {},
   openWindowsSettings: () => {},
   minimize: () => {},
   toggleMaximize: () => {},
@@ -244,6 +261,17 @@ export class App {
   /** Une vue est demandée, ou vient d'arriver : le retour de la fenêtre n'en relance pas une deuxième. */
   private startupLoading = false;
   private startupLoadedAt = 0;
+  /** La page Confidentialité est affichée : sa vue se charge à l'arrivée et au retour du focus, jamais en boucle. */
+  private privacyWatching = false;
+  private privacyVisit = 0;
+  /** Change au départ et à la réponse de chaque effacement : une vue demandée avant lui et arrivée après est ignorée. */
+  private privacyAction = 0;
+  /** Le numéro de la dernière demande de vue : seule sa réponse compte. */
+  private privacyAsked = 0;
+  private privacyLoading = false;
+  private privacyLoadedAt = 0;
+  /** « Réessayer » vient d'être pressé : le focus suivra la vue qui arrive. */
+  private privacyRetried = false;
   /** La page Désinstallation est affichée : sa vue se charge à l'arrivée et au retour du focus. */
   private appsWatching = false;
   private appsVisit = 0;
@@ -310,12 +338,14 @@ export class App {
       void this.refreshGame();
       void this.refreshStartup();
       void this.refreshApps('focus');
+      void this.refreshPrivacy();
     });
     // Une fenêtre réduite ou cachée ne demande rien ; elle relit la vue dès qu'on la regarde de nouveau.
     document.addEventListener('visibilitychange', () => {
       void this.refreshGame();
       void this.refreshStartup();
       void this.refreshApps('focus');
+      void this.refreshPrivacy();
     });
   }
 
@@ -1868,6 +1898,197 @@ export class App {
     }
   }
 
+  // ── Confidentialité ──────────────────────────────────────────────────────
+
+  /**
+   * À l'arrivée sur la page, la vue est demandée une fois ; elle l'est de nouveau quand la fenêtre retrouve le
+   * focus (un navigateur a pu être fermé). Les cases repartent vides à chaque arrivée : ce qui était coché
+   * ne vaut rien pour une autre visite. Hors de la page, rien n'est gardé.
+   */
+  private watchPrivacy(): void {
+    if (this.state.route !== 'privacy') {
+      this.stopWatchingPrivacy();
+      return;
+    }
+    if (this.privacyWatching) {
+      void this.refreshPrivacy(true);
+      return;
+    }
+    this.privacyWatching = true;
+    this.privacyVisit += 1;
+    this.privacyLoading = false;
+    this.privacyLoadedAt = 0;
+    this.privacyRetried = false;
+    this.dropPrivacy();
+    void this.refreshPrivacy(true);
+  }
+
+  private stopWatchingPrivacy(): void {
+    if (!this.privacyWatching) {
+      return;
+    }
+    this.privacyWatching = false;
+    this.privacyVisit += 1;
+    this.privacyLoading = false;
+    this.privacyRetried = false;
+    this.dropPrivacy();
+  }
+
+  /** Oublie tout ce que la visite précédente avait : la vue, les cases, la confirmation, les issues. L'effacement en vol, lui, continue. */
+  private dropPrivacy(): void {
+    this.set({
+      privacy: null,
+      privacyFailed: false,
+      privacyChecked: [],
+      privacyAsk: null,
+      privacyRefused: null,
+      privacyLast: [],
+      privacyAnnounce: '',
+    });
+  }
+
+  /** « Réessayer » : la première vue des traces n'est pas venue. */
+  private retryPrivacy(): void {
+    this.set({ privacyFailed: false });
+    this.privacyRetried = true;
+    void this.refreshPrivacy(true);
+  }
+
+  /**
+   * Demande la vue. Au retour de la fenêtre (`force` faux), une demande déjà en vol, ou finie depuis moins d'une
+   * demi-seconde, n'est pas relancée. Pendant un effacement, aucune vue n'est demandée : sa réponse porte la vue relue.
+   */
+  private async refreshPrivacy(force = false): Promise<void> {
+    if (this.state.privacyBusy || document.hidden || this.state.route !== 'privacy') {
+      return;
+    }
+    if (!force && (this.privacyLoading || Date.now() - this.privacyLoadedAt < PRIVACY_RELOAD_GAP)) {
+      return;
+    }
+    this.privacyAsked += 1;
+    const ask = this.privacyAsked;
+    const action = this.privacyAction;
+    const visit = this.privacyVisit;
+    this.privacyLoading = true;
+    const current = (): boolean =>
+      ask === this.privacyAsked && action === this.privacyAction && visit === this.privacyVisit;
+    const finish = (): void => {
+      if (ask === this.privacyAsked) {
+        this.privacyLoading = false;
+        this.privacyLoadedAt = Date.now();
+      }
+    };
+    try {
+      const view = await this.backend.privacyView();
+      finish();
+      if (current()) {
+        this.adoptPrivacy(view);
+      }
+    } catch {
+      finish();
+      // La page garde sa dernière vue ; sans vue, elle le dit et propose « Réessayer ».
+      if (current() && this.state.privacy === null) {
+        this.set({ privacyFailed: true });
+        if (this.privacyRetried) {
+          this.focusKey(privacyFocus.retry);
+        }
+      }
+    }
+  }
+
+  /** Adopte une vue : ce qui était coché et ne se coche plus (navigateur ouvert depuis, trace partie) est décoché. */
+  private adoptPrivacy(view: PrivacyView): void {
+    const retried = this.privacyRetried && this.state.privacy === null;
+    this.set({
+      privacy: view,
+      privacyFailed: false,
+      privacyChecked: stillChecked(view, this.state.privacyChecked),
+    });
+    if (retried) {
+      this.privacyRetried = false;
+      this.focusKey(privacyFocus.title);
+    }
+  }
+
+  private toggleTrace(id: string): void {
+    const view = this.state.privacy;
+    if (view === null || this.state.privacyBusy) {
+      return;
+    }
+    this.set({ privacyChecked: toggledTrace(view, this.state.privacyChecked, id), privacyRefused: null });
+  }
+
+  /** « Effacer ce qui est coché » : la confirmation liste ce qui partira. Rien ne part encore. */
+  private askErase(): void {
+    const view = this.state.privacy;
+    if (view === null || this.state.privacyBusy || this.state.privacyAsk !== null) {
+      return;
+    }
+    const ask = askForPrivacy(view, this.state.privacyChecked);
+    if (ask !== null) {
+      this.set({ privacyAsk: ask });
+    }
+  }
+
+  private dismissErase(): void {
+    // Une fois la demande partie, la confirmation est déjà fermée : cette fonction ne l'arrête pas.
+    if (this.state.privacyAsk !== null) {
+      this.set({ privacyAsk: null });
+    }
+  }
+
+  /**
+   * La personne a confirmé : seuls les identifiants de la confirmation partent, tels que le cœur les a donnés.
+   * La page est inerte jusqu'à la réponse, qui porte la vue relue et l'issue de chaque trace ; les cases repartent vides.
+   */
+  private async confirmErase(): Promise<void> {
+    const ask = this.state.privacyAsk;
+    if (ask === null || this.state.privacyBusy) {
+      return;
+    }
+    const visit = this.privacyVisit;
+    // Une vue en vol est périmée par ce geste.
+    this.privacyAction += 1;
+    this.privacyLoading = false;
+    this.set({ privacyAsk: null, privacyBusy: true, privacyRefused: null, privacyLast: [], privacyAnnounce: '' });
+    try {
+      const answer = await this.backend.eraseTraces(ask.ids);
+      this.privacyAction += 1;
+      const here = visit === this.privacyVisit && this.state.route === 'privacy';
+      if (!here) {
+        // La personne est partie, ou revenue : l'issue ne vaut que pour la visite qui l'a demandée.
+        this.set({ privacyBusy: false });
+        void this.refreshPrivacy(true);
+        return;
+      }
+      const lines = lastLines(ask, answer.results);
+      this.set({
+        privacyBusy: false,
+        privacy: answer.view,
+        privacyFailed: false,
+        privacyChecked: [],
+        privacyLast: lines,
+        privacyAnnounce: announceLines(lines),
+      });
+      this.focusKey(privacyFocus.erase);
+    } catch (error) {
+      this.privacyAction += 1;
+      this.set({ privacyBusy: false });
+      const refused =
+        typeof error === 'object' && error !== null && 'kind' in error && (error as BackendError).kind === 'privacyRefused'
+          ? (error as Extract<BackendError, { kind: 'privacyRefused' }>).reason
+          : null;
+      if (refused !== null && visit === this.privacyVisit) {
+        // Rien n'a été effacé : la page le dit, les cases restent comme la personne les avait mises.
+        this.set({ privacyRefused: refused, privacyAnnounce: fr.privacy.refused[refused] });
+      } else {
+        this.toast(errorMessage(error));
+      }
+      this.focusKey(privacyFocus.erase);
+      await this.refreshPrivacy(true);
+    }
+  }
+
   // ── Gestes ───────────────────────────────────────────────────────────────
 
   private navigate(route: Route): void {
@@ -1875,6 +2096,7 @@ export class App {
     this.watchGame();
     this.watchStartup();
     this.watchApps();
+    this.watchPrivacy();
     this.ensureData();
     if (route === 'bin') {
       void this.refreshOverview(2000);
@@ -1926,6 +2148,11 @@ export class App {
     rescanLeftovers: () => void this.rescanLeftovers(),
     toggleLeftover: (path) => this.toggleLeftover(path),
     removeLeftovers: () => void this.removeLeftovers(),
+    toggleTrace: (id) => this.toggleTrace(id),
+    askErase: () => this.askErase(),
+    confirmErase: () => void this.confirmErase(),
+    dismissErase: () => this.dismissErase(),
+    retryPrivacy: () => this.retryPrivacy(),
     openWindowsSettings: (page) => void this.openWindowsSettings(page),
     minimize: () => void this.backend.minimizeWindow(),
     toggleMaximize: () => void this.backend.toggleMaximizeWindow(),

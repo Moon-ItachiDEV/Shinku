@@ -17,12 +17,15 @@ import type {
   LeftoverRow,
   OpenApp,
   Overview,
+  PrivacyRefusal,
+  PrivacyView,
   SessionView,
   StartupView,
   Theme,
   WindowsPage,
 } from './backend/types.ts';
 import type { Leaving } from './model/game.ts';
+import type { LastLine, PrivacyAsk } from './model/privacy.ts';
 import { type CleanRowId, type Selection, UNTOUCHED } from './model/scan.ts';
 import type { Say } from './model/startup.ts';
 import type { AppsSort, Failure, UninstallAsk } from './model/uninstall.ts';
@@ -130,6 +133,22 @@ export interface AppState {
   appsEmptied: boolean;
   /** La phrase de la région vivante : un changement de phase, annoncé une fois. */
   appsAnnounce: string;
+  /** La dernière vue de la page Confidentialité ; `null` tant que le cœur n'a pas répondu. */
+  privacy: PrivacyView | null;
+  /** La vue des traces n'a pas pu être lue : la page le dit au lieu de « Chargement… ». */
+  privacyFailed: boolean;
+  /** Les identifiants des traces cochées : jamais cochées d'avance, vidées après un effacement et à chaque retour sur la page. */
+  privacyChecked: readonly string[];
+  /** La confirmation de « Effacer ce qui est coché », tant qu'elle est ouverte : la liste qui partira telle quelle. */
+  privacyAsk: PrivacyAsk | null;
+  /** Un effacement est parti : la page est inerte jusqu'à sa réponse. */
+  privacyBusy: boolean;
+  /** Le dernier refus du cœur (`busy`, `tooMany`), dit sur la page ; rien n'a été effacé. */
+  privacyRefused: PrivacyRefusal | null;
+  /** L'issue de chaque trace du dernier effacement. */
+  privacyLast: readonly LastLine[];
+  /** La phrase de la région vivante : les issues du dernier effacement, annoncées une fois. */
+  privacyAnnounce: string;
   /** L'heure qu'il est, rafraîchie de temps en temps : pour « il y a 8 mois ». */
   now: number;
 }
@@ -184,6 +203,14 @@ export function initialState(now: number): AppState {
     appsDestroyed: [],
     appsEmptied: false,
     appsAnnounce: '',
+    privacy: null,
+    privacyFailed: false,
+    privacyChecked: [],
+    privacyAsk: null,
+    privacyBusy: false,
+    privacyRefused: null,
+    privacyLast: [],
+    privacyAnnounce: '',
     now,
   };
 }
@@ -247,6 +274,16 @@ export interface Actions {
   toggleLeftover(path: string): void;
   /** L'orbe : met à la corbeille les restes cochés. */
   removeLeftovers(): void;
+  /** Coche ou décoche une trace (par son identifiant). */
+  toggleTrace(id: string): void;
+  /** « Effacer ce qui est coché » : ouvre la confirmation. Rien ne part encore. */
+  askErase(): void;
+  /** La personne confirme : les identifiants cochés partent au cœur. */
+  confirmErase(): void;
+  /** La personne referme la confirmation : rien ne part. */
+  dismissErase(): void;
+  /** « Réessayer » : la première vue des traces n'est pas venue. */
+  retryPrivacy(): void;
   openWindowsSettings(page: WindowsPage): void;
   minimize(): void;
   toggleMaximize(): void;

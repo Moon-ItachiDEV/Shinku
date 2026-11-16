@@ -368,8 +368,6 @@ export const fr = typeset({
     cap: 'Ce module arrive dans une prochaine version.',
     uninstall:
       'Retire une app avec le désinstalleur de son éditeur, puis regarde ce qu’elle a laissé dans ton compte.',
-    privacy:
-      'Historique, cookies de suivi, fichiers récents et presse-papiers : les traces de ton activité sur ce PC.',
   },
 
   settings: {
@@ -675,6 +673,147 @@ export const fr = typeset({
         count === 0
           ? `${name} est désinstallée. Shinku n’a rien à te proposer.`
           : `${name} est désinstallée. ${countOf(count, 'reste à regarder', 'restes à regarder')}.`,
+    },
+  },
+
+  privacy: {
+    eyebrow: 'Protection',
+    title: 'Confidentialité',
+    intro: 'Des traces de ton activité sur ce PC, dans ton compte. Rien n’est coché d’avance.',
+    erase: 'Effacer ce qui est coché',
+    eraseHint: 'Coche au moins une trace pour pouvoir l’effacer.',
+    checked: (count: number) => `${countOf(count, 'trace cochée', 'traces cochées')}.`,
+    retry: 'Réessayer',
+    working: 'Effacement en cours. Les cases et les boutons attendent la fin.',
+
+    browser: { chrome: 'Chrome', edge: 'Edge', brave: 'Brave', vivaldi: 'Vivaldi' },
+    windows: 'Windows',
+    mainProfile: 'Profil principal',
+    numberedProfile: (slot: number) => `Profil ${slot}`,
+    /** « Chrome · Léa » : le nom du profil est celui du navigateur, il n'est jamais retouché. */
+    blockTitle: exact((app: string, profile: string) => [`${app}`, ' · ', verbatim(`${profile}`)]),
+    /** Le nom accessible d'une case de Windows : « Windows, Presse-papiers ». */
+    checkLabel: exact((block: string, trace: string) => [verbatim(`${block}`), ', ', `${trace}`]),
+    /** Celui d'une case de navigateur : « Chrome, Léa, historique de navigation ». */
+    checkLabelProfile: exact((app: string, profile: string, trace: string) => [`${app}`, ', ', verbatim(`${profile}`), ', ', `${trace}`]),
+    /** La puce de la confirmation : « Léa : historique de navigation ». */
+    askLine: exact((profile: string, trace: string) => [verbatim(`${profile}`), ' : ', `${trace}`]),
+    browsers: {
+      title: 'Navigateurs',
+      intro:
+        'Effacer l’historique d’un profil, c’est perdre : les pages visitées, la liste des téléchargements (pas les fichiers ; un téléchargement interrompu ne pourra plus reprendre), les suggestions de la barre d’adresse. Les icônes de tes favoris reviennent à la prochaine visite.',
+    },
+
+    trace: {
+      history: 'Historique de navigation',
+      recent: 'Fichiers et dossiers récents',
+      typed: 'Ce que tu as tapé dans Windows',
+      clipboard: 'Presse-papiers',
+    },
+    // Ce qu'on perd, écrit sous chaque ligne.
+    loses: {
+      recent:
+        'Les « Récents » de l’Explorateur et les fichiers récents des apps dans la barre des tâches.',
+      typed:
+        'Les propositions de « Exécuter », de la barre d’adresse et de la recherche de l’Explorateur. Ferme d’abord les fenêtres de l’Explorateur : une fenêtre ouverte peut réécrire ce qu’elle a en mémoire.',
+      clipboard: 'Ce que tu viens de copier, et l’historique (Windows+V).',
+    },
+    count: {
+      history: (count: number) => countOf(count, 'élément', 'éléments'),
+      recent: (count: number) => countOf(count, 'raccourci', 'raccourcis'),
+      typed: (count: number) => countOf(count, 'élément', 'éléments'),
+      clipboard: (count: number) => countOf(count, 'élément', 'éléments'),
+    },
+    nothing: 'Rien à effacer',
+    unreadable: 'Shinku n’a pas pu lire cette trace : elle n’est pas proposée.',
+    running: (app: string) =>
+      `Ferme ${app} pour effacer son historique. S’il n’a plus de fenêtre, il tourne peut-être en arrière-plan : quitte-le depuis la zone de notification.`,
+
+    // Ce qui reste malgré l'effacement, écrit sous chaque bloc.
+    remainsLabel: 'Ce qui reste',
+    remainsBrowser:
+      'Tes onglets ouverts et récemment fermés. Ce que la synchronisation garde dans ton compte en ligne, et peut faire revenir. Ce que tes extensions ont noté. Les cookies et les données des sites : pour eux, passe par le navigateur (Ctrl+Maj+Suppr).',
+    remainsEdge: 'Edge peut réimporter l’historique de Chrome à son lancement, si tu l’as réglé ainsi.',
+    remainsWindows:
+      'Les éléments épinglés. Les éléments en nuage de « Recommandé ». Ce que tes autres appareils ou un gestionnaire de presse-papiers ont gardé.',
+    firefox: 'Firefox : efface depuis Firefox lui-même (Ctrl+Maj+Suppr).',
+    cache: 'Le cache des navigateurs se vide avec « Faire le vide », sur l’accueil.',
+
+    inWindows: {
+      title: 'Dans Windows',
+      intro: 'Shinku n’efface pas ces traces lui-même : Windows le fait mieux. Chaque bouton ouvre sa page dans les paramètres de Windows.',
+      open: 'Ouvrir dans Windows',
+      pages: {
+        activityHistory: {
+          name: 'Historique d’activité',
+          text: 'Les activités que Windows garde de ce que tu as fait sur ce PC.',
+        },
+        searchPermissions: {
+          name: 'Historique de recherche',
+          text: 'Ce que tu as cherché dans Windows.',
+        },
+        diagnostics: {
+          name: 'Diagnostics',
+          text: 'Les données de diagnostic que Windows envoie. Selon ton édition de Windows, la page propose ou non de les supprimer.',
+        },
+      },
+    },
+
+    untouched: {
+      title: 'Ce que Shinku ne touche pas',
+      intro: 'Jamais, quel que soit le navigateur :',
+      items: {
+        passwords: 'Les mots de passe',
+        bookmarks: 'Les favoris',
+        extensions: 'Les extensions et leurs données',
+        tabs: 'Les onglets',
+        cookies: 'Les cookies et les données des sites',
+        pinned: 'Les éléments épinglés',
+        backups: 'Les copies gardées dans tes sauvegardes et tes points de restauration',
+      },
+      outside:
+        'Pas encore pris en charge : Opera et Opera GX, les versions Beta, Dev et Canary des navigateurs, les autres comptes de ce PC.',
+    },
+
+    confirm: {
+      title: 'Effacer ces traces ?',
+      intro: 'Tu vas effacer :',
+      direct: 'Elles sont supprimées directement, sans passer par la Corbeille.',
+      confirm: 'Effacer',
+      cancel: 'Annuler',
+    },
+
+    // L'issue de chaque trace cochée.
+    outcome: {
+      erased: 'Effacé',
+      nothing: 'Rien à effacer',
+      inUse: 'En cours d’utilisation : ferme l’app et recommence',
+      changed: 'Ce profil a changé : regarde de nouveau',
+      partial: 'Effacé en partie : il en reste',
+      failed: 'Pas pu être effacé',
+    },
+    lastTitle: 'Dernier effacement',
+    // Dans la carte « Dernier effacement » et sous une ligne : l'issue en deux mots, puis l'aide quand il y en a une.
+    outcomeShort: {
+      erased: 'Effacé',
+      nothing: 'Rien à effacer',
+      inUse: 'En cours d’utilisation',
+      changed: 'Profil changé',
+      partial: 'Effacé en partie',
+      failed: 'Pas pu être effacé',
+    },
+    help: {
+      closeBrowser: (app: string) => `Ferme ${app} et recommence.`,
+      closeApp: 'Ferme l’app et recommence.',
+      lookAgain: 'Regarde de nouveau.',
+      someLeft: 'Il en reste : regarde de nouveau.',
+    },
+    lastLine: exact((block: string, trace: string, outcome: string) => [verbatim(`${block}`), ', ', `${trace}`, ' : ', `${outcome}`]),
+    /** `issues` : les phrases des issues, déjà jointes (voir `announceLines`). */
+    announce: (issues: string) => `Effacement terminé. ${issues}.`,
+    refused: {
+      busy: 'Un grand vide ou un autre effacement est en cours : attends qu’il se termine, puis recommence. Rien n’a été effacé.',
+      tooMany: 'Trop de traces cochées d’un coup (64 au plus) : décoche-en quelques-unes, puis recommence. Rien n’a été effacé.',
     },
   },
 

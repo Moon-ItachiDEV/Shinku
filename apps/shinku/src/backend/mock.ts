@@ -21,6 +21,8 @@ import type {
   GameRefusal,
   GameSession,
   GameStatus,
+  ErasedTraces,
+  EraseResult,
   GameView,
   JunkReport,
   KnownGame,
@@ -32,6 +34,9 @@ import type {
   OpenApp,
   Overview,
   PowerOutcome,
+  PrivacyGroup,
+  PrivacyRefusal,
+  PrivacyView,
   Phase,
   Progress,
   QuietApp,
@@ -47,6 +52,9 @@ import type {
   StepState,
   Summary,
   Theme,
+  TraceItem,
+  TraceKind,
+  TraceOutcome,
 } from './types.ts';
 
 import { keepIn } from '../model/duplicates.ts';
@@ -83,6 +91,14 @@ export interface BootDemo {
   pcflow: 'wait' | 'cancel' | 'admin' | 'fail';
 }
 
+/** Ce que la démo montre de la confidentialité (`?privacy=few|many|none|running&privacyflow=done|inuse|changed|partial|fail`). */
+export interface PrivacyDemo {
+  /** Les traces : quelques-unes, beaucoup de profils, rien à effacer, ou des navigateurs ouverts. */
+  data: 'few' | 'many' | 'none' | 'running';
+  /** Comment finit un effacement : tout effacé, navigateur en cours d'utilisation, profil changé, registre effacé en partie, échec. */
+  flow: 'done' | 'inuse' | 'changed' | 'partial' | 'fail';
+}
+
 /** Combien de temps la démo laisse la petite fenêtre « Shinku » attendre, avant `?speed`. */
 export const PC_WAIT = 4500;
 
@@ -109,6 +125,8 @@ export interface MockOptions {
   boot: BootDemo;
   /** Ce que la démo montre de la désinstallation (voir mock-apps.ts). */
   apps: AppsDemo;
+  /** Ce que la démo montre de la confidentialité. */
+  privacy: PrivacyDemo;
 }
 
 /**
@@ -117,6 +135,7 @@ export interface MockOptions {
  * Le mode jeu : `?game=off|idle|playing|released|pending`, `?agent=missing|stopped`,
  * `?power=unavailable|unsuited|battery`, `?startup=disabled`.
  * Le démarrage : `?boot=few|many|empty`, `?bootfail=1`, `?bootread=user|machine`, `?bootload=fail`, `?bootshinku=off`.
+ * La confidentialité : `?privacy=few|many|none|running`, `?privacyflow=done|inuse|changed|partial|fail`.
  * La désinstallation : `?apps=few|many|empty|partial`, `?appsload=fail`,
  * `?appsflow=launching|waiting|stuck|leftovers|none|family|unsure`, `?appsfail=broken|cancelled|bin|kept`.
  */
@@ -133,6 +152,8 @@ export function demoOptions(search: string): MockOptions {
   const read = query.get('bootread');
   const pc = query.get('bootpc');
   const pcflow = query.get('bootpcflow');
+  const privacy = query.get('privacy');
+  const privacyFlow = query.get('privacyflow');
   return {
     speed: Number.isFinite(speed) && speed > 0 ? speed : 1,
     issue: issue === 'unreadable' || issue === 'partial' ? issue : 'none',
@@ -157,6 +178,13 @@ export function demoOptions(search: string): MockOptions {
       pcflow: pcflow === 'cancel' || pcflow === 'admin' || pcflow === 'fail' ? pcflow : 'wait',
     },
     apps: appsDemoOptions(query),
+    privacy: {
+      data: privacy === 'many' || privacy === 'none' || privacy === 'running' ? privacy : 'few',
+      flow:
+        privacyFlow === 'inuse' || privacyFlow === 'changed' || privacyFlow === 'partial' || privacyFlow === 'fail'
+          ? privacyFlow
+          : 'done',
+    },
   };
 }
 
@@ -387,6 +415,115 @@ function manyBoot(): BootSeed[] {
       sync: index % 6 === 0,
     };
   });
+}
+
+// ── La confidentialité de la démo ──────────────────────────────────────────
+
+/** Combien de traces le cœur accepte d'effacer d'un seul coup. */
+export const MAX_ERASE = 64;
+
+const privacyRefused = (reason: PrivacyRefusal): Promise<never> => Promise.reject({ kind: 'privacyRefused', reason });
+
+/** Un identifiant opaque, à la forme de ceux du cœur : stable pour une même trace, sans rien dire de son contenu. */
+function traceId(key: string, kind: TraceKind): string {
+  let hash = 0x811c9dc5;
+  for (const letter of `${key}/${kind}`) {
+    hash = Math.imul(hash ^ letter.charCodeAt(0), 0x01000193) >>> 0;
+  }
+  return `tr-${hash.toString(16).padStart(8, '0')}`;
+}
+
+type TraceSeed = Partial<Pick<TraceItem, 'state' | 'bytes' | 'count'>>;
+
+function trace(key: string, kind: TraceKind, seed: TraceSeed): TraceItem {
+  return { id: traceId(key, kind), kind, state: 'present', bytes: null, count: null, ...seed };
+}
+
+function browserGroup(
+  app: NonNullable<PrivacyGroup['app']>,
+  slot: number,
+  profile: string | null,
+  history: TraceSeed,
+  running = false,
+): PrivacyGroup {
+  const key = `${app}:${slot}`;
+  return { key, kind: 'browser', app, profile, slot, running, items: [trace(key, 'history', history)] };
+}
+
+function windowsGroup(seeds: Record<Exclude<TraceKind, 'history'>, TraceSeed>): PrivacyGroup {
+  return {
+    key: 'windows',
+    kind: 'windows',
+    app: null,
+    profile: null,
+    slot: null,
+    running: false,
+    items: [trace('windows', 'recent', seeds.recent), trace('windows', 'typed', seeds.typed), trace('windows', 'clipboard', seeds.clipboard)],
+  };
+}
+
+const NOTHING: TraceSeed = { state: 'empty' };
+
+/** Les blocs de départ de la démo, dans l'ordre du cœur : les navigateurs par profil, puis Windows. */
+function privacyGroups(data: PrivacyDemo['data']): PrivacyGroup[] {
+  const windows = windowsGroup({
+    recent: { count: 23 },
+    typed: { count: 14 },
+    clipboard: {},
+  });
+  switch (data) {
+    case 'none':
+      return [windowsGroup({ recent: NOTHING, typed: NOTHING, clipboard: NOTHING })];
+    case 'running':
+      return [
+        browserGroup('chrome', 0, 'Léa', { bytes: 48.3 * MB }, true),
+        browserGroup('chrome', 2, null, { bytes: 3.1 * MB }, true),
+        browserGroup('edge', 0, null, { bytes: 12.6 * MB }),
+        windows,
+      ];
+    case 'many':
+      return [
+        browserGroup('chrome', 0, 'Léa', { bytes: 148.3 * MB }),
+        browserGroup('chrome', 1, null, { bytes: 9.4 * MB }),
+        browserGroup('chrome', 3, 'Travail', { bytes: 71.8 * MB }),
+        browserGroup('chrome', 4, null, NOTHING),
+        browserGroup('edge', 0, null, { bytes: 12.6 * MB }),
+        browserGroup('edge', 1, 'Perso', { bytes: 410 * 1024 }),
+        browserGroup('brave', 0, null, { state: 'unreadable' }),
+        browserGroup('vivaldi', 0, null, { bytes: 22.9 * MB }),
+        windows,
+      ];
+    case 'few':
+      return [
+        browserGroup('chrome', 0, 'Léa', { bytes: 48.3 * MB }),
+        browserGroup('chrome', 2, null, NOTHING),
+        browserGroup('edge', 0, null, { bytes: 12.6 * MB }),
+        windows,
+      ];
+  }
+}
+
+/** Ce que le cœur rend pour une trace, selon le scénario de la démo (`?privacyflow=`). */
+function eraseOutcome(group: PrivacyGroup, item: TraceItem, flow: PrivacyDemo['flow']): TraceOutcome {
+  if (item.state !== 'present') {
+    return 'nothing';
+  }
+  if (group.running) {
+    // Le navigateur s'est ouvert entre la vue et le clic : rien n'est touché.
+    return 'inUse';
+  }
+  switch (flow) {
+    case 'inuse':
+      return group.kind === 'browser' ? 'inUse' : 'erased';
+    case 'changed':
+      return group.kind === 'browser' ? 'changed' : 'erased';
+    case 'partial':
+      return item.kind === 'typed' || item.kind === 'recent' ? 'partial' : 'erased';
+    case 'fail':
+      return 'failed';
+    case 'done':
+      return 'erased';
+  }
 }
 
 const gameRefused = (reason: GameRefusal): Promise<never> => Promise.reject({ kind: 'gameRefused', reason });
@@ -635,6 +772,14 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
   /** Le nombre d'apps actives, lu à la fin de la dernière analyse. */
   let startupCount: number | null = null;
   let bootLoadFails = options.boot.load === 'fail';
+  let traces: PrivacyGroup[] = privacyGroups(options.privacy.data);
+  /** Un effacement est en vol : un second est refusé, comme par le cœur. */
+  let erasing = false;
+  const privacyView = (): PrivacyView => ({
+    groups: structuredClone(traces),
+    firefox: options.privacy.data === 'many' || options.privacy.data === 'running',
+    edgeImportsChrome: traces.some((group) => group.app === 'chrome') && traces.some((group) => group.app === 'edge'),
+  });
   let cleaning: Cleaning | null = null;
 
   /** L'app que le scénario `rough` laisse ouverte : ses fichiers ne partent pas. */
@@ -1471,6 +1616,47 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
       return bootView();
     },
     ...appsBackend(options.apps),
+    privacyView: async () => privacyView(),
+    eraseTraces: async (ids): Promise<ErasedTraces> => {
+      // L'ordre du cœur : trop d'identifiants d'abord, puis un grand vide ou un autre effacement en cours.
+      if (ids.length > MAX_ERASE) {
+        return privacyRefused('tooMany');
+      }
+      if (erasing || cleanRunning()) {
+        return privacyRefused('busy');
+      }
+      erasing = true;
+      try {
+        await delay(900 / options.speed);
+        const results: EraseResult[] = [];
+        const done = new Set<string>();
+        for (const id of ids) {
+          if (done.has(id)) {
+            continue;
+          }
+          done.add(id);
+          const group = traces.find((one) => one.items.some((item) => item.id === id));
+          const item = group?.items.find((one) => one.id === id);
+          if (group === undefined || item === undefined) {
+            // Un identifiant que le cœur n'a pas fabriqué : refusé, rien n'est touché.
+            results.push({ id, outcome: 'changed' });
+            continue;
+          }
+          const outcome = eraseOutcome(group, item, options.privacy.flow);
+          results.push({ id, outcome });
+          if (outcome === 'erased') {
+            item.state = 'empty';
+            item.bytes = null;
+            item.count = null;
+          } else if (outcome === 'partial') {
+            item.count = Math.min(item.count ?? 2, 2);
+          }
+        }
+        return { view: privacyView(), results };
+      } finally {
+        erasing = false;
+      }
+    },
     openWindowsSettings: async () => {},
     minimizeWindow: async () => {},
     toggleMaximizeWindow: async () => {},

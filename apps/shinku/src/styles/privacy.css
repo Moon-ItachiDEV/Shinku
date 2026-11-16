@@ -1,0 +1,222 @@
+/*
+ * La page Confidentialité. Elle reprend le squelette de page.css, les cartes et les
+ * lignes du Démarrage (startup.css) et les lignes à case des restes (uninstall.css) ;
+ * ce fichier n'ajoute que ce qui lui est propre : les blocs par profil, « Ce qui reste »,
+ * l'issue de chaque trace, le bloc replié, la confirmation.
+ * Aucune couleur nouvelle : tout vient de tokens.css, clair et sombre.
+ */
+
+/* ── Lignes ─────────────────────────────────────────────────────────────── */
+
+/* Le poids ou le nombre tient une colonne : les chiffres s'alignent d'une ligne à l'autre. */
+.privacy .row .usize {
+  flex-shrink: 0;
+  min-width: 72px;
+  text-align: right;
+  font-size: 13px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* « Rien à effacer » : une phrase, pas un nombre ; elle passe à la ligne plutôt que de pousser le nom. */
+.privacy .row .pnone {
+  min-width: 0;
+  max-width: 45%;
+}
+
+/* Ce qu'on perd : un texte à lire en entier, il passe à la ligne et n'est jamais coupé. */
+.privacy .row .t2 {
+  white-space: normal;
+  text-wrap: pretty;
+}
+
+/* L'issue d'une trace : un fait, dit en toutes lettres (pas seulement une couleur). */
+.privacy .row .pout {
+  margin-top: 2px;
+  font-weight: 400;
+  color: var(--badge-text);
+}
+
+/* La carte « Dernier effacement » : le nom à gauche, l'issue en deux mots à droite, l'aide sous le nom. */
+.privacy .plast .pres {
+  flex-shrink: 0;
+  max-width: 45%;
+  text-align: right;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.privacy .plast .pres.pbad {
+  font-weight: 400;
+  color: var(--badge-text);
+}
+
+.privacy .row .phelp {
+  color: var(--text-2);
+}
+
+/* Le nom du navigateur, en tête de sa carte. */
+.pbname {
+  margin: 0;
+  padding: 14px 18px 4px;
+  font-size: 13.5px;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  color: var(--text);
+}
+
+.pbrowser > .pwarn {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.pbrowser > .plist {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+.pbrowser + .pbrowser {
+  margin-top: 10px;
+}
+
+/* Une ligne d'un navigateur ouvert : la case est absente, la raison est écrite. */
+.privacy .pinert .t1 {
+  color: var(--text-2);
+}
+
+/* ── Blocs ──────────────────────────────────────────────────────────────── */
+
+.privacy .pblock .sub {
+  /* Le titre porte le nom du profil, qui peut être long : il passe à la ligne. */
+  overflow-wrap: anywhere;
+}
+
+.premain {
+  margin: 10px 4px 0;
+  max-width: 640px;
+}
+
+.plabel {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  color: var(--text-2);
+}
+
+.privacy .premain .d,
+.privacy .pintro {
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.privacy .premain .d {
+  margin: 0 0 6px;
+}
+
+/* Tant que la barre du bas est là, la dernière ligne peut défiler au-dessus d'elle. */
+.scroll.sayon > .page.privacy {
+  padding-bottom: 110px;
+}
+
+.privacy .pintro {
+  margin: 0 4px 12px;
+  max-width: 640px;
+}
+
+.pwait {
+  margin: 14px 4px 0;
+  color: var(--text-2);
+}
+
+.pcard {
+  margin: 0;
+}
+
+/* Pendant l'effacement, ou sans rien de coché : le bouton se voit inerte (il reste focalisable, aria-disabled). */
+.privacy .pill[aria-disabled='true'] {
+  opacity: 0.45;
+}
+
+.privacy .pill[aria-disabled='true']:active {
+  transform: none;
+}
+
+.privacy [aria-disabled='true'] {
+  cursor: default;
+}
+
+/* Pendant un effacement, les cases se voient inertes. */
+.privacy[aria-busy='true'] .row {
+  cursor: default;
+}
+
+/* ── Ce que Shinku ne touche pas : replié ───────────────────────────────── */
+
+.pfold > summary {
+  padding: 14px 18px;
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pfold > summary:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  border-radius: 16px;
+}
+
+.pfoldbody {
+  padding: 0 18px 16px;
+}
+
+.privacy .pfoldbody .d {
+  margin: 0 0 8px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.pitems {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+
+.pitems li {
+  margin: 0 0 3px;
+}
+
+/* ── La confirmation ────────────────────────────────────────────────────── */
+
+.askblock {
+  margin: 0 0 12px;
+}
+
+.askname {
+  margin: 0 0 4px;
+  font-size: 13.5px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  overflow-wrap: anywhere;
+}
+
+.asklist {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1.6;
+  letter-spacing: 0.025em;
+  color: var(--text-2);
+}
+
+.askbox .askdirect {
+  margin: 14px 0 0;
+  color: var(--text);
+}
+
+@media (max-width: 760px) {
+  .privacy .row .pnone {
+    max-width: 38%;
+  }
+}
