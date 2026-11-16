@@ -142,6 +142,69 @@ fn shipped_part(text: &str) -> String {
     kept.join("\n")
 }
 
+/// Les fichiers de module que les sources déclarent `#[cfg(test)] mod x;`,
+/// chacun résolu à partir du fichier qui le déclare : `dir/x.rs` ou
+/// `dir/x/mod.rs` (où `dir` est le dossier du déclarant, ou son dossier de même
+/// nom s'il n'est pas un `mod.rs`, `lib.rs` ou `main.rs`), ou le `#[path]`
+/// donné, relatif au dossier du déclarant.
+fn test_module_files(texts: &[(PathBuf, String)]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for (declarer, text) in texts {
+        let parent = declarer.parent().unwrap_or(Path::new(""));
+        let stem = declarer.file_stem().and_then(|name| name.to_str()).unwrap_or_default();
+        let dir = if matches!(stem, "mod" | "lib" | "main") {
+            parent.to_path_buf()
+        } else {
+            parent.join(stem)
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            if *line != "#[cfg(test)]" {
+                continue;
+            }
+            let mut explicit = None;
+            for next in &lines[at + 1..] {
+                if let Some(path) = next.strip_prefix("#[path = \"") {
+                    explicit = Some(parent.join(path.trim_end_matches("\"]")));
+                } else if next.starts_with("#[") {
+                } else {
+                    if let Some(module) =
+                        next.strip_prefix("mod ").and_then(|m| m.strip_suffix(';'))
+                    {
+                        match explicit {
+                            Some(path) => found.push(path),
+                            None => {
+                                found.push(dir.join(format!("{module}.rs")));
+                                found.push(dir.join(module).join("mod.rs"));
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_test_module_is_resolved_from_the_file_that_declares_it() {
+    let declare = |path: &str, text: &str| (PathBuf::from(path), text.to_owned());
+    let texts = vec![
+        declare("/s/forget/mod.rs", "#[cfg(test)]\nmod fake;\n"),
+        declare("/s/apps/mod.rs", "pub mod fake;\n#[cfg(test)]\nmod tests;\n"),
+        declare("/s/startup/desk.rs", "#[cfg(test)]\n#[path = \"desk_pc_tests.rs\"]\nmod pc;\n"),
+        declare("/s/privacy/mod.rs", "pub mod fake;\n"),
+    ];
+    let excluded = test_module_files(&texts);
+    // Le faux hôte de forget n'est pas livré ; ceux d'apps et de privacy, si.
+    assert!(excluded.contains(&PathBuf::from("/s/forget/fake.rs")));
+    assert!(!excluded.contains(&PathBuf::from("/s/apps/fake.rs")));
+    assert!(!excluded.contains(&PathBuf::from("/s/privacy/fake.rs")));
+    assert!(excluded.contains(&PathBuf::from("/s/apps/tests.rs")));
+    assert!(excluded.contains(&PathBuf::from("/s/startup/desk_pc_tests.rs")));
+}
+
 /// Les fichiers de code du dépôt qui peuvent écrire un fichier de Shinku, hors
 /// essais : le cœur, l'assistant, l'agent et la fenêtre.
 fn production_sources() -> Vec<(String, String)> {
@@ -173,35 +236,12 @@ fn production_sources() -> Vec<(String, String)> {
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         texts.push((path, text));
     }
-    // Les fichiers que le code déclare `#[cfg(test)] mod x;` ne sont pas livrés.
-    let mut test_modules = Vec::new();
-    for (_, text) in &texts {
-        let lines: Vec<&str> = text.lines().collect();
-        for (at, line) in lines.iter().enumerate() {
-            if *line != "#[cfg(test)]" {
-                continue;
-            }
-            let mut name = None;
-            for next in &lines[at + 1..] {
-                if let Some(path) = next.strip_prefix("#[path = \"") {
-                    let file = path.trim_end_matches("\"]");
-                    name = Some(file.trim_end_matches(".rs").to_owned());
-                } else if next.starts_with("#[") {
-                } else {
-                    if let Some(module) =
-                        next.strip_prefix("mod ").and_then(|m| m.strip_suffix(';'))
-                    {
-                        test_modules.push(name.unwrap_or_else(|| module.to_owned()));
-                    }
-                    break;
-                }
-            }
-        }
-    }
+    // Les fichiers que le code déclare `#[cfg(test)] mod x;` ne sont pas livrés :
+    // chacun est résolu à partir du fichier qui le déclare.
+    let test_modules = test_module_files(&texts);
     let mut sources = Vec::new();
     for (path, text) in texts {
-        let stem = path.file_stem().and_then(|name| name.to_str()).unwrap_or_default();
-        if test_modules.iter().any(|name| name == stem) {
+        if test_modules.contains(&path) {
             continue;
         }
         let relative = path
@@ -283,8 +323,10 @@ fn a_module_that_writes_a_new_file_must_be_in_the_closed_list() {
         "crates/shinku-core/src/settings.rs",
         "crates/shinku-core/src/startup/store.rs",
     ];
-    let msg = "écriture nouvelle : si elle touche un réglage ou un journal de Shinku, ajoute \
-               son nom à forget::list (et à la conception)";
+    let msg = "écriture ou nom nouveau. Un réglage ou un journal de Shinku : ajoute son nom à \
+               forget::list (et à la conception). Un nom seulement lu ou nommé, que Shinku \
+               n'écrit pas : épingle-le dans EXPECTED_FILE_NAMES (et mets le compte à jour \
+               dans cet essai)";
     // Chaque magasin appelle `write_replacing` une seule fois (settings.rs la définit
     // en plus : deux occurrences).
     assert_eq!(

@@ -1729,14 +1729,20 @@ dossiers connus et les suppressions sont ceux du reste du cœur).
   quel que soit le résultat.
 - **Il refuse s'il est élevé par rapport au bureau, ou s'il ne sait pas** : code
   2, rien n'est touché, pas même un dossier regardé. Le cas connu est
-  `elevated_launch`, la décision de la fenêtre (le cas « contrôle de compte
-  coupé » passe). Le cas inconnu est propre à `--oublier` : si Windows ne dit pas
-  les droits du processus (le jeton ne se lit pas), ou ceux du bureau quand ils
-  comptent, il refuse. La fenêtre garde le choix contraire (ne bloquer personne,
-  `runs_elevated`) ; un effaceur ne peut pas se permettre de viser, sans le
-  savoir, les réglages d'un autre compte. La lecture garde donc « inconnu »
-  (`own_rights_known`, `Option<Rights>`) jusqu'à la décision
-  `elevated_or_unknown`.
+  `elevated_launch`, la décision de la fenêtre, d'après le code : droits du
+  processus ordinaires, il passe ; droits du processus élevés (moitié
+  « administrateur » d'une paire de jetons), il refuse ; tous les droits sans
+  paire de jetons, tout dépend du bureau : bureau ordinaire ou d'un autre compte
+  (illisible par refus d'accès), il refuse ; bureau avec tous les droits ou
+  élevé, ou **pas de bureau** (ou bureau disparu pendant la lecture), il passe
+  (le cas « contrôle de compte coupé »). Le cas inconnu est propre à
+  `--oublier` : si Windows ne dit pas les droits **du processus** (le jeton ne se
+  lit pas), il refuse. Un bureau dont le jeton ne se lit pas compte comme un bureau
+  ordinaire, donc refuse quand le processus a tous les droits sans paire. La
+  fenêtre garde le choix contraire (ne bloquer personne, `runs_elevated`) ; un
+  effaceur ne peut pas se permettre de viser, sans le savoir, les réglages d'un
+  autre compte. La lecture garde donc « inconnu » (`own_rights_known`,
+  `Option<Rights>`) jusqu'à la décision `elevated_or_unknown`.
 - Dans l'ordre : (1) les fichiers de la **liste fermée**, chacun par les règles
   de `fs` ; (2) les deux dossiers `Shinku`, **seulement s'ils sont vides** ;
   (3) les deux arborescences `%APPDATA%\fr.shinku.app` et
@@ -1839,11 +1845,21 @@ conception fixe, dans `NSIS_HOOK_PREUNINSTALL`, dans cet ordre :
    `nsis_tauri_utils::RunAsUser` (le greffon que le modèle embarque déjà pour
    « Lancer Shinku »), puis **attendre en interrogeant le Gestionnaire de
    redémarrage de Windows** sur le chemin exact `$INSTDIR\shinku.exe` : jusqu'à
-   dix secondes pour le voir en marche, puis jusqu'à trente pour le voir fini.
-   Une réponse inattendue du Gestionnaire compte comme un échec de l'attente,
-   jamais comme « fini ». Si le processus tourne encore au bout du délai, il est
-   **arrêté** par ce même Gestionnaire, sur ce chemin seulement (comme le modèle
-   de Tauri ferme la fenêtre). S'il n'a jamais été vu, ou s'il a dû être arrêté :
+   dix secondes pour le voir en marche, puis jusqu'à trente pour le voir fini ;
+   ces deux attentes sont comptées **en temps réel**, pas en nombre de pas. Une
+   réponse inattendue du Gestionnaire compte comme un échec de l'attente, jamais
+   comme « fini » ; quelques réponses « on ne sait pas » de suite sont tolérées
+   avant d'abandonner, et quand il abandonne sur « on ne sait pas », le
+   désinstalleur attend la fin de l'échéance de `--oublier` (un peu plus de vingt
+   secondes depuis le lancement) avant de continuer, pour ne pas supprimer
+   `shinku.exe` sous lui, puis affiche le message. Si le processus tourne encore
+   au bout du délai, il est **arrêté** par ce même Gestionnaire. Portée : le
+   Gestionnaire arrête **tout processus qui utilise ce fichier**, ce qui peut
+   inclure le Shinku ouvert par un autre compte du PC s'il le voit (à vérifier sur
+   le vrai Windows) ; de même il peut répondre « en marche » pour un tel Shinku
+   sans que `--oublier` ait tourné. C'est la même portée que la fermeture de la
+   fenêtre par le modèle de Tauri, juste avant. S'il n'a jamais été vu, ou s'il a
+   dû être arrêté :
    un message, « Shinku n'a pas pu supprimer tes réglages. Ils sont dans
    %APPDATA%\Shinku et %LOCALAPPDATA%\Shinku : tu peux les supprimer à la
    main. », avec `/SD IDOK`. **Jamais de repli sur un effacement élevé.**
@@ -1902,7 +1918,7 @@ repris.
   disque.
 - **La garde « un module gagne un fichier »** lit les sources livrées du cœur, de
   l'assistant, de l'agent et de la fenêtre, **par fichier et par nombre
-  d'occurrences**, sans exempter un fichier en entier. Elle ne retire que les
+  d'occurrences**, sans exempter un fichier en entier. Chaque module d'essais est résolu à partir du fichier qui le déclare (un essai de la garde elle-même le vérifie : un `fake.rs` livré n'est pas confondu avec un `fake.rs` d'essais). Elle ne retire que les
   modules d'essais (`#[cfg(test)] mod x;` et leurs fichiers, `#[cfg(test)] mod x {`
   fermé en colonne 0, éléments isolés) : le code qui suit un module d'essais est lu.
   Elle échoue si : un cinquième appel de `write_replacing` apparaît (un par magasin,
@@ -1967,6 +1983,10 @@ repris.
   d'un dossier n'est gardée en mémoire que dans la limite des 50 000 entrées
   permises, mais la lecture d'un dossier de plusieurs millions d'entrées dure
   autant qu'elle dure.
+- **Un réglage occupé n'est plus réessayé une fois le budget de dix secondes
+  dépensé**, même s'il reste du temps avant l'échéance de vingt secondes : si
+  l'arborescence d'une même passe a déjà consommé dix secondes, le réessai de la
+  suivante n'a pas lieu. Le code 1 reste juste (il reste bien quelque chose).
 - **Windows n'offre pas ici d'ouverture relative à un handle de dossier** : une
   entrée est ouverte par son chemin et revérifiée (nature, taille, date,
   identifiant) avant d'être supprimée sur ce handle. Un dossier du chemin

@@ -258,7 +258,7 @@ fn forget(host: &dyn ForgetHost) -> Outcome {
         if !seen.busy {
             return if seen.kept || unresolved { Outcome::Left } else { Outcome::Done };
         }
-        // Cinq secondes de réessai en tout, pas par fichier : une seule horloge
+        // Dix secondes de réessai en tout, pas par fichier : une seule horloge
         // pour la série de passes, à l'intérieur de l'échéance totale.
         if spent >= RETRY_BUDGET || spent >= TOTAL_DEADLINE {
             return Outcome::Left;

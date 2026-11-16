@@ -18,7 +18,9 @@
 //! et revérifiée (nature, taille, date, identifiant) avant d'être supprimée sur
 //! ce handle. Un dossier du chemin remplacé par un lien **entre** la lecture et
 //! l'ouverture d'une entrée ne ferait partir que ce qui a exactement la même
-//! identité, la même taille et la même date : rien d'autre.
+//! identité, la même taille et la même date : rien d'autre, **sur un système de
+//! fichiers qui donne un identifiant** (NTFS, ReFS). Sans identifiant (FAT,
+//! exFAT), rien n'est supprimé par ces fonctions : une entrée sans identité reste.
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
