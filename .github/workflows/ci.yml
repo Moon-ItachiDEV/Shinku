@@ -407,41 +407,70 @@ jobs:
 
       # Le désinstalleur n'efface plus rien dans un profil : avec la case
       # « Supprimer aussi mes réglages », il lance `shinku.exe --oublier` avec les
-      # droits ordinaires de la personne (RunAsUser) et attend. Trois essais, sur
-      # le vrai désinstalleur, chacun sur une installation faite en silence (les
-      # essais d'avant ont désinstallé Shinku) :
-      #   1. `--oublier` lancé à la main : code 0 avec les droits ordinaires,
-      #      témoins partis, au moins une seconde de vie ; code 2 et rien de
-      #      touché quand le script est élevé face à un bureau qui ne l'est pas
-      #      (si le runner permet ce cas, sinon une ligne NOTE le dit) ;
-      #   2. la désinstallation avec une jonction à la place de
-      #      %LOCALAPPDATA%\fr.shinku.app : le témoin posé derrière doit rester
-      #      intact (l'ancien RmDir /r élevé du modèle de Tauri le suivait) ;
-      #   3. la désinstallation avec la fenêtre de Shinku ouverte : la question
-      #      « Shinku est ouvert » une seule fois, puis le dossier d'installation,
-      #      %APPDATA%\Shinku, %LOCALAPPDATA%\Shinku et les deux dossiers
-      #      fr.shinku.app disparus, avec ce que les essais d'avant y ont vraiment
-      #      écrit, et rien qui revienne. Si le désinstalleur affiche « Shinku n'a
-      #      pas pu supprimer tes réglages », l'essai ferme la boîte et échoue.
-      - name: Désinstallation
+      # droits ordinaires de la personne (RunAsUser) et attend par le Gestionnaire
+      # de redémarrage. Trois étapes séparées, pour qu'un échec de l'une
+      # n'empêche pas de lire les autres ; chacune réinstalle Shinku en silence
+      # s'il n'est pas là. Si le désinstalleur affiche « Shinku n'a pas pu
+      # supprimer tes réglages », l'essai ferme la boîte et échoue.
+      # 1. `--oublier` lancé à la main : code 0 avec les droits ordinaires, témoins partis,
+      #    au moins une seconde de vie ; code 2 et rien de touché quand le script est élevé
+      #    face à un bureau qui ne l'est pas (si le runner le permet, sinon une ligne NOTE).
+      - name: Désinstallation (--oublier à la main)
+        if: ${{ !cancelled() }}
         run: |
           $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
           $options = @()
           if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
-          $essai = 'apps/shinku/scripts/essai-installeur.ps1'
-          foreach ($etape in 'oublier', 'desinstaller-jonction', 'desinstaller') {
-            # L'essai à la main de `--oublier` laisse Shinku installé ; les deux autres le désinstallent.
-            if (-not (Test-Path "$env:ProgramFiles\Shinku\uninstall.exe")) {
-              $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
-              if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
-            }
-            # Le désinstalleur de l'étape d'avant a pu laisser sa copie temporaire en vie.
-            $limite = (Get-Date).AddSeconds(120)
-            while (@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' }).Count -gt 0 -and (Get-Date) -lt $limite) { Start-Sleep -Milliseconds 500 }
-            powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $essai `
-              -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape $etape @options
-            if ($LASTEXITCODE -ne 0) { throw "L'essai « $etape » de l'installeur a échoué (code $LASTEXITCODE)." }
+          # Shinku est réinstallé en silence s'il ne l'est pas (l'essai d'avant l'a désinstallé, ou a échoué).
+          if (-not (Test-Path "$env:ProgramFiles\Shinku\uninstall.exe")) {
+            $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
           }
+          # La copie temporaire du désinstalleur d'avant a pu rester en vie.
+          $limite = (Get-Date).AddSeconds(120)
+          while (@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' }).Count -gt 0 -and (Get-Date) -lt $limite) { Start-Sleep -Milliseconds 500 }
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
+            -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape oublier @options
+
+      # 2. La désinstallation avec une jonction à la place de %LOCALAPPDATA%\fr.shinku.app :
+      #    le témoin posé derrière doit rester intact (voir les limites dans le script).
+      - name: Désinstallation (jonction)
+        if: ${{ !cancelled() }}
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          $options = @()
+          if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
+          # Shinku est réinstallé en silence s'il ne l'est pas (l'essai d'avant l'a désinstallé, ou a échoué).
+          if (-not (Test-Path "$env:ProgramFiles\Shinku\uninstall.exe")) {
+            $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
+          }
+          # La copie temporaire du désinstalleur d'avant a pu rester en vie.
+          $limite = (Get-Date).AddSeconds(120)
+          while (@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' }).Count -gt 0 -and (Get-Date) -lt $limite) { Start-Sleep -Milliseconds 500 }
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
+            -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape desinstaller-jonction @options
+
+      # 3. La désinstallation avec la fenêtre de Shinku ouverte : la question « Shinku est ouvert »
+      #    une seule fois, puis le dossier d'installation, %APPDATA%\Shinku, %LOCALAPPDATA%\Shinku
+      #    et les deux dossiers fr.shinku.app disparus, avec ce que les essais d'avant y ont
+      #    vraiment écrit, et rien qui revienne.
+      - name: Désinstallation (fenêtre ouverte)
+        if: ${{ !cancelled() }}
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          $options = @()
+          if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
+          # Shinku est réinstallé en silence s'il ne l'est pas (l'essai d'avant l'a désinstallé, ou a échoué).
+          if (-not (Test-Path "$env:ProgramFiles\Shinku\uninstall.exe")) {
+            $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
+          }
+          # La copie temporaire du désinstalleur d'avant a pu rester en vie.
+          $limite = (Get-Date).AddSeconds(120)
+          while (@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' }).Count -gt 0 -and (Get-Date) -lt $limite) { Start-Sleep -Milliseconds 500 }
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
+            -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape desinstaller @options
 
       - name: Publier les captures de l'installeur
         if: always()

@@ -840,12 +840,71 @@ function Erreur-Du-Lanceur([string]$nom) {
 #     ou n'a pas fini). Sur la machine d'essai, c'est un ÉCHEC : la boîte est notée,
 #     photographiée et fermée (l'essai ne reste jamais bloqué), puis l'essai échoue.
 $script:Surveiller = $false
+$script:ProcessVus = @{}
+$script:DernierGuet = [DateTime]::MinValue
 $script:BoitesVues = @{}
 $script:Questions = 0
 $script:Echecs = @()
 
+# Le compte propriétaire d'un processus ou « inconnu » (lu par WMI).
+function Proprietaire([int]$pid_) {
+    try {
+        $p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$pid_" -ErrorAction Stop
+        $o = Invoke-CimMethod -InputObject $p -MethodName GetOwner -ErrorAction Stop
+        if ($o.User) { return ($o.Domain + '\' + $o.User) }
+    } catch { }
+    return 'inconnu'
+}
+
+# Écrit dans le journal l'Explorateur de la session : c'est lui que RunAsUser imite (PID, compte,
+# jeton élevé ou non), ou « aucun » : sans lui, ou avec celui d'un autre compte, `--oublier` ne
+# tourne pas comme prévu et le journal doit le dire sans que personne ait à le deviner.
+function Noter-Explorateur {
+    $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
+    $explorateur = Get-Process -Name 'explorer' -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1
+    if ($null -eq $explorateur) {
+        Noter "Explorateur de la session $session : aucun (RunAsUser n'a peut-être personne à imiter)."
+        return
+    }
+    Noter ("Explorateur de la session ${session} : PID $($explorateur.Id), compte $(Proprietaire $explorateur.Id), jeton " + (Decrire-Jeton ([ShinkuToken]::Elevated($explorateur.Id))) + ' ; ce script : compte ' + (Compte-Courant) + ', jeton ' + (Decrire-Jeton ([ShinkuToken]::Elevated([Diagnostics.Process]::GetCurrentProcess().Id))))
+}
+
+# Note, une fois par processus, tout shinku.exe vu pendant la désinstallation : sa ligne de commande
+# et son compte (`--oublier` lancé par RunAsUser, ou la fenêtre). Au plus une lecture par seconde.
+function Guetter-Shinku {
+    if (((Get-Date) - $script:DernierGuet).TotalSeconds -lt 1) { return }
+    $script:DernierGuet = Get-Date
+    try {
+        foreach ($p in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='shinku.exe'" -ErrorAction Stop)) {
+            $cle = [string]$p.ProcessId
+            if ($script:ProcessVus.ContainsKey($cle)) { continue }
+            $script:ProcessVus[$cle] = $true
+            Noter ("shinku.exe vu pendant la désinstallation : PID $($p.ProcessId), ligne de commande « $($p.CommandLine) », compte $(Proprietaire $p.ProcessId)")
+        }
+    } catch { }
+}
+
+# Ce qui reste dans le profil, et les msedgewebview2.exe encore en vie dont la ligne de commande
+# nomme fr.shinku.app (ils peuvent tenir le cache plus longtemps que le réessai de --oublier).
+function Decrire-Restes {
+    $morceaux = @()
+    foreach ($racine in $dossiersProfil) {
+        if (-not [IO.Directory]::Exists($racine)) { continue }
+        if (Est-Lien $racine) { $morceaux += "$racine (lien)"; continue }
+        $contenu = @(Lister $racine)
+        $morceaux += ("$racine : " + $contenu.Count + ' éléments' + $(if ($contenu.Count -gt 0) { ' dont ' + (($contenu | Select-Object -First 15) -join ' ; ') } else { '' }))
+    }
+    $web = @()
+    try {
+        $web = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -like '*fr.shinku.app*' })
+    } catch { }
+    $morceaux += ("msedgewebview2.exe en vie nommant fr.shinku.app : " + $web.Count + $(if ($web.Count -gt 0) { ' (PID ' + (($web | ForEach-Object { $_.ProcessId }) -join ', ') + ')' } else { '' }))
+    return ($morceaux -join ' | ')
+}
+
 function Traiter-Boites {
     if (-not $script:Surveiller) { return }
+    Guetter-Shinku
     foreach ($fenetre in [ShinkuWin]::Dialogs()) {
         $cle = [string]$fenetre.ToInt64()
         if ($script:BoitesVues.ContainsKey($cle)) { continue }
@@ -940,10 +999,10 @@ function Etape-Oublier {
         }
         $restants = @(Restants $poses)
         if ($restants.Count -gt 0) {
-            Echouer ('shinku.exe --oublier a rendu le code 0 mais il reste : ' + ($restants -join ', '))
+            Echouer ('shinku.exe --oublier a rendu le code 0 mais il reste : ' + ($restants -join ', ') + ' (' + (Decrire-Restes) + ')')
         }
         foreach ($arbre in @($dossiersProfil[2], $dossiersProfil[3])) {
-            if ([IO.Directory]::Exists($arbre)) { Echouer "shinku.exe --oublier a rendu le code 0 mais $arbre est encore là." }
+            if ([IO.Directory]::Exists($arbre)) { Echouer ("shinku.exe --oublier a rendu le code 0 mais $arbre est encore là (" + (Decrire-Restes) + ')') }
         }
         Fait ("shinku.exe --oublier lancé avec les droits ordinaires (jeton filtré, compte $compte, profil $env:APPDATA et $env:LOCALAPPDATA) : code $code, vécu {0:N2} s (dates de début et de fin du processus), {1} témoins posés partis (réglages, journaux, et un fichier au fond de chacun des deux dossiers $identifiant), les deux dossiers $identifiant partis" -f $vie, $poses.Count)
 
@@ -970,7 +1029,10 @@ function Etape-Oublier {
             Fait ("shinku.exe --oublier lancé élevé face à un bureau non élevé (Explorateur PID $($explorateur.Id), jeton non élevé ; ce script : jeton élevé) : code $codeEleve, les {0} témoins sont tous restés" -f $poses.Count)
         } else {
             Noter ("le refus (code 2) n'a pas pu être essayé : jeton de ce script $(Decrire-Jeton $moi), jeton de l'Explorateur de la session $(Decrire-Jeton $bureau). Il faut un script élevé face à un bureau non élevé. Rendu : code $codeEleve, $($restants.Count) témoins restants sur $($poses.Count).")
-            if ($codeEleve -ne 0) {
+            if ($moi -eq -1 -or $bureau -eq -1) {
+                # Droits illisibles : Shinku les prend pour un refus (code 2). Rien n'est exigé du code, et rien n'est prouvé.
+                Noter "droits du bureau ou du script illisibles : le code $codeEleve n'est pas exigé."
+            } elseif ($codeEleve -ne 0) {
                 Echouer ("shinku.exe --oublier lancé élevé, sans bureau non élevé, a rendu le code $codeEleve ; 0 attendu (le contrôle de compte coupé passe).")
             }
         }
@@ -978,7 +1040,8 @@ function Etape-Oublier {
         foreach ($chemin in @(@(Chemins-Reglages) + @(Chemins-Arbres))) {
             try { if ([IO.File]::Exists($chemin)) { [IO.File]::Delete($chemin) } } catch { }
         }
-        Restaurer-Profil
+        # Un échec de la remise en place ne doit pas cacher l'erreur d'origine.
+        try { Restaurer-Profil } catch { Noter "le profil n'a pas pu être remis en place : $($_.Exception.Message)" }
     }
 }
 
@@ -986,7 +1049,26 @@ function Etape-Oublier {
 
 # Lance uninstall.exe, coche « Supprimer aussi mes réglages », désinstalle, ferme les boîtes qui
 # s'ouvrent (voir Traiter-Boites) et attend la fin. Rend quand le dossier d'installation a disparu.
+function Message-Echec-Oublier {
+    return ("Le désinstalleur a affiché « Shinku n'a pas pu supprimer tes réglages » (boîte fermée par l'essai, capture echec-oublier) : " + ($script:Echecs -join ' ; ') + ". RunAsUser n'a pas lancé shinku.exe --oublier sur cette machine, ou il n'a pas fini en 40 s, ou le Gestionnaire de redémarrage n'a pas répondu.")
+}
+
 function Desinstaller-Avec-La-Case {
+    Noter-Explorateur
+    $script:ProcessVus = @{}
+    try {
+        Desinstaller-Pas-A-Pas
+    } catch {
+        # La boîte d'échec est la cause la plus probable : elle est testée AVANT toute autre explication.
+        $cause = $_.Exception.Message
+        Traiter-Boites
+        if ($script:Echecs.Count -gt 0) { Echouer ((Message-Echec-Oublier) + " Erreur vue ensuite : $cause") }
+        throw
+    }
+    if ($script:Echecs.Count -gt 0) { Echouer (Message-Echec-Oublier) }
+}
+
+function Desinstaller-Pas-A-Pas {
     $desinstalleur = Join-Path $dossier 'uninstall.exe'
     # Le désinstalleur se recopie dans le dossier temporaire et s'y relance : le
     # processus lancé s'arrête aussitôt, d'où l'attente de la fenêtre par son titre.
@@ -1037,11 +1119,9 @@ function Desinstaller-Avec-La-Case {
         Traiter-Boites
         Start-Sleep -Milliseconds 500
     }
+    if ($script:Echecs.Count -gt 0) { return }
     Verifier-Absent $dossier "Le dossier d'installation"
     $script:Surveiller = $false
-    if ($script:Echecs.Count -gt 0) {
-        Echouer ("Le désinstalleur a affiché « Shinku n'a pas pu supprimer tes réglages » (boîte fermée par l'essai, capture echec-oublier) : " + ($script:Echecs -join ' ; ') + ". RunAsUser n'a pas lancé shinku.exe --oublier sur cette machine, ou il n'a pas fini en 40 s.")
-    }
 }
 
 # ── La jonction à la place de %LOCALAPPDATA%\fr.shinku.app ─────────────────
@@ -1049,6 +1129,15 @@ function Desinstaller-Avec-La-Case {
 # Le défaut le plus grave de l'ancien désinstalleur : le modèle de Tauri faisait un RmDir /r élevé de
 # %LOCALAPPDATA%\fr.shinku.app, qu'un programme du compte peut remplacer par une jonction. Un témoin
 # posé derrière cette jonction doit rester intact. La jonction et sa cible sont retirées quoi qu'il arrive.
+#
+# Ce que cette étape PROUVE : avec une jonction en place du dossier, ni le désinstalleur ni `--oublier`
+# ne touchent à ce qu'elle vise (mêmes noms, mêmes contenus), et les réglages et %APPDATA%\fr.shinku.app
+# sont partis.
+# Ce qu'elle NE PROUVE PAS : que le retour de l'effacement élevé serait vu. Elle ne l'attrape que si le
+# `RMDir /r` de NSIS suit une jonction posée à la racine même du dossier (à vérifier dans NSIS) ; un
+# lien plus bas dans l'arbre n'est pas essayé ; et si le contrôle de compte est coupé, le `--oublier`
+# lancé par RunAsUser a lui-même tous les droits. Le retour de l'effacement élevé est tenu par
+# tests/installer.test.ts (la case de Tauri remise à 0, les deux RmDir /r du modèle gardés).
 function Etape-Desinstaller-Jonction {
     $desinstalleur = Join-Path $dossier 'uninstall.exe'
     Verifier-Existe $desinstalleur "Shinku (l'étape « installer » doit précéder)"
@@ -1085,18 +1174,17 @@ function Etape-Desinstaller-Jonction {
             if (-not [IO.File]::Exists($temoin)) { Echouer "Le témoin derrière la jonction a disparu : $temoin" }
             if ([IO.File]::ReadAllText($temoin) -cne ('a ne pas toucher : ' + $temoin)) { Echouer "Le témoin derrière la jonction a changé : $temoin" }
         }
-        $restants = @(Restants $reglagesPoses)
-        if ($restants.Count -gt 0) { Echouer ('Les fichiers de réglages sont restés : ' + ($restants -join ', ')) }
-        if ([IO.Directory]::Exists($arbreRoaming)) { Echouer "$arbreRoaming est encore là." }
+        $restants = @(Restants ($reglagesPoses + @($arbreRoaming)))
+        if ($restants.Count -gt 0) { Echouer ('Il reste après la désinstallation : ' + ($restants -join ', ') + ' (' + (Decrire-Restes) + ')') }
         $sort = 'la jonction a été laissée en place'
         if (-not (Est-Lien $lien)) { $sort = 'la jonction a été retirée seule (sa cible est intacte)' }
-        Noter "au sort de la jonction : $sort (la conception veut qu'un point d'analyse soit laissé en place)."
+        Noter "sort de la jonction après la désinstallation : $sort (la conception veut qu'un point d'analyse soit laissé en place ; ce n'est pas vérifié, seul le contenu derrière l'est)."
         Fait ("désinstallation avec la case, compte $compte, avec une jonction $lien -> $cible à la place de %LOCALAPPDATA%\$identifiant : les {0} éléments derrière la jonction sont intacts (mêmes noms, mêmes contenus), les {1} fichiers de réglages et %APPDATA%\$identifiant ont disparu ; $sort" -f $apres.Count, $reglagesPoses.Count)
     } finally {
         $script:Surveiller = $false
         try { Supprimer-Arbre $lien } catch { Noter "la jonction $lien n'a pas pu être retirée : $($_.Exception.Message)" }
         try { Supprimer-Arbre $cible } catch { Noter "$cible n'a pas pu être retiré : $($_.Exception.Message)" }
-        Restaurer-Profil
+        try { Restaurer-Profil } catch { Noter "le profil n'a pas pu être remis en place : $($_.Exception.Message)" }
     }
     Attendre-Desinstalleur
 }
@@ -1138,12 +1226,10 @@ function Etape-Desinstaller {
     }
     $restes = @(Get-Process -Name 'shinku' -ErrorAction SilentlyContinue)
     if ($restes.Count -gt 0) { Echouer "shinku.exe tourne encore après la désinstallation (PID $($restes[0].Id))." }
-    Verifier-Absent $dossiersProfil[2] "Le dossier $identifiant de %APPDATA%"
-    Verifier-Absent $dossiersProfil[3] "Le dossier $identifiant de %LOCALAPPDATA%"
-    Verifier-Absent $dossiersProfil[0] 'Le dossier de réglages %APPDATA%\Shinku'
-    Verifier-Absent $dossiersProfil[1] 'Le dossier des journaux %LOCALAPPDATA%\Shinku'
-    $restants = @(Restants (@(Chemins-Reglages) + $arbresPoses))
-    if ($restants.Count -gt 0) { Echouer ('Des fichiers de réglages sont restés : ' + ($restants -join ', ')) }
+    $restants = @(Restants (@($dossiersProfil) + @(Chemins-Reglages) + $arbresPoses))
+    if ($restants.Count -gt 0) {
+        Echouer ('Il reste après la désinstallation : ' + ($restants -join ', ') + ". État du profil : " + (Decrire-Restes))
+    }
     $restes = @(Raccourcis $menus)
     if ($restes.Count -gt 0) {
         Echouer ('Un raccourci du menu Démarrer est resté : ' + ($restes -join ', '))
