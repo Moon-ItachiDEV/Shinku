@@ -52,6 +52,7 @@ import { parseArgs } from 'node:util';
 
 import { DOM, EXPECTED } from './essai-desinstallation-dom.mjs';
 import { DOM as STARTUP_DOM, EXPECTED as STARTUP_EXPECTED } from './essai-demarrage-dom.mjs';
+import { DOM as PRIVACY_DOM, EXPECTED as PRIVACY_EXPECTED, readPrivacy } from './essai-confidentialite-dom.mjs';
 
 const { values: options } = parseArgs({
   options: {
@@ -1145,7 +1146,6 @@ async function checkModules(window) {
     ['Démarrage', 'inscrite'],
     ['Mode jeu', 'Pendant que tu joues'],
     ['Désinstallation', EXPECTED.store, EXPECTED.noApps],
-    ['Confidentialité', 'Ce module arrive dans une prochaine version'],
   ];
   for (const [label, ...expected] of modules) {
     const screen = await window.open(label);
@@ -1156,6 +1156,39 @@ async function checkModules(window) {
     quote(screen.main, 14);
     await window.capture(slug(label));
   }
+}
+
+// ── La Confidentialité : une visite pour lire, jamais pour effacer ──────────
+
+/**
+ * La page s'affiche, rien n'est coché d'avance, le bouton « Effacer ce qui est coché » est inerte, aucune
+ * confirmation n'est ouverte. Cet essai-ci ne coche rien et ne clique sur aucun « Effacer » : l'effacement
+ * pour de bon est celui de `essai-confidentialite.mjs`, réservé à une machine jetable.
+ */
+async function checkPrivacy(window) {
+  await window.open(PRIVACY_EXPECTED.title);
+  const screen = await until('la page « Confidentialité » est chargée', 60_000, async () => {
+    const now = await window.session.run(readPrivacy, PRIVACY_DOM);
+    return now.title === PRIVACY_EXPECTED.title && now.ready && !now.busy ? now : null;
+  }, 300);
+  if (!shows(screen.intro, PRIVACY_EXPECTED.intro)) {
+    fail(`la page Confidentialité ne dit pas « ${PRIVACY_EXPECTED.intro} » sous son titre :\n${screen.intro}`);
+  }
+  const ticked = screen.rows.filter((row) => row.checked);
+  if (ticked.length > 0) {
+    fail(`la page Confidentialité coche d'avance : ${ticked.map((row) => `${row.block} / ${row.title}`).join(', ')}`);
+  }
+  if (screen.erase === null) {
+    fail(`la page Confidentialité n'a pas son bouton « ${PRIVACY_EXPECTED.erase} »`);
+  }
+  if (!screen.erase.inert) {
+    fail(`le bouton « ${PRIVACY_EXPECTED.erase} » est actif alors que rien n'est coché`);
+  }
+  if (screen.dialog !== null && screen.dialog.open) {
+    fail('une confirmation d\u2019effacement est ouverte alors que personne n\u2019a rien coché');
+  }
+  done(`écran « ${PRIVACY_EXPECTED.title} » (lecture seule) : ${screen.rows.length} ligne(s), rien de coché, bouton inerte`);
+  await window.capture('confidentialite');
 }
 
 // ── Le Démarrage ───────────────────────────────────────────────────────────
@@ -1975,6 +2008,7 @@ async function main() {
     }
     await checkScan(window);
     await checkModules(window);
+    await checkPrivacy(window);
     await checkStartup(window);
     await checkUninstall(window);
     await checkGameMode(window);

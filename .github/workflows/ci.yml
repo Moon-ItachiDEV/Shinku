@@ -291,6 +291,41 @@ jobs:
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-desinstallation.ps1 -Nettoyer
 
+      # La Confidentialité, pour de bon, sur le vrai Windows : la vraie fenêtre
+      # efface un faux profil Chrome (de vraies bases SQLite), des valeurs du
+      # registre, les récents et le presse-papiers, et refuse ce qu'elle doit
+      # refuser (un fichier tenu ouvert, un lockfile, une jonction, un lien
+      # physique, un lien de registre, un profil remplacé). Chaque preuve
+      # imprime une ligne « FAIT : » qui dit ce qui a été mesuré. CET ESSAI
+      # EFFACE VRAIMENT : la variable n'est posée que sur ces deux étapes,
+      # jamais sur le travail, et la machine est jetable. Le vrai Chrome, s'il
+      # est installé, est lancé puis fermé par l'essai.
+      - name: Essai de la confidentialité
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: apps/shinku
+        env:
+          SHINKU_ESSAI_CONFIDENTIALITE: '1'
+        run: node scripts/essai-confidentialite.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures-confidentialite"
+
+      # Quoi qu'il arrive : le User Data de Chrome d'origine, les trois clés du
+      # registre, les récents, l'Accès rapide et le presse-papiers sont remis
+      # en place, et plus aucun processus de l'essai ne tient un fichier.
+      - name: Remettre la machine d'essai en place (confidentialité)
+        if: always()
+        working-directory: apps/shinku
+        env:
+          SHINKU_ESSAI_CONFIDENTIALITE: '1'
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-confidentialite.ps1 -Etape nettoyer
+
+      - name: Publier les captures de la confidentialité
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-de-la-confidentialite
+          path: ${{ runner.temp }}/captures-confidentialite
+          if-no-files-found: ignore
+          retention-days: 14
+
       # Shinku est déjà installé : l'installeur doit le dire, et rien ne doit
       # changer sur le disque quand on annule.
       - name: Installeur sur une installation existante
