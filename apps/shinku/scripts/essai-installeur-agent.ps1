@@ -400,18 +400,18 @@ try {
     $installed = (Get-FileHash -Algorithm SHA256 $InstalledAgent).Hash
     if ($built -ne $installed) { Fail "l'installeur n'a pas remplacé shinku-agent.exe : il n'est pas identique à l'agent compilé (SHA-256 $installed au lieu de $built)" }
     Done 'shinku-agent.exe a été remplacé : identique à l''agent compilé alors qu''il avait été marqué'
-    # L'assistant élevé du Démarrage (installeur/helper.nsh) : redéposé à côté de shinku.exe.
+    # L'assistant élevé du Démarrage (installeur/helper.nsh) : présent à côté de shinku.exe après la mise à jour.
     $installedHelper = Join-Path $Dossier 'shinku-helper.exe'
     if (-not (Test-Path $installedHelper)) { Fail "après la mise à jour, $installedHelper n'existe pas : l'installeur ne dépose plus l'assistant" }
     Done 'shinku-helper.exe est à côté de shinku.exe après la mise à jour'
-    # La liste des licences (installeur/licences.nsh) : redéposée, non vide, identique à celle que le script a fabriquée.
+    # La liste des licences (installeur/licences.nsh) : après la mise à jour (l'installeur relancé avec /S par-dessus la même version), le fichier est là, non vide, identique à la liste fabriquée. Cela prouve que le fichier installé est le bon ; pas par quel chemin il est arrivé (en silencieux, l'ancien désinstalleur ne tourne pas).
     $installedLicences = Join-Path $Dossier 'LICENCES-TIERS.txt'
     if (-not (Test-Path $installedLicences)) { Fail "après la mise à jour, $installedLicences n'existe pas : l'installeur ne dépose plus la liste des licences" }
     if ((Get-Item $installedLicences).Length -eq 0) { Fail "après la mise à jour, $installedLicences est vide" }
     if ((Get-FileHash -Algorithm SHA256 $installedLicences).Hash -ne (Get-FileHash -Algorithm SHA256 $LicencesCompilees).Hash) {
         Fail "après la mise à jour, $installedLicences n'est pas identique à la liste fabriquée ($LicencesCompilees)"
     }
-    Done 'LICENCES-TIERS.txt est à côté de shinku.exe après la mise à jour, non vide, identique à la liste fabriquée'
+    Done 'après la mise à jour, LICENCES-TIERS.txt est à côté de shinku.exe, non vide, identique à la liste fabriquée'
     if ($null -ne (Find-Own $windowEntry)) { Fail "shinku.exe (processus $windowId) tourne encore après la mise à jour : l'installeur devait le fermer" }
     Done 'shinku.exe a été fermé par l''installeur'
     if ($null -ne (Find-Own $oldEntry)) { Fail "l'agent de l'ancienne exécution (processus $oldId) tourne encore après la mise à jour" }

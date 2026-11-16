@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,7 +28,6 @@ import {
   composeFile,
   licenseTexts,
   runCli,
-  sha256,
   writeAtomically,
   normalizeText,
   numberTexts,
@@ -386,7 +386,7 @@ test("un complément ne vaut que pour la version vérifiée : une autre version 
   const next: Package = { ...rustOne('sanstexte', 'BSD-3-Clause', '1.1.0'), dir: folder() };
   const { packages, errors } = attachTexts([next], complements);
   assert.equal(errors.length, 1);
-  assert.match(errors[0] ?? '', /complément sanstexte@1\.0\.0 : aucun paquet de ce nom et de cette version dans les dépendances \(à supprimer, ou à revérifier/);
+  assert.match(errors[0] ?? '', /complément sanstexte@1\.0\.0 : aucun paquet Rust de ce nom et de cette version dans les dépendances \(un complément ne vaut que pour un paquet Rust ; à supprimer, ou à revérifier/);
   assert.equal(packages[0]?.complement, null);
   assert.equal(checkPackages(packages).length, 1, 'et le paquet de la nouvelle version retombe sans texte');
   // Les deux versions dans le graphe : seule celle du complément le reçoit.
@@ -408,7 +408,7 @@ test('un complément qui ne va à aucun paquet du graphe est une erreur (le doss
   const complements = new Map([['orphelin@1.0.0', complementOf('orphelin', '1.0.0')]]);
   const { errors } = attachTexts([withTexts(rustOne('autre'), ['t'])], complements, own('LICENSE'));
   assert.equal(errors.length, 1);
-  assert.match(errors[0] ?? '', /complément orphelin@1\.0\.0 : aucun paquet de ce nom et de cette version/);
+  assert.match(errors[0] ?? '', /complément orphelin@1\.0\.0 : aucun paquet Rust de ce nom et de cette version/);
 });
 
 test("les compléments : <nom>@<version>, un SOURCE.txt, au moins un vrai texte de licence, et rien d'écarté en silence", () => {
@@ -437,6 +437,68 @@ test("les compléments : <nom>@<version>, un SOURCE.txt, au moins un vrai texte 
   assert.equal(complements.get('bon@1.2.3')?.source, 'dépôt, étiquette');
   assert.equal(complements.get('bon@1.2.3')?.version, '1.2.3');
   assert.ok(!complements.get('bon@1.2.3')?.files.some((file) => file.name === 'SOURCE.txt'), "SOURCE.txt n'est pas un texte de licence");
+});
+
+test('les compléments : un SOURCE.txt vide (ou de blancs seuls) est une erreur', () => {
+  const dir = folder({
+    'vide@1.0.0/LICENSE': 'texte',
+    'vide@1.0.0/SOURCE.txt': '',
+    'blancs@1.0.0/LICENSE': 'texte',
+    'blancs@1.0.0/SOURCE.txt': ' \r\n\t\n',
+    'plein@1.0.0/LICENSE': 'texte',
+    'plein@1.0.0/SOURCE.txt': 'dépôt',
+  });
+  const { complements, errors } = readComplements(dir);
+  assert.deepEqual([...complements.keys()], ['plein@1.0.0']);
+  assert.deepEqual(errors.sort(), [
+    "complément blancs@1.0.0 : SOURCE.txt est vide (il doit dire d'où vient le texte)",
+    "complément vide@1.0.0 : SOURCE.txt est vide (il doit dire d'où vient le texte)",
+  ]);
+});
+
+test('les compléments : deux dossiers dont les noms ne diffèrent que par la casse sont une erreur (ils se heurteraient sous Windows)', () => {
+  const dir = folder({ 'Foo@1.0.0/LICENSE': 'texte', 'Foo@1.0.0/SOURCE.txt': 'dépôt', 'foo@1.0.0/LICENSE': 'texte', 'foo@1.0.0/SOURCE.txt': 'dépôt', 'autre@1.0.0/LICENSE': 'texte', 'autre@1.0.0/SOURCE.txt': 'dépôt' });
+  const { complements, errors } = readComplements(dir);
+  assert.equal(errors.length, 1, errors.join(' | '));
+  assert.match(errors[0] ?? '', /^complément foo@1\.0\.0 : le même nom que Foo@1\.0\.0 à la casse près/);
+  assert.deepEqual([...complements.keys()], ['Foo@1.0.0', 'autre@1.0.0']);
+});
+
+test("un complément ne vaut que pour un paquet Rust : un paquet de la page de même nom et de même version ne le reçoit pas, et le complément est orphelin", () => {
+  const complements = new Map([['a@1.0.0', complementOf('a', '1.0.0')]]);
+  const page: Package = { ...rustOne('a'), ecosystem: 'npm' };
+  const only = attachTexts([page], complements, own());
+  assert.equal(only.packages[0]?.complement, null);
+  assert.deepEqual(only.packages[0]?.texts, []);
+  assert.equal(only.errors.length, 1);
+  assert.match(only.errors[0] ?? '', /^complément a@1\.0\.0 : aucun paquet Rust de ce nom et de cette version .*un complément ne vaut que pour un paquet Rust/);
+  // Les deux dans le graphe : seul le paquet Rust le reçoit.
+  const both = attachTexts([page, rustOne('a')], complements, own());
+  assert.deepEqual(both.errors, []);
+  assert.deepEqual(both.packages.map((one) => one.complement !== null), [false, true]);
+});
+
+test("la garde : un dossier au nom de licence n'est toléré que si l'expression n'a aucun AND ; avec un AND l'erreur nomme le paquet et le dossier", () => {
+  const dir = folder({ 'LICENSE-MIT': 'MIT ordinaire', 'LICENSES/Apache-2.0': 'dans le dossier' });
+  const check = (license: string) => checkPackages(attachTexts([{ ...rustOne('p', license), dir }], new Map()).packages);
+  assert.deepEqual(check('MIT'), []);
+  assert.deepEqual(check('MIT OR Apache-2.0'), []);
+  assert.deepEqual(check('MIT AND Apache-2.0'), ["p 1.0.0 : le dossier « LICENSES » n'est pas lu et la licence « MIT AND Apache-2.0 » demande plusieurs textes (AND) : l'un d'eux peut y être"]);
+  assert.equal(check('(MIT OR Apache-2.0) AND BSD-3-Clause').length, 1, 'un AND dans des parenthèses compte aussi');
+  assert.equal(check('MIT OR (Apache-2.0 AND BSD-3-Clause)').length, 1, 'un AND sous un OR compte aussi');
+});
+
+test(".gitignore ignore le fichier temporaire que laisserait un arrêt brutal pendant l'écriture (le retrait après échec est essayé plus bas)", () => {
+  const ignore = readFileSync(new URL('../../.gitignore', root), 'utf8').split('\n');
+  assert.ok(ignore.includes('apps/shinku/src-tauri/licences/LICENCES-TIERS.txt.*.tmp'), '.gitignore ne couvre pas le fichier temporaire');
+});
+
+test("la section fixe : la version de Rust qu'elle nomme est celle de rust-toolchain.toml (à relire à chaque changement)", () => {
+  const toolchain = readFileSync(new URL('../../rust-toolchain.toml', root), 'utf8');
+  const channel = /^channel\s*=\s*"([^"]+)"/m.exec(toolchain)?.[1];
+  assert.match(channel ?? '', /^\d+\.\d+\.\d+$/, 'rust-toolchain.toml ne fixe plus une version précise');
+  const fixed = readFileSync(new URL('src-tauri/licences/section-fixe.txt', root), 'utf8');
+  assert.ok(fixed.includes(`chaîne d'outils Rust ${channel}`), `section-fixe.txt ne nomme pas « chaîne d'outils Rust ${channel} » : relire la section A pour cette version`);
 });
 
 test("la garde : une licence refusée, un dépôt qui manque à une MPL-2.0, une licence absente : chaque paquet fautif est nommé", () => {
@@ -621,8 +683,10 @@ test('la ligne de commande : la garde passe, code 0, le fichier est écrit, avec
   const written = readFileSync(app.output, 'utf8');
   assert.match(written, /^serde 1\.0\.0\n/m);
   assert.match(lines[0] ?? '', /^licences-tiers : fichier écrit \(1 paquets Rust liés, 3 paquets de l'interface, 3 textes distincts\)\.$/);
-  assert.equal(lines[lines.length - 1], `licences-tiers : sha256 ${sha256(written)}`);
-  assert.match(sha256(written), /^[0-9a-f]{64}$/);
+  // L'empreinte est comparée à celle de Node, sur les octets relus sur le disque, pas à la fonction du script.
+  const independent = createHash('sha256').update(readFileSync(app.output)).digest('hex');
+  assert.match(independent, /^[0-9a-f]{64}$/);
+  assert.equal(lines[lines.length - 1], `licences-tiers : sha256 ${independent}`);
   assert.deepEqual(readdirSync(join(app.appDir, 'src-tauri', 'licences')).filter((name) => name.endsWith('.tmp')), [], 'aucun fichier temporaire ne reste');
 });
 
@@ -660,6 +724,9 @@ test("la ligne de commande : --verifier ne crée ni ne modifie rien, rend 0 et d
   assert.match(verify.lines[0] ?? '', /^licences-tiers : la garde passe \(/);
   const make = cli([], app, fakeCargo(app.crate));
   assert.equal(verify.lines.at(-1), make.lines.at(-1), 'la même empreinte que la fabrication');
+  // Avec --verifier rien n'est écrit : l'empreinte est celle du contenu que build() rend, calculée par Node.
+  const content = build({ offline: false, run: fakeCargo(app.crate), appDir: app.appDir }).content;
+  assert.equal(verify.lines.at(-1), `licences-tiers : sha256 ${createHash('sha256').update(content, 'utf8').digest('hex')}`);
   const before = readFileSync(app.output);
   cli(['--verifier'], app, fakeCargo(app.crate));
   assert.deepEqual(readFileSync(app.output), before);

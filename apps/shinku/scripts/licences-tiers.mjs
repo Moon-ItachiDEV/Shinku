@@ -333,6 +333,7 @@ const rejectionMessage = (label, one) => `${label} : fichier « ${one.name} » �
 export function readComplements(dir) {
   const complements = new Map();
   const errors = [];
+  const seenFolders = new Map();
   if (!existsSync(dir)) return { complements, errors };
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => compareText(a.name, b.name))) {
     if (!entry.isDirectory()) continue;
@@ -341,6 +342,12 @@ export function readComplements(dir) {
       errors.push(`complément ${entry.name} : le dossier doit s'appeler <nom>@<version> (le texte n'est valable que pour une version)`);
       continue;
     }
+    const folderKey = entry.name.toLowerCase();
+    if (seenFolders.has(folderKey)) {
+      errors.push(`complément ${entry.name} : le même nom que ${seenFolders.get(folderKey)} à la casse près (deux dossiers qui se heurtent sous Windows)`);
+      continue;
+    }
+    seenFolders.set(folderKey, entry.name);
     const folder = join(dir, entry.name);
     const sourcePath = join(folder, 'SOURCE.txt');
     const read = readLicenseFiles(folder);
@@ -355,7 +362,12 @@ export function readComplements(dir) {
       errors.push(`complément ${entry.name} : aucun fichier de licence`);
       continue;
     }
-    complements.set(entry.name, { name: entry.name.slice(0, at), version: entry.name.slice(at + 1), files: read.files, source: normalizeText(readFileSync(sourcePath, 'utf8')) });
+    const source = normalizeText(readFileSync(sourcePath, 'utf8'));
+    if (source === '') {
+      errors.push(`complément ${entry.name} : SOURCE.txt est vide (il doit dire d'où vient le texte)`);
+      continue;
+    }
+    complements.set(entry.name, { name: entry.name.slice(0, at), version: entry.name.slice(at + 1), files: read.files, source });
   }
   return { complements, errors };
 }
@@ -370,13 +382,14 @@ export function readComplements(dir) {
  */
 export function attachTexts(packages, complements, readFiles = readLicenseFiles) {
   const errors = [];
-  const keys = new Set(packages.map((one) => `${one.name}@${one.version}`));
+  // Un complément ne vaut que pour un paquet Rust : un paquet de l'interface de même nom et de même version ne le reçoit pas.
+  const keys = new Set(packages.filter((one) => one.ecosystem === 'rust').map((one) => `${one.name}@${one.version}`));
   for (const key of complements.keys()) {
-    if (!keys.has(key)) errors.push(`complément ${key} : aucun paquet de ce nom et de cette version dans les dépendances (à supprimer, ou à revérifier après une montée de version)`);
+    if (!keys.has(key)) errors.push(`complément ${key} : aucun paquet Rust de ce nom et de cette version dans les dépendances (un complément ne vaut que pour un paquet Rust ; à supprimer, ou à revérifier après une montée de version)`);
   }
   const done = packages.map((one) => {
     const own = readFiles(one.dir);
-    const extra = complements.get(`${one.name}@${one.version}`);
+    const extra = one.ecosystem === 'rust' ? complements.get(`${one.name}@${one.version}`) : undefined;
     if (extra !== undefined && licenseTexts(own.files).length > 0) {
       errors.push(`complément ${one.name}@${one.version} : inutile, le paquet a ses propres textes de licence (à supprimer)`);
     }
@@ -401,15 +414,29 @@ export function checkPackages(packages, allowed = ALLOWED_LICENSES) {
       errors.push(`${label} : sous MPL-2.0 et sans adresse de dépôt : impossible de dire où obtenir le code source`);
     }
     const hasText = licenseTexts(one.texts).length > 0;
-    // Rien n'est écarté en silence. Un dossier au nom de licence est toléré quand le paquet a par ailleurs un texte.
+    // Rien n'est écarté en silence. Un dossier au nom de licence (non lu) n'est toléré que si le paquet a un texte et
+    // que son expression n'a aucun AND : avec un AND, le texte manquant pourrait être dans ce dossier.
+    const hasAnd = andInExpression(one.license);
     for (const rejected of one.rejected ?? []) {
       if (rejected.kind !== 'directory' || !hasText) errors.push(rejectionMessage(label, rejected));
+      else if (hasAnd) errors.push(`${label} : le dossier « ${rejected.name} » n'est pas lu et la licence « ${one.license} » demande plusieurs textes (AND) : l'un d'eux peut y être`);
     }
     if (!hasText) {
       errors.push(`${label} : aucun texte de licence (ni dans son dossier ni dans les compléments ; un NOTICE n'en est pas un)`);
     }
   }
   return errors;
+}
+
+/** L'expression contient-elle un AND ? (Une expression illisible : non, la garde de l'expression la refuse déjà.) */
+function andInExpression(license) {
+  if (license === null || license === undefined) return false;
+  try {
+    const walk = (tree) => tree.kind === 'and' || (tree.kind === 'or' && tree.items.some(walk));
+    return walk(parseExpression(license));
+  } catch {
+    return false;
+  }
 }
 
 /** Un paquet dont l'expression nomme MPL-2.0 doit dire où obtenir le code source de sa version. */
@@ -602,9 +629,9 @@ export function writeAtomically(path, content) {
   try {
     writeFileSync(temporary, content, 'utf8');
     renameSync(temporary, path);
-  } catch (error) {
+  } finally {
+    // Après un renommage réussi il n'y a plus rien à retirer ; après un échec, le fichier temporaire ne reste pas.
     rmSync(temporary, { force: true });
-    throw error;
   }
 }
 
@@ -654,7 +681,7 @@ export function runCli(argv, { run = runCargo, appDir = APP_DIR, env = process.e
   return 0;
 }
 
-/** Ce fichier est-il lancé directement (et non importé) ? Les deux chemins sont réels : liens, jonctions et casse comptent pour rien. */
+/** Ce fichier est-il lancé directement (et non importé) ? Les deux chemins passent par `realpathSync` : les liens et les jonctions sont suivis des deux côtés, et Node calcule les deux chemins de la même façon. */
 function isDirectRun() {
   try {
     return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);

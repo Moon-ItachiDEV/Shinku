@@ -23,3 +23,4 @@ Thumbs.db
 
 # Licences des dépendances : fichier fabriqué par scripts/licences-tiers.mjs
 apps/shinku/src-tauri/licences/LICENCES-TIERS.txt
+apps/shinku/src-tauri/licences/LICENCES-TIERS.txt.*.tmp

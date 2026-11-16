@@ -2343,7 +2343,9 @@ de licence (un `NOTICE` n'en est pas un), ou si un fichier au nom de licence est
 écarté sans que rien le dise : vide après normalisation, de plus de 256 Kio, lien
 ou autre chose qu'un fichier ordinaire (l'erreur nomme le paquet et le fichier ; seul
 un dossier au nom de licence, comme `LICENSES/`, reste ignoré, et seulement quand
-le paquet a par ailleurs un texte). Les compléments passent par les mêmes règles.
+le paquet a par ailleurs un texte et que son expression n'a aucun `AND` : avec un
+`AND`, un des textes demandés peut être dans ce dossier, qui n'est pas lu, et
+l'erreur nomme le paquet et le dossier). Les compléments passent par les mêmes règles.
 Fabriquer le fichier lance la même garde et n'écrit rien si elle
 échoue. Un essai de `npm test` la lance sur le vrai dépôt ; il échoue (il ne saute
 pas) si `cargo` manque. En CI, `cargo metadata` donne le dossier de chaque paquet :
@@ -2355,10 +2357,13 @@ le nom d'un paquet à portée, comme `@x/y`, n'est pas géré : les paquets Rust
 ont pas et la page n'a pas besoin de complément) :
 le fichier de licence, pris dans le dépôt d'origine (à l'étiquette ou au commit de
 la version utilisée) ou, à défaut, dans une autre source sûre, jamais écrit de
-mémoire, et un `SOURCE.txt` qui dit d'où il vient. Un complément s'ajoute aux textes du paquet de ce nom **et de cette version**
-seulement, et sa provenance (`SOURCE.txt`) paraît sous le paquet dans le fichier
+mémoire, et un `SOURCE.txt` qui dit d'où il vient. Un complément s'ajoute aux textes du paquet **Rust** de ce nom **et de cette version**
+seulement (un paquet de la page de même nom et de même version ne le reçoit pas ; le
+complément est alors orphelin, donc une erreur), et sa provenance (`SOURCE.txt`) paraît sous le paquet dans le fichier
 fabriqué. Un complément qui ne va à aucun paquet du graphe est une erreur : une
-montée de version oblige donc à revérifier le texte. Un complément pour un paquet qui
+montée de version oblige donc à revérifier le texte. Un `SOURCE.txt` vide est une
+erreur, de même que deux dossiers de compléments dont les noms ne diffèrent que par la
+casse (ils se heurteraient sous Windows). Un complément pour un paquet qui
 a déjà ses propres textes de licence (hors `NOTICE`) est aussi une erreur
 (« inutile, à supprimer »). Aujourd'hui : `alloc-stdlib@0.3.0`,
 `webview2-com@0.39.1` et `webview2-com-sys@0.39.1`. Les compléments de `selectors` et
@@ -2389,7 +2394,21 @@ retiré avec le dossier.
   programmes, n'y est pas, et la garde ne le voit pas : c'est voulu (il n'est pas
   distribué), mais si la fabrication change (un autre `--target`, une dépendance
   de construction qui laisse du code dans un programme), la liste est à revoir.
-- **La section fixe est écrite à la main** et ne vieillit pas toute seule. Le
+  Un outil de construction peut aussi laisser un fichier dans un programme sans
+  laisser de code : `tauri-build` (non listé) a un manifeste Windows par défaut,
+  `windows-app-manifest.xml`, qu'il incorpore à `shinku.exe` quand on ne lui en donne
+  pas (lu dans `tauri-build` 2.7.4 : `WindowsAttributes::new`, puis `set_manifest`).
+  Ici `build.rs` lui donne le manifeste de Shinku (`windows-manifest.xml`), qui le
+  remplace : ce fichier-là n'est donc pas dans `shinku.exe`, et nous n'avons trouvé
+  aucune autre trace d'un outil de construction dans un programme. Si `build.rs`
+  cessait de fournir le sien, le manifeste de `tauri-build` (une simple dépendance
+  aux contrôles communs de Windows, de peu de contenu) serait à nommer.
+- **La section fixe est écrite à la main** et ne vieillit pas toute seule. Sa
+  section A nomme ce que la bibliothèque standard de Rust lie sous Windows (tables
+  Unicode, `compiler_builtins` et `libm`, `cfg-if`, `hashbrown`, `rustc-demangle`),
+  d'après la chaîne d'outils et le dépôt `rust-lang/rust` à l'étiquette de la
+  version ; elle est à relire à chaque changement de `rust-toolchain.toml` (un essai
+  vérifie que la version nommée dans la section est celle du fichier). Le
   texte du SDK WebView2 (licence et notices) vient du paquet NuGet officiel
   `Microsoft.Web.WebView2` 1.0.3800.47, la version que le dépôt de
   `webview2-com-sys` désigne ; à reprendre quand ce paquet change de SDK. Les

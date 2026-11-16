@@ -205,10 +205,11 @@ test("essai-installeur-agent.ps1 : après la mise à jour, LICENCES-TIERS.txt es
   const text = bytes.toString('utf8');
   assert.match(text, /\[string\]\$LicencesCompilees = \(Join-Path \$PSScriptRoot '\.\.\\src-tauri\\licences\\LICENCES-TIERS\.txt'\)/);
   assert.match(text, /if \(-not \(Test-Path \$LicencesCompilees\)\) \{\n\s+Fail /);
-  const check = text.slice(text.indexOf('$installedLicences = '), text.indexOf("Done 'LICENCES-TIERS.txt est à côté"));
+  const check = text.slice(text.indexOf('$installedLicences = '), text.indexOf("Done 'après la mise à jour, LICENCES-TIERS.txt est à côté"));
   assert.match(check, /if \(-not \(Test-Path \$installedLicences\)\) \{ Fail /);
   assert.match(check, /if \(\(Get-Item \$installedLicences\)\.Length -eq 0\) \{ Fail /);
   assert.match(check, /Get-FileHash -Algorithm SHA256 \$installedLicences\)\.Hash -ne \(Get-FileHash -Algorithm SHA256 \$LicencesCompilees\)\.Hash\) \{\n\s+Fail /);
+  assert.doesNotMatch(text, /redépos/, 'la preuve ne dit pas « redéposé » : elle montre le résultat, pas le chemin');
   // La preuve est dans la mise à jour, avant la désinstallation.
   assert.ok(text.indexOf('$installedLicences = ') < text.indexOf('# ── 2. Désinstallation'));
 });

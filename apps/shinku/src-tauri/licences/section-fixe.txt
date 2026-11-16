@@ -8,8 +8,9 @@ A. Bibliothèque standard de Rust
 Liée dans shinku.exe, shinku-agent.exe et shinku-helper.exe (chaîne d'outils Rust 1.97.0,
 fixée par rust-toolchain.toml).
 Droits : The Rust Project Developers (voir https://thanks.rust-lang.org).
-Licence : Apache-2.0 OR MIT, sauf pour les parties nommées plus bas. Les textes de ces deux
-licences sont reproduits dans la section 4 (par exemple ceux du paquet « cfg-if »).
+Licence : Apache-2.0 OR MIT, sauf pour les parties nommées plus bas (dont compiler_builtins,
+lié dans tout programme Rust). Les textes de ces deux licences sont reproduits dans la
+section 4 (par exemple ceux du paquet « cfg-if »).
 
 Les parties de la bibliothèque standard qui ont leurs propres droits ou une autre licence,
 d'après la chaîne d'outils :
@@ -23,6 +24,13 @@ d'après la chaîne d'outils :
   - library/std/src/sys/sync/mutex/fuchsia.rs : BSD-2-Clause AND (Apache-2.0 OR MIT),
     droits : 2016 The Fuchsia Authors. Ce fichier n'est compilé que pour le système Fuchsia :
     il n'est pas dans les programmes de Shinku, et son texte BSD-2-Clause n'est pas reproduit.
+  - library/compiler-builtins (paquet compiler_builtins 0.1.160, les fonctions de base que le
+    compilateur appelle ; la chaîne d'outils le range avec le reste de la bibliothèque, mais
+    son propre fichier Cargo.toml déclare une autre licence) :
+    MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0). Son module de
+    mathématiques vient du paquet libm, sous licence MIT. Les notices de ces deux paquets
+    sont recopiées plus bas. Le texte de la licence Apache-2.0 avec l'exception LLVM est
+    reproduit dans la section 4 (celui du paquet « blake3 »).
 
 Les paquets extérieurs que la bibliothèque standard lie pour Windows (x86_64-pc-windows-msvc) :
   - cfg-if 1.0.4 : MIT OR Apache-2.0, Copyright (c) 2014 Alex Crichton ;
@@ -34,12 +42,80 @@ Cargo.toml cités plus bas, aucun n'est une dépendance de la bibliothèque stan
 (ils servent à d'autres systèmes, à sa fabrication, à ses essais ou aux autres bibliothèques
 de la chaîne d'outils).
 
+Notice de compiler_builtins (extraits de library/compiler-builtins/LICENSE.txt, recopiés
+tels quels ; les textes des licences MIT et Apache-2.0 qui s'y trouvent ne sont pas répétés) :
+
+The compiler-builtins crate is available for use under both the MIT license
+and the Apache-2.0 license with the LLVM exception (MIT AND Apache-2.0 WITH
+LLVM-exception).
+
+The libm crate is available for use under the MIT license.
+
+Portions of this software are derived from third-party works licensed under
+terms compatible with the above Apache-2.0 WITH LLVM-exception AND MIT
+license:
+
+* compiler-builtins is derived from LLVM's compiler-rt (https://llvm.org/).
+  Work derived from compiler-rt prior to 2019-01-19 is usable under the MIT
+  license, with the following copyright:
+
+      Copyright (c) 2009-2016 by the contributors listed in CREDITS.TXT
+
+  The relevant CREDITS.TXT is located at
+  https://github.com/llvm/llvm-project/blob/main/compiler-rt/CREDITS.TXT.
+
+* Work derived from compiler-rt after 2019-01-19 is usable under the
+  Apache-2.0 license with the LLVM exception.
+
+* The bundled `math` module is from the libm crate, usable under the MIT
+  license. For further details and copyrights, see see libm/LICENSE.txt at
+  https://github.com/rust-lang/compiler-builtins.
+
+Additionally, some source files may contain comments with specific copyrights
+or licenses.
+
+Notice de libm (extraits de library/compiler-builtins/libm/LICENSE.txt, recopiés tels quels,
+sans leurs lignes de tirets) :
+
+This Rust library contains the following copyrights:
+
+    Copyright (c) 2018 Jorge Aparicio
+
+Portions of this software are derived from third-party works licensed under
+terms compatible with the above MIT license:
+
+* musl libc https://www.musl-libc.org/. This library contains the following
+  copyright:
+
+      Copyright © 2005-2020 Rich Felker, et al.
+
+* The CORE-MATH project https://core-math.gitlabpages.inria.fr/. CORE-MATH
+  routines are available under the MIT license on a per-file basis.
+
+The musl libc COPYRIGHT file also includes the following notice relevant to
+math portions of the library:
+
+Much of the math library code (src/math/* and src/complex/*) is
+Copyright © 1993,2004 Sun Microsystems or
+Copyright © 2003-2011 David Schultz or
+Copyright © 2003-2009 Steven G. Kargl or
+Copyright © 2003-2009 Bruce D. Evans or
+Copyright © 2008 Stephen L. Moshier or
+Copyright © 2017-2018 Arm Limited
+and labelled as such in comments in the individual source files. All
+have been licensed under extremely permissive terms.
+
+Copyright notices are retained in src/* files where relevant.
+
 Origine de cette notice : le fichier COPYRIGHT-library.html livré avec la chaîne d'outils
-Rust 1.97.0 (dossier share/doc/rust) pour les droits et les licences ; les fichiers Cargo.toml
-de library/std, library/alloc, library/panic_unwind, library/panic_abort, library/unwind,
-library/std_detect et library/compiler-builtins du dépôt https://github.com/rust-lang/rust,
-à l'étiquette 1.97.0 (commit 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3), pour savoir quels
-paquets extérieurs sont liés sous Windows.
+Rust 1.97.0 (dossier share/doc/rust) pour les droits et les licences des parties de la
+bibliothèque standard, et pour les lignes de droits des trois paquets extérieurs (elles y
+sont recopiées de leurs fichiers LICENSE-MIT) ; le dépôt https://github.com/rust-lang/rust à
+l'étiquette 1.97.0 (commit 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3) pour le reste : les
+fichiers Cargo.toml de library/std, library/alloc, library/panic_unwind, library/panic_abort,
+library/unwind, library/std_detect et library/compiler-builtins/compiler-builtins (quels
+paquets sont liés sous Windows, et la licence de compiler_builtins), et les fichiers
+LICENSE.txt de library/compiler-builtins et de library/compiler-builtins/libm.
 
 B. NSIS (installeur)
 --------------------
