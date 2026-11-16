@@ -26,7 +26,7 @@ use shinku_core::clean::{
 use shinku_core::fs::to_display_path;
 use shinku_core::model::Timestamp;
 use shinku_core::platform::{
-    Environment, KnownFolder, RecycleBin, RecycleError, StaticEnvironment, Volume,
+    Environment, KnownFolder, RecycleBin, RecycleError, Sent, StaticEnvironment, Volume,
 };
 use shinku_core::scan::report::{DuplicateFile, KeepChoice, Report};
 
@@ -121,6 +121,9 @@ struct Rigged<F> {
     frozen_bin: Option<RecycleBin>,
     /// Appelé chaque fois que le moteur demande quels programmes tournent.
     on_process_list: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Ce que la machine annonce après l'envoi (Windows peut dire « détruit »
+    /// alors que le disque montre l'élément rangé).
+    answer: Sent,
 }
 
 impl<F> fmt::Debug for Rigged<F> {
@@ -168,8 +171,8 @@ where
         self.pc.empty_recycle_bin()
     }
 
-    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
-        (self.recycle)(&self.pc, path)
+    fn recycle(&self, path: &Path) -> Result<Sent, RecycleError> {
+        (self.recycle)(&self.pc, path).map(|()| self.answer)
     }
 }
 
@@ -177,7 +180,13 @@ fn rigged<F>(pc: &Pc, recycle: F) -> Rigged<F>
 where
     F: Fn(&StaticEnvironment, &Path) -> Result<(), RecycleError> + Send + Sync,
 {
-    Rigged { pc: pc.environment.clone(), recycle, frozen_bin: None, on_process_list: None }
+    Rigged {
+        pc: pc.environment.clone(),
+        recycle,
+        frozen_bin: None,
+        on_process_list: None,
+        answer: Sent::InBin,
+    }
 }
 
 // ── Fichiers inutiles ──────────────────────────────────────────────────
@@ -782,6 +791,45 @@ fn a_bin_that_deletes_for_good_stops_the_step_at_once() {
 }
 
 #[test]
+fn a_copy_that_windows_says_it_destroyed_is_never_counted_even_if_the_disk_shows_it_moved() {
+    let (pc, bin) = pc_with_bin();
+    let (kept, _second, _third) = three_photos(&pc);
+    let report = pc.scan();
+    // Le disque dit « rangée » (la copie a quitté sa place et existe), la machine
+    // dit « détruite » : c'est la machine qui a raison sur ce qu'elle a fait.
+    let mut environment = rigged(&pc, |pc, path| pc.recycle(path).map(|_| ()));
+    environment.answer = Sent::Destroyed;
+
+    let bilan = clean(&environment, &report, duplicates_only(&report));
+    assert_eq!(bilan.duplicates.state, StepState::Stopped);
+    let stop = bilan.duplicates.stop.as_ref().expect("un arrêt de sécurité");
+    assert_eq!(stop.reason, StopReason::NotInRecycleBin);
+    assert_eq!((bilan.duplicates.copies, bilan.duplicates.bytes), (0, 0));
+    assert_eq!(bilan.recoverable_bytes, 0);
+    assert_eq!(bin_content(&bin).len(), 1, "le disque, lui, l'a rangée");
+    assert!(kept.exists());
+}
+
+#[test]
+fn a_copy_that_windows_destroyed_is_never_counted_as_sent_to_the_bin() {
+    // Windows supprime pour de bon (corbeille trop petite que la garde n'a pas
+    // vue) et le dit : l'étape s'arrête, sans un octet « à la corbeille ».
+    let (pc, bin) = pc_with_bin();
+    let (kept, _second, _third) = three_photos(&pc);
+    let report = pc.scan();
+    let environment = pc.environment.clone().with_recycle_destroying();
+
+    let bilan = clean(&environment, &report, duplicates_only(&report));
+    assert_eq!(bilan.duplicates.state, StepState::Stopped);
+    let stop = bilan.duplicates.stop.as_ref().expect("un arrêt de sécurité");
+    assert_eq!(stop.reason, StopReason::NotInRecycleBin);
+    assert_eq!((bilan.duplicates.copies, bilan.duplicates.bytes), (0, 0));
+    assert_eq!(bilan.recoverable_bytes, 0);
+    assert!(bin_content(&bin).is_empty());
+    assert!(kept.exists());
+}
+
+#[test]
 fn a_kept_copy_touched_while_a_copy_leaves_stops_the_step() {
     let (pc, bin) = pc_with_bin();
     let (kept, second, third) = three_photos(&pc);
@@ -843,7 +891,7 @@ fn a_full_bin_that_drops_what_it_receives_is_not_called_recoverable() {
     let report = pc.scan();
     // La corbeille reçoit les copies, mais sa taille ne bouge pas : pleine,
     // elle abandonne au fur et à mesure.
-    let mut environment = rigged(&pc, |pc, path| pc.recycle(path));
+    let mut environment = rigged(&pc, |pc, path| pc.recycle(path).map(|_| ()));
     environment.frozen_bin = Some(RecycleBin { bytes: 1_000_000, items: 50 });
 
     let bilan = clean(&environment, &report, duplicates_only(&report));
@@ -1096,7 +1144,7 @@ fn stopping_lets_the_current_file_finish_and_gives_a_partial_result() {
     let stopper = Arc::clone(&control);
     let environment = rigged(&pc, move |pc, path| {
         stopper.cancel();
-        pc.recycle(path)
+        pc.recycle(path).map(|_| ())
     });
     let request = CleanRequest { junk_files: true, duplicates: true, ..nothing(&report) };
     let bilan = run(&environment, &report, &request, &[], None, &control).unwrap();
@@ -1133,7 +1181,7 @@ fn stopping_during_the_junk_step_keeps_what_was_not_reached() {
     let control = Arc::new(CleanControl::new());
     let stopper = Arc::clone(&control);
     let asked = std::sync::atomic::AtomicUsize::new(0);
-    let mut environment = rigged(&pc, |pc, path| pc.recycle(path));
+    let mut environment = rigged(&pc, |pc, path| pc.recycle(path).map(|_| ()));
     environment.on_process_list = Some(Box::new(move || {
         if asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
             stopper.cancel();

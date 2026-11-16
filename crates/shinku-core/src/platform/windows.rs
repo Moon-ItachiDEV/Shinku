@@ -309,11 +309,9 @@ impl Environment for SystemEnvironment {
         shell::empty_bins(fixed_drive_roots())
     }
 
-    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
-        // Le grand vide ne distingue pas « à la corbeille » de « supprimé pour
-        // de bon » : `Ok(())` dans les deux cas, comme avant. Seul le module
-        // « Désinstallation » lit ce que `shell::recycle` rend (`Sent`).
-        shell::recycle(path).map(|_| ())
+    fn recycle(&self, path: &Path) -> Result<crate::platform::Sent, RecycleError> {
+        // Ce que Windows a fait : à la corbeille, ou supprimé pour de bon.
+        shell::recycle(path)
     }
 }
 

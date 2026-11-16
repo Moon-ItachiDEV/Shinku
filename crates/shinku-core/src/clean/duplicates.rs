@@ -323,6 +323,11 @@ impl Step<'_> {
         }
 
         let recycled = self.environment.recycle(&copy.path);
+        // Windows a supprimé pour de bon : la copie n'est pas dans la corbeille,
+        // quoi que le disque dise ensuite. Jamais comptée comme envoyée.
+        if matches!(recycled, Ok(crate::platform::Sent::Destroyed)) {
+            return Sent::Lost;
+        }
 
         // Les faits, pas la réponse de Windows. La copie est toujours ouverte :
         // on sait si elle existe encore, et si elle est toujours à sa place.

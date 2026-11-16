@@ -1217,10 +1217,6 @@ corbeille trop petite, « disparu sans que la corbeille ait reçu quoi que ce so
   sous `HKLM` puis sous `HKCU`, lancée depuis la page.
 - Une corbeille pleine abandonne ses éléments les plus anciens (réglage de
   Windows).
-- **Le grand vide** (`Environment::recycle`, côté nettoyage) rend encore `Ok(())`
-  quand Windows a supprimé pour de bon : il peut annoncer « à la corbeille » ce
-  qui a été détruit. La garde de taille le rend rare, pas impossible. À traiter
-  par le chantier du nettoyage (`clean/` n'est pas touché ici).
 - La garde ne voit que des réglages : un cas qu'elle ne connaît pas se voit
   seulement après coup (`destroyed`).
 - Une inscription du compte peut désigner n'importe quel programme (comme dans
