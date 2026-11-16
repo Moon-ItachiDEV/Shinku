@@ -11,6 +11,10 @@
 //! - une suppression porte sur une entrée ouverte et revérifiée ([`Removal`]),
 //!   jamais sur un simple chemin : ce qui part est ce que le parcours a vu.
 //!
+//! Trois suppressions toutes faites s'appuient sur ces règles pour
+//! `shinku.exe --oublier` : un fichier nommé, un dossier vide, une arborescence
+//! (`remove_plain_file`, `remove_empty_dir`, `remove_tree`).
+//!
 //! Sous Windows, l'implémentation ouvre chaque dossier par un handle et le lit
 //! par blocs. L'implémentation Unix sert au développement et aux tests : elle
 //! n'est pas livrée.
@@ -24,6 +28,9 @@ use std::path::{Path, PathBuf};
 use crate::model::{FileId, Timestamp};
 
 mod attributes;
+mod tree;
+
+pub use tree::{Removed, TreeLimits, TreeReport, remove_empty_dir, remove_plain_file, remove_tree};
 
 #[cfg(unix)]
 mod unix;

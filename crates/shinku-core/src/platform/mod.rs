@@ -26,6 +26,7 @@ use crate::startup::launcher::ElevatedHelper;
 
 pub mod agent;
 mod bin_rule;
+pub mod forget;
 
 #[cfg(unix)]
 mod unix;
@@ -271,6 +272,12 @@ pub trait Environment: Send + Sync + fmt::Debug {
 /// La vraie machine.
 pub fn system() -> impl Environment {
     imp::SystemEnvironment::new()
+}
+
+/// La machine de `shinku.exe --oublier` : la vraie, sous Windows comme ailleurs
+/// (ses suppressions passent par [`crate::fs`]).
+pub fn forget_host() -> forget::SystemForget {
+    forget::SystemForget::new()
 }
 
 /// La machine du mode jeu : la vraie sous Windows, une machine qui ne voit

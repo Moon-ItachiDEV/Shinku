@@ -87,6 +87,10 @@ n'apparaît donc pas après une installation.
 Amélioration possible : se relancer soi-même sans élévation au lieu d'afficher
 un message.
 
+`shinku.exe --oublier` (voir « Effacer les réglages à la désinstallation »)
+rend la même décision : il appelle `elevated_launch`, il ne la recopie pas. Il
+la rend par un code de sortie (2), sans boîte de message.
+
 ## Entre la page et le cœur : le guichet
 
 La page ne parle qu'à `shinku_core::backend::Backend`, au travers de trente-trois
@@ -202,6 +206,7 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | Une valeur de douze octets par entrée de démarrage du compte que la personne coupe ou remet (voir « Démarrage »). Le même réglage que le Gestionnaire des tâches. Écrite par `shinku.exe`. |
 | `HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | La même valeur de douze octets pour une entrée du PC. Écrite **seulement par `shinku-helper.exe`**, élevé, après l'accord de Windows, quand il en demande un, et un « OK » dans la boîte de l'assistant (vue 64 bits). |
 | `%LOCALAPPDATA%\fr.shinku.app\` | Le cache de WebView2 pour la fenêtre. |
+| `%APPDATA%\fr.shinku.app\` | Rien que Shinku écrive : le modèle de Tauri le nomme aussi, et le désinstalleur le supprime (voir « Effacer les réglages à la désinstallation »). |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\{RunMRU, TypedPaths, WordWheelQuery}` | Les **valeurs** de ces trois clés sont **supprimées** quand la personne coche « Ce que tu as tapé dans Windows » (voir « Confidentialité »). Les clés restent. C'est la première fois que Shinku supprime dans le registre. |
 | `%LOCALAPPDATA%\{Google\Chrome, Microsoft\Edge, BraveSoftware\Brave-Browser, Vivaldi}\User Data\{Default, Profile N}\` | Les fichiers de l'**historique** d'un profil (liste fermée, voir « Confidentialité ») sont supprimés, directement, quand la personne le coche. Rien d'autre du profil. |
 | Fichiers récents de Windows, presse-papiers | Vidés quand la personne le coche : les récents par Windows (`SHAddToRecentDocs`), l'historique du presse-papiers par Windows (`Clipboard.ClearHistory`), et son contenu actuel par Shinku lui-même (`OpenClipboard`, `EmptyClipboard`). |
@@ -1677,31 +1682,226 @@ fonction d'alignement de Modern UI le décalerait hors de la fenêtre à 150 %.
 **Les réglages.** Shinku range ses réglages dans `%APPDATA%\Shinku` et les
 journaux du mode jeu et du Démarrage dans `%LOCALAPPDATA%\Shinku`, pas sous
 l'identifiant du paquet : la case « Supprimer aussi mes réglages » de Tauri ne
-les supprimait donc pas. Le hook `NSIS_HOOK_POSTUNINSTALL`, que le modèle place
-à la fin de la section de désinstallation, laisse d'abord l'agent finir (il lit
-encore ses fichiers pour tout remettre en place), puis nettoie ces deux
-dossiers quand la case est cochée, hors mise à jour. Il n'utilise pas
-`RMDir /r`, qui suit les jonctions, alors que le désinstalleur tourne avec les
-droits d'administrateur sur des dossiers que n'importe quel programme de
-l'utilisateur peut modifier : il ne touche pas à un dossier si c'est un point
-d'analyse, supprime un par un les fichiers que Shinku y écrit
-(`settings.json`, `settings.illisible.json`, `journal.json` d'un côté,
-`game.json` et `startup.json` de l'autre, et leurs fichiers temporaires
-`.tmp`), puis retire le dossier avec `RMDir` sans `/r`, qui ne part que s'il
-est vide. Tout nouveau fichier écrit par Shinku dans ces dossiers doit être
-ajouté à la liste du hook. Supprimer `startup.json` fait oublier ce que Shinku
-avait coupé au démarrage : les entrées restent coupées, et se rallument depuis
-le Gestionnaire des tâches de Windows. Supprimer `game.json` efface le journal
-du mode jeu : si l'agent n'a pas pu tout remettre en place en sortant (le mode
-d'alimentation, par exemple), la trace de l'état d'avant part avec lui, et une
-réinstallation ne le reprendra pas. Case décochée, le journal reste et sera
-repris.
+les supprimait donc pas. **Le désinstalleur n'efface plus aucun fichier ni
+dossier dans un profil** : quand la case est cochée, il demande à
+`shinku.exe --oublier`, lancé avec les droits de la personne devant le bureau,
+de le faire. Tout est dans la section suivante.
 
 Le mode silencieux (`/S`) n'a pas de fenêtre : les fonctions d'interface n'y
 tournent pas, et aucun hook de section ne suppose une fenêtre. En mode passif
 (`/P`), la page d'installation s'affiche et nos fonctions d'interface tournent,
 sans danger ; les pages Bienvenue et Terminé sont sautées. La mise à jour
 (`/UPDATE`) ne touche pas aux réglages.
+
+### Effacer les réglages à la désinstallation : `shinku.exe --oublier`
+
+**Les défauts d'avant.** Avec la case cochée, le désinstalleur, élevé, effaçait
+dans le profil. Trois défauts :
+
+1. Le modèle NSIS de Tauri fait `RmDir /r "$APPDATA\fr.shinku.app"` et
+   `RmDir /r "$LOCALAPPDATA\fr.shinku.app"` avec les droits d'administrateur
+   (le bloc `${If} $DeleteAppDataCheckboxState = 1` / `${AndIf} $UpdateMode <> 1`,
+   placé entre les deux crochets de désinstallation). Un programme du compte peut
+   remplacer ce dossier par une jonction : c'est un effacement récursif, élevé,
+   d'un dossier de son choix. C'est le défaut le plus grave.
+2. L'ancienne macro `ShinkuDeleteSettings` effaçait des fichiers nommés, sans
+   `/r`, après un contrôle du point d'analyse : une fenêtre restait entre le
+   contrôle et l'effacement.
+3. Si l'élévation se fait avec un autre compte (compte ordinaire et mot de
+   passe d'un administrateur, ou protection administrateur de Windows 11, qui
+   élève dans un compte fantôme : à vérifier), ce sont les réglages de cet autre
+   compte qui étaient visés.
+
+**Ce que fait `--oublier`.** Le code est `crates/shinku-core/src/forget/` (la
+décision, pure, avec un faux hôte), `fs/tree.rs` (les suppressions) et
+`platform/forget.rs` (la vraie machine, sans code `unsafe` : l'élévation, les
+dossiers connus et les suppressions sont ceux du reste du cœur).
+
+- La ligne de commande est **exactement ce seul mot**. Toute autre forme
+  (`--oublier x`, `--OUBLIER`, `--oublier=1`) démarre Shinku comme d'habitude.
+- Il est reconnu **en tout premier**, dans `main`, avant `app::run` qui contient
+  le reste : le contrôle d'élévation et sa boîte, le rapport de plantage, la
+  lecture de la version de WebView2, le constructeur de Tauri et le module
+  d'instance unique. La fonction ne reçoit rien de Tauri. Un essai de `main.rs`
+  lit sa propre source et échoue si une ligne de code précède l'appel (il garde
+  l'ordre, il ne l'exécute pas ; la preuve en vrai est sous Wine, plus bas).
+- **Aucune fenêtre, aucune boîte, aucun WebView, rien d'écrit sur le disque**,
+  quel que soit le résultat.
+- **Il refuse s'il est élevé par rapport au bureau** : code 2, rien n'est
+  touché, pas même un dossier regardé. C'est `elevated_launch`, la décision de la
+  fenêtre : le cas « contrôle de compte coupé » passe.
+- Dans l'ordre : (1) les fichiers de la **liste fermée**, chacun par les règles
+  de `fs` ; (2) les deux dossiers `Shinku`, **seulement s'ils sont vides** ;
+  (3) les deux arborescences `%APPDATA%\fr.shinku.app` et
+  `%LOCALAPPDATA%\fr.shinku.app`, par une suppression récursive.
+- **La liste fermée** (`forget/list.rs`) est faite des constantes de nom des
+  modules qui écrivent : `settings.json`, `settings.illisible.json` et
+  `journal.json` dans `%APPDATA%\Shinku` ; `game.json` et `startup.json` dans
+  `%LOCALAPPDATA%\Shinku` ; et le voisin `.tmp` de chaque fichier écrit par
+  `write_replacing` (le nom du suffixe vient de la même fonction que l'écriture).
+  Le fichier « illisible » est mis de côté par un `rename` : il n'a pas de
+  `.tmp`. C'est exactement ce que l'ancienne macro effaçait, neuf noms, et rien
+  de plus : un fichier qui n'est pas dans la liste reste, et son dossier avec lui.
+- **Chaque fichier** passe par `fs::Removal` : fichier ordinaire (ni lien, ni
+  dossier, ni point d'analyse inconnu), un seul nom, pas « en ligne
+  uniquement », aucun point d'analyse dans la chaîne des dossiers
+  (`inspect_dir_chain`), contrôle de la nature, de la taille, de la date et de
+  l'identifiant sur le handle ouvert, puis suppression par ce handle. Pas de
+  Corbeille : ce sont des fichiers de Shinku, sans valeur pour personne.
+- **La suppression récursive** (`fs::remove_tree`, nouvelle) : la racine doit
+  être un vrai dossier (une jonction ou un fichier à sa place est laissé, et le
+  résultat est « il reste quelque chose ») ; un point d'analyse rencontré plus
+  bas n'est **jamais traversé** et reste en place, avec les dossiers qui y
+  mènent ; un fichier à plusieurs noms est supprimé comme un nom (un cache n'est
+  pas une trace : l'autre nom n'est pas touché) ; la profondeur (40 niveaux) et
+  le nombre d'entrées (200 000) sont bornés ; chaque dossier est lu par un handle
+  ouvert sans suivre de lien et revérifié par son identifiant ; chaque entrée est
+  supprimée par le handle qui l'a contrôlée.
+- **Le nom `fr.shinku.app`** n'a qu'une source, `tauri.conf.json`
+  (`identifier`) : `forget::TAURI_IDENTIFIER` le répète, et un essai lit le
+  fichier et échoue si les deux diffèrent.
+- **Le réessai.** Un fichier occupé (les processus de WebView2 finissent de
+  sortir) est réessayé : toute la suite des suppressions est reprise, de pause de
+  250 ms en pause, pendant **cinq secondes au plus en tout**, une seule horloge
+  pour l'ensemble et non par fichier. Seul un fichier « occupé » se réessaie ; un
+  lien, un droit refusé ou un fichier à plusieurs noms sont laissés sans attente.
+- **La seconde de vie minimale** est un garde-fou d'attente, pas une fonction :
+  le désinstalleur ne reçoit de `RunAsUser` ni poignée ni code de sortie, il ne
+  voit le processus que par le verrou du fichier `shinku.exe` (un programme en
+  cours d'exécution ne s'ouvre pas en écriture) et doit pouvoir le voir exister.
+  Le processus dort donc le reste de la seconde, même quand il refuse ou n'a rien
+  à faire. L'horloge et l'attente passent par l'hôte : les essais ne dorment pas.
+- **Codes de sortie** : `0` tout est parti, ou il n'y avait rien ; `1` il reste
+  quelque chose (un fichier occupé au bout des cinq secondes, un lien laissé, un
+  fichier hors liste qui garde son dossier, un droit refusé) ; `2` refusé parce
+  qu'élevé. Ils servent aux essais : le désinstalleur ne peut pas les lire.
+- **La fenêtre ou l'agent encore ouverts** : `--oublier` ne le sait pas et n'a
+  pas à le savoir. Il efface ce qu'il peut ; un fichier qu'ils tiennent est
+  « occupé » et reste après les cinq secondes. Seul le désinstalleur l'appelle,
+  après avoir fermé la fenêtre et l'agent. Un programme du compte qui le lance
+  lui-même n'y gagne rien : il peut déjà effacer ces fichiers.
+
+**Le désinstalleur** (`installeur/oublier.nsh`, appelé par `habillage.nsh`). Dans
+`NSIS_HOOK_PREUNINSTALL`, dans cet ordre :
+
+1. fermer la fenêtre de Shinku d'abord, par la macro du modèle
+   (`CheckIfAppIsRunning`, la même question « Shinku est ouvert » qu'une
+   seconde plus tard) : cela ferme aussi le trou d'avant, la fenêtre qui
+   relançait l'agent entre les deux crochets ;
+2. l'agent (`ShinkuAgentPreUninstall`), puis l'assistant, inchangés ;
+3. si la case est cochée et hors mise à jour (`$DeleteAppDataCheckboxState = 1`
+   et `$UpdateMode <> 1`) : garder la réponse dans une variable à nous, écrire
+   `StrCpy $DeleteAppDataCheckboxState 0` (le bloc du modèle ne fait plus ses
+   deux `RmDir /r`), lancer `"$INSTDIR\shinku.exe" --oublier` par
+   `nsis_tauri_utils::RunAsUser` (le greffon que le modèle embarque déjà pour
+   « Lancer Shinku »), puis **attendre sans greffon de plus**, par le verrou du
+   fichier : jusqu'à dix secondes pour le voir occupé, puis jusqu'à trente pour le
+   voir libre. S'il n'a jamais été vu occupé, ou s'il l'est encore au bout du
+   délai : un message, « Shinku n'a pas pu supprimer tes réglages. Ils sont dans
+   %APPDATA%\Shinku et %LOCALAPPDATA%\Shinku : tu peux les supprimer à la
+   main. », avec `/SD IDOK`. **Jamais de repli sur un effacement élevé.**
+
+Dans `NSIS_HOOK_POSTUNINSTALL`, `ShinkuDeleteSettings` a disparu. Quand notre
+variable dit que la case était cochée, le crochet refait seulement le ménage du
+**registre** que le bloc du modèle faisait (la clé de l'emplacement
+d'installation et la langue de l'installeur) : ce ne sont pas des fichiers d'un
+profil. `/S` et le mode passif ne montrent pas la page de la case : elle vaut 0,
+donc **une désinstallation silencieuse n'appelle jamais `--oublier`** et ne
+supprime jamais les réglages, comme avant.
+
+**Ce qui le tient.**
+
+- Cœur, sous Linux : la ligne de commande exacte ; la liste fermée (noms exacts,
+  et couverture de ce que l'ancienne macro effaçait) ; l'ordre (fichiers,
+  dossiers vides, arborescences) ; les trois codes ; le refus élevé sans un
+  appel autre que la question d'élévation ; le réessai borné **en tout** (cinq
+  secondes pour trois fichiers et une arborescence occupés, le temps de travail
+  compté, la dernière pause raccourcie) ; la seconde de vie minimale (rien à
+  faire, refus, travail rapide, travail déjà long) ; le nom de Tauri contre
+  `tauri.conf.json`. Sur de vrais dossiers : un fichier à deux noms, un lien à la
+  place du fichier, un dossier à sa place, un lien au milieu de la chaîne des
+  dossiers (le piège que le dernier composant seul ne retient pas), une racine
+  qui est un lien, un lien plus bas, un fichier à plusieurs noms dans le cache,
+  les deux bornes, et `forget::run` de bout en bout (témoins voisins intacts).
+  Chaque règle a son essai, qui échoue quand on la retire.
+- **Ce que l'essai « un module gagne un fichier » sait attraper** : il lit les
+  sources livrées du cœur, de l'assistant, de l'agent et de la fenêtre, et
+  échoue si un fichier autre que les quatre magasins appelle `write_replacing`,
+  ou si `File::create`, `fs::write`, `.create(true)`, `.append(true)` ou
+  `fs::rename` apparaissent ailleurs que là où ils sont aujourd'hui. **Ce qu'il
+  ne sait pas attraper** : une écriture d'une autre sorte (une API de Windows,
+  un autre crate), un fichier écrit par WebView2 ou par Tauri lui-même, ou un
+  magasin qui écrit hors des deux dossiers `Shinku`. Pour ceux-là, la liste reste
+  ce que les constructeurs y mettent.
+- `installer.test.ts` épingle l'ordre du `PREUNINSTALL`, le
+  `StrCpy $DeleteAppDataCheckboxState 0` et la condition `$UpdateMode <> 1`
+  autour de l'appel, l'absence de tout `Delete`, `RMDir` ou `RmDir` vers
+  `$APPDATA` ou `$LOCALAPPDATA` dans nos `.nsh`, et que, dans le modèle embarqué
+  par la version de Tauri installée, le bloc des deux `RmDir /r` est toujours
+  gardé par la case et placé après `NSIS_HOOK_PREUNINSTALL` : si Tauri change
+  cela, l'essai casse au lieu de laisser revenir l'effacement élevé.
+- **Sous Wine**, `shinku.exe --oublier` construit pour Windows est lancé pour de
+  bon : Wine répond « élevé » à `runs_elevated` (même en simple utilisateur), le
+  programme refuse donc ; on y voit le code 2, aucun témoin touché, aucune
+  fenêtre ni boîte, et une durée d'au moins une seconde (un lancement de Wine
+  seul dure 0,14 s). Le chemin qui efface n'y est pas atteint par le vrai
+  programme : il l'est par `forget::run` sur la vraie implémentation Windows de
+  `fs`, avec une élévation fabriquée. Wine ne sait pas créer de jonction
+  (`mklink /J` répond « fait » sans rien créer) : les sept essais de liens sont
+  **sautés sous Wine** (ils écrivent « SAUTÉ » ; les mêmes tournent sous Linux
+  avec des liens symboliques).
+- Vrai Windows : voir « À vérifier sur le vrai Windows ».
+
+**Limites, écrites ici telles quelles.**
+
+- **Le désinstalleur ne lit pas le résultat de `--oublier`** : `RunAsUser` ne rend
+  ni poignée ni code. S'il reste un fichier occupé au bout de cinq secondes, rien
+  ne le dit à la personne.
+- **« Mes réglages » sont ceux de la personne devant le bureau.** Les réglages des
+  autres comptes du PC restent.
+- **L'agent a le même défaut de cible** : `--retirer` est lancé par le
+  désinstalleur élevé. Avec un autre compte d'élévation, il remet en place et
+  retire la valeur de démarrage du mauvais compte. Non traité ici (cela change un
+  passage prouvé sur le vrai Windows, utilisé aussi à l'installation) ; la
+  solution est le même lancement par `RunAsUser`. À faire avant la sortie
+  publique, une fois ce lot prouvé.
+- **Un profil derrière une jonction** (`C:\Users\Léa` déplacé par un lien) fait
+  refuser les fichiers de la liste, dont la chaîne de dossiers est contrôlée :
+  ils restent, et le code est 1. Les deux arborescences, elles, ne contrôlent que
+  leur racine. Cet écart avec l'ancienne macro (qui ne regardait que le dossier
+  `Shinku` lui-même) est voulu, et à vérifier sur un profil déplacé.
+- **Windows n'offre pas ici d'ouverture relative à un handle de dossier** : une
+  entrée est ouverte par son chemin et revérifiée (nature, taille, date,
+  identifiant) avant d'être supprimée sur ce handle. Un dossier du chemin
+  remplacé par un lien entre la lecture et l'ouverture ne ferait partir que ce
+  qui a exactement la même identité, la même taille et la même date. Le processus
+  n'est pas élevé : il n'a de toute façon que les droits de la personne.
+
+**À vérifier sur le vrai Windows** (rien de cela n'a été prouvé ici) :
+
+- `RunAsUser` transmet-il l'argument `--oublier` (le modèle l'utilise ainsi pour
+  `/ARGS`) ? Preuve : `essai-installeur.ps1`, étape `desinstaller`, qui coche
+  la case dans la vraie page et compte les fichiers qui disparaissent.
+- Le verrou de `shinku.exe` est-il vu occupé pendant que le processus tourne, puis
+  libre ? Preuve : la même étape (et le message d'échec, qui doit ne pas
+  s'afficher) ; l'étape `oublier` mesure en plus la durée de vie du processus
+  (au moins une seconde).
+- Les cinq secondes suffisent-elles à WebView2 pour sortir et libérer son cache
+  quand la fenêtre était ouverte ? Preuve : l'étape `desinstaller` lancée fenêtre
+  ouverte au départ (aucun fichier ne doit revenir).
+- Une vraie jonction NTFS à la place d'un des deux dossiers `fr.shinku.app` :
+  témoin derrière intact, jonction laissée. Preuve : l'étape
+  `desinstaller-jonction`. Sous Wine, c'est sauté.
+- Le code 2 quand `--oublier` est élevé face à un bureau qui ne l'est pas, et le
+  code 0 quand tout le PC tourne avec tous les droits. Preuve : l'étape `oublier`,
+  si le runner le permet ; sinon c'est noté.
+- Que fait `RunAsUser` quand le bureau est à un autre compte que le
+  désinstalleur, sur le runner de GitHub (contrôle de compte coupé, pas
+  forcément d'Explorateur), et avec la protection administrateur de Windows 11 ?
+  Les deux cas à deux comptes ne s'essaient pas en intégration continue : ils
+  restent une limite dite.
+- Un fichier occupé réel, tenu par un vrai WebView2 (Wine a essayé un verrou sans
+  partage, pas un vrai moteur web).
 
 ### Le manifeste de `shinku.exe`
 
@@ -1744,12 +1944,20 @@ clique par `BM_CLICK`.
   bureau, un raccourci dans le menu Démarrer ;
 - `deja-installe` : la page « Shinku est déjà installé », puis Annuler. Rien ne
   doit changer sur le disque ;
+- `oublier` : `shinku.exe --oublier` lancé à la main, avec les droits ordinaires
+  (`lancer-en-utilisateur.ps1`) : code 0, témoins partis, durée d'au moins une
+  seconde ; puis, si le runner le permet, élevé face à un bureau qui ne l'est
+  pas : code 2 et rien de touché ;
+- `desinstaller-jonction` : la désinstallation avec la case cochée, un témoin posé
+  derrière une jonction qui remplace un des deux dossiers `fr.shinku.app` : le
+  témoin doit rester intact ;
 - `desinstaller` : la page de désinstallation, la case « Supprimer aussi mes
-  réglages », puis le dossier d'installation, `%APPDATA%\Shinku` et
-  `%LOCALAPPDATA%\Shinku` doivent avoir disparu. L'étape tourne en dernier, sur
-  ce que les essais d'avant y ont vraiment écrit (réglages de la fenêtre,
-  journal du grand vide) : un fichier oublié dans la liste du hook ferait
-  rester son dossier.
+  réglages », puis le dossier d'installation, les fichiers de réglages, les deux
+  dossiers `Shinku` et les deux dossiers `fr.shinku.app` doivent avoir disparu, et
+  aucun fichier ne doit revenir quand la fenêtre était ouverte au départ. L'étape
+  tourne en dernier, sur ce que les essais d'avant y ont vraiment écrit (réglages
+  de la fenêtre, journal du grand vide) : un fichier oublié dans la liste de
+  `forget::list` ferait rester son dossier, et le code 1 de `--oublier`.
 
 Un aller-retour silencieux (`/S`) garde la preuve que ce mode marche. Les
 captures sont publiées (artefact `captures-de-l-installeur`) ; un lancement à
@@ -1890,29 +2098,53 @@ d'environnement que dans un programme sans droits d'administrateur.
 
 - **Signature du code.** L'installeur et les exécutables ne sont pas signés.
   Voir la décision prise sur le certificat individuel.
-- **Désinstallation.** La case « supprimer les données » du modèle de Tauri
-  efface un dossier du profil avec les droits d'administrateur. Elle ne visait
-  pas `%APPDATA%\Shinku` ni `%LOCALAPPDATA%\Shinku` : le hook de `habillage.nsh` les supprime maintenant,
-  mais avec les mêmes droits élevés, et un effacement élevé dans un dossier que
-  l'utilisateur peut modifier est exactement ce que le document d'architecture
-  interdit au helper. À remplacer par un effacement fait par `shinku.exe`
-  lui-même, sans élévation. Une limite reste : si la désinstallation est
-  élevée avec le compte d'un autre administrateur, ce sont les réglages de ce
-  compte-là qui sont visés, pas ceux de la personne connectée (même limite que
-  la suppression faite par Tauri).
-- **Port de débogage de WebView2.** Un programme qui tourne déjà sous le
-  compte de l'utilisateur peut lancer Shinku avec ce port ouvert, comme le
-  fait l'essai de la fenêtre, et piloter sa page. Depuis le grand vide, il
-  peut ainsi faire supprimer ce que Shinku juge inutile, ce qu'il pouvait
-  déjà faire lui-même avec les mêmes droits ; il n'y gagne aucune élévation.
-  À réexaminer avec le helper.
+- **L'agent `--retirer` lancé par le désinstalleur élevé vise le mauvais compte
+  quand l'élévation s'est faite avec un autre compte** (point ouvert). Il remet
+  en place et retire la valeur de démarrage du compte élevé, pas de la personne
+  devant le bureau. La solution est le même lancement par `RunAsUser` que pour
+  `--oublier` ; elle change un passage prouvé sur le vrai Windows, utilisé aussi
+  à l'installation, et attend que `--oublier` y ait été prouvé.
+- **Preuve de `--oublier` sur le vrai Windows.** Le lot est construit et essayé
+  sous Linux et Wine ; il n'est fini qu'après l'essai de l'installeur sur un vrai
+  Windows (voir « À vérifier sur le vrai Windows », dans « Effacer les réglages à
+  la désinstallation »).
+- **Variables et stratégies de WebView2 : risque accepté.** `shinku.exe` laisse
+  WebView2 lire sept variables `WEBVIEW2_*` (dont
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`) et les stratégies de
+  `Software\Policies\Microsoft\Edge\WebView2`. Un programme du même compte peut
+  ainsi lancer Shinku avec un port de débogage et piloter sa page sans que rien
+  ne se voie : c'est ce que font nos essais de la fenêtre. Rien n'est construit,
+  et c'est choisi : retirer ces variables ne fermerait rien, car le même
+  programme peut injecter du code dans `shinku.exe`, en lancer une copie
+  modifiée, simuler des clics, ou lancer l'assistant installé directement. Il
+  n'y gagne aucun droit dans tous les cas : ce que la page sait faire sans
+  élévation, il sait déjà le faire, et l'accord de Windows reste la seule
+  barrière de ce qui est élevé. À revoir avec la signature : si `shinku.exe`
+  vérifie un jour quelque chose de lui-même au lancement, piloter les essais par
+  une stratégie `HKLM` posée par la CI (administrateur) permettrait de retirer
+  les variables sans exception dans le code.
 - **Signature de `shinku-helper.exe`.** La sortie publique est conditionnée à
   la signature de l'assistant, comme à celle de `shinku.exe`, et `shinku.exe`
   doit vérifier cette signature avant de le lancer : le dossier sûr ne prouve
   pas le contenu du fichier. Sans signature, la fenêtre de Windows ne distingue
   pas Shinku d'un imitateur. Aujourd'hui rien n'est signé.
-- **Crate dédié à l'assistant.** Voir « Limites connues » de « Régler une
-  entrée du PC » : l'assistant lie tout `shinku-core`.
+- **Crate dédié à l'assistant : repoussé à la signature.** L'assistant lie tout
+  `shinku-core` (voir « Limites connues » de « Régler une entrée du PC »). Tant
+  qu'il n'est pas signé, détourner une de ses bibliothèques n'apporte rien à un
+  attaquant (il peut présenter son propre programme sous le même nom), et
+  `/DEPENDENTLOADFLAG:0x800` tient déjà les imports statiques à `System32`. Le
+  gain réel sur le binaire publié (MSVC, release, LTO) n'est pas mesuré : quand
+  la CI rouvrira, relever la table d'imports de `shinku-helper.exe` que
+  `essai-assistant.ps1` imprime déjà « pour information », et la noter ici. Les
+  quatre faits gardés pour ce jour-là : (1) `State`, `Scope` et `Origin` dérivent
+  `Serialize` et partent avec `Place` : il faut `#[serde(remote)]` dans le cœur
+  (la règle de l'orphelin interdit le reste), pas de fonctionnalité `serde`
+  optionnelle ; (2) l'assistant doit être construit dans sa propre commande
+  cargo, sinon les fonctionnalités s'unifient avec celles de l'agent, et l'essai
+  de l'arbre porte sur cette commande-là ; (3) une seule copie de `known_folder`,
+  `Key` et `os_error`, dans le petit crate, `elevation_type` restant dans le
+  cœur ; (4) ajouter `-p shinku-elevated` à la ligne d'essais de la CI, sinon les
+  essais `cfg(windows)` déplacés cessent de tourner sans que rien ne casse.
 - **Recette Démarrage à la main.** Couper puis rouvrir une session, sur un vrai
   Windows 11, pour une entrée de chaque place du compte, dans les deux sens
   (voir « Démarrage »). Aucun essai automatique ne l'a faite.
@@ -1934,6 +2166,8 @@ d'environnement que dans un programme sans droits d'administrateur.
 - **Icône.** L'icône actuelle reprend le signe de l'interface
   (`scripts/icone.mjs`). Le logo définitif reste à choisir dans le canevas.
 - **Identifiant.** `fr.shinku.app` nomme le dossier du cache de WebView2 : le
-  changer après une publication laisserait l'ancien dossier derrière lui.
+  changer après une publication laisserait l'ancien dossier derrière lui, et
+  `--oublier` ne viserait plus que le nouveau (un essai du cœur lit
+  `tauri.conf.json` et échoue si `forget::TAURI_IDENTIFIER` diffère).
 - **Journal local** et **mise à jour** : prévus par l'architecture, pas encore
   écrits.

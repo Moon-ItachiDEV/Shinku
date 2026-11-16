@@ -25,7 +25,7 @@ use crate::settings::{app_dir, write_replacing};
 /// Version du format de `journal.json`.
 pub const JOURNAL_VERSION: u32 = 1;
 /// Nom du fichier.
-const FILE_NAME: &str = "journal.json";
+pub(crate) const FILE_NAME: &str = "journal.json";
 /// Nombre de grands vides gardés : les plus anciens sont oubliés.
 const RUNS_KEPT: usize = 100;
 

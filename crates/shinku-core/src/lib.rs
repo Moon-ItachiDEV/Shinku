@@ -17,6 +17,7 @@
 pub mod apps;
 pub mod backend;
 pub mod clean;
+pub mod forget;
 pub mod fs;
 pub mod game;
 pub mod guard;

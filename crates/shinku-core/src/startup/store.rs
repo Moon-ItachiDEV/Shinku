@@ -34,7 +34,7 @@ use crate::startup::{DISPLAY_LIMIT, Entry, EntryId, Mark, Place, State, clean_te
 /// Version du format de `startup.json`.
 pub const STARTUP_VERSION: u32 = 1;
 /// Nom du fichier.
-const FILE_NAME: &str = "startup.json";
+pub(crate) const FILE_NAME: &str = "startup.json";
 /// Nombre de lignes gardées, au plus.
 pub const CUT_KEPT: usize = 200;
 /// Combien de temps on dit qu'une app « s'est remise toute seule », en
