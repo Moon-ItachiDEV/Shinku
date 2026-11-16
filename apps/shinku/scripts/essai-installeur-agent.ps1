@@ -457,6 +457,22 @@ try {
         Say "  dossier d'installation : $(Describe-Dir $Dossier)"
         Say "  valeur Run : $(if ($null -eq (Get-RunValue)) { 'absente' } else { Get-RunValue })"
         Say "  agents en marche : $((Agents-Running).Count)"
+        # De quoi dire si le désinstalleur a fini, s'est arrêté en route, ou tourne encore.
+        $copies = @(Copied-Uninstallers)
+        Say "  désinstalleurs recopiés en marche : $($copies.Count) $(($copies | ForEach-Object { "$($_.Id) $($_.Path)" }) -join ' ; ')"
+        $autres = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)setup|uninstall|^Un_|^Au_' })
+        Say "  installeurs ou désinstalleurs en marche : $(($autres | ForEach-Object { "$($_.Id) $($_.Name) $($_.Path)" }) -join ' ; ')"
+        foreach ($cle in $UninstallKey, 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Shinku', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Shinku') {
+            if (Test-Path $cle) {
+                $valeurs = Get-ItemProperty -Path $cle -ErrorAction SilentlyContinue
+                Say "  clé $cle : présente ($(($valeurs.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' ; '))"
+            } else { Say "  clé $cle : absente" }
+        }
+        foreach ($raccourci in (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Shinku.lnk'), (Join-Path $env:PUBLIC 'Desktop\Shinku.lnk')) {
+            Say "  raccourci $raccourci : $(if (Test-Path $raccourci) { 'présent' } else { 'absent' })"
+        }
+        Start-Sleep -Seconds 5
+        Say "  cinq secondes plus tard : clé de désinstallation $(if (Test-Path $UninstallKey) { 'présente' } else { 'absente' }), désinstalleurs recopiés en marche : $((Copied-Uninstallers).Count)"
     } catch { Say "  (diagnostic impossible : $($_.Exception.Message))" }
 } finally {
     try { Restore-Everything } catch { Say "remise en place incomplète : $($_.Exception.Message)"; $exitCode = 1 }
