@@ -221,6 +221,9 @@ export function appsBackend(
   let kept: Array<Omit<LeftoverRow, 'key'>> = [];
   // Les restes déjà partis à la corbeille : une nouvelle recherche ne les retrouve pas.
   const gone = new Set<string>();
+  // Supprimés pour de bon par Windows : ils restent dans la vue (comme dans le vrai cœur, qui ne retire que ce qui est parti)
+  // jusqu'à la prochaine recherche, qui ne les retrouve plus.
+  const destroyed = new Set<string>();
 
   /** Le bilan que « Désinstaller » rend : des restes, rien, une app de la même famille, ou une vérification impossible. */
   const verdict = demo.flow === 'none' || demo.flow === 'family' || demo.flow === 'unsure' ? demo.flow : 'leftovers';
@@ -349,6 +352,10 @@ export function appsBackend(
       if (step.kind !== 'removed') {
         return refuse('busy');
       }
+      for (const path of destroyed) {
+        gone.add(path);
+      }
+      destroyed.clear();
       search(step.app);
       return view();
     },
@@ -367,9 +374,16 @@ export function appsBackend(
         } else if (demo.fail === 'bin') {
           results.push({ key, outcome: 'failed', reason: REASONS[key % REASONS.length] ?? 'refused' });
         } else if (demo.fail === 'destroyed') {
-          // Windows l'a supprimé pour de bon : il n'est plus là, et il n'est pas dans la corbeille.
-          results.push({ key, outcome: 'failed', reason: 'destroyed' });
-          gone.add(found.path);
+          if (destroyed.has(found.path)) {
+            // Déjà supprimé : le cœur répond « déjà parti », et la ligne quitte la vue.
+            results.push({ key, outcome: 'alreadyGone' });
+            gone.add(found.path);
+            destroyed.delete(found.path);
+          } else {
+            // Windows l'a supprimé pour de bon, sans passer par la corbeille : la ligne reste, avec sa raison.
+            results.push({ key, outcome: 'failed', reason: 'destroyed' });
+            destroyed.add(found.path);
+          }
         } else {
           results.push({ key, outcome: 'removed' });
           bytes += found.bytes ?? 0;

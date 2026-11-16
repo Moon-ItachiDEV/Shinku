@@ -510,3 +510,49 @@ test('« destroyed » : l’élément n’est plus là, la page le garde sans ca
   assert.deepEqual(page.state().appsDestroyed.map((row) => row.path), [A.path], 'elle reste à l’écran');
   assert.ok((buttons[0]?.focus.mock.callCount() ?? 0) >= 1, 'le focus va à « Terminé »');
 });
+
+test('« destroyed », comme le vrai cœur : la ligne reste dans la vue ; elle ne se coche pas, ne repart jamais, le pied passe à « Terminé », le focus aussi', async () => {
+  const A = left(0, 'C:\\a');
+  const B = left(1, 'C:\\b');
+  const buttons = [fakeButton(uninstallFocus.done), fakeButton(uninstallFocus.leftover(0))];
+  const page = start(buttons);
+  await page.open(view(removed([A, B])));
+  page.actions.toggleLeftover(A.path);
+  page.actions.toggleLeftover(B.path);
+  void page.actions.removeLeftovers();
+  page.of('removeLeftovers')[0]?.resolve({
+    // Le vrai cœur ne retire de la vue que ce qui est parti : A, supprimé pour de bon, y reste.
+    view: view(removed([A, B])),
+    results: [
+      { key: 0, outcome: 'failed', reason: 'destroyed' },
+      { key: 1, outcome: 'failed', reason: 'inUse' },
+    ],
+    bytes: 0,
+  } satisfies RemoveLeftovers);
+  await flush();
+  assert.equal(page.state().appsFailures[A.path], 'destroyed');
+  assert.deepEqual(page.state().appsDestroyed, [], 'la ligne est dans la vue : pas de copie à garder');
+
+  // Une case de ligne détruite ne se coche pas.
+  page.actions.toggleLeftover(A.path);
+  assert.deepEqual(page.state().appsChecked, [], 'toggleLeftover refuse une ligne détruite');
+
+  // Même si un « coché » traînait, elle ne repart jamais au cœur.
+  page.app['set']({ appsChecked: [A.path, B.path] });
+  void page.actions.removeLeftovers();
+  assert.deepEqual(page.of('removeLeftovers')[1]?.args, [[1]], 'seule B part ; A, détruite, ne repart pas');
+
+  // B part : il ne reste que la ligne détruite. Le focus va à « Terminé », pas à une case qui n'existe pas.
+  page.of('removeLeftovers')[1]?.resolve({ view: view(removed([A])), results: [{ key: 1, outcome: 'removed' }], bytes: 10 } satisfies RemoveLeftovers);
+  await flush();
+  assert.equal(page.state().appsFailures[A.path], 'destroyed', 'sa raison reste à l’écran');
+  assert.equal(buttons[1]?.focus.mock.callCount(), 0, 'pas de focus sur la case d’une ligne détruite');
+  assert.ok((buttons[0]?.focus.mock.callCount() ?? 0) >= 1, 'le focus va à « Terminé »');
+
+  // « Chercher à nouveau » : le cœur ne renvoie plus la ligne détruite, elle quitte l'écran avec sa raison.
+  void page.actions.rescanLeftovers();
+  page.of('rescanLeftovers')[0]?.resolve(view(removed([B])));
+  await flush();
+  assert.equal(page.state().appsFailures[A.path], undefined);
+  assert.deepEqual(page.state().appsDestroyed, []);
+});

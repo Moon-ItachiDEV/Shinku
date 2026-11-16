@@ -308,14 +308,28 @@ test('le faux cœur ne renvoie jamais un objet qu’on pourrait modifier de l’
   assert.equal((await answer(backend.appsView())).apps.length, 15);
 });
 
-test('?appsfail=destroyed : Windows supprime pour de bon, les restes demandés ne sont plus là, aucun octet à la corbeille', async () => {
+test('?appsfail=destroyed : la ligne supprimée pour de bon reste dans la vue, un second envoi dit « déjà parti », « Chercher à nouveau » ne la retrouve plus', async () => {
   const backend = demo('?appsflow=leftovers&appsfail=destroyed');
   const before = await answer(backend.appsView());
   assert.equal(before.follow.phase, 'removed');
-  const keys = before.follow.phase === 'removed' ? before.follow.leftovers.map((row) => row.key) : [];
-  const result = await answer(backend.removeLeftovers(keys.slice(0, 1)), 400);
-  assert.deepEqual(result.results, [{ key: keys[0], outcome: 'failed', reason: 'destroyed' }]);
+  const rows = before.follow.phase === 'removed' ? before.follow.leftovers : [];
+  const result = await answer(backend.removeLeftovers([rows[0]?.key ?? 0]), 400);
+  assert.deepEqual(result.results, [{ key: rows[0]?.key, outcome: 'failed', reason: 'destroyed' }]);
   assert.equal(result.bytes, 0);
-  const rest = result.view.follow.phase === 'removed' ? result.view.follow.leftovers : [];
-  assert.equal(rest.length, keys.length - 1, 'l’élément n’est plus dans la vue');
+  const kept = result.view.follow.phase === 'removed' ? result.view.follow.leftovers : [];
+  assert.deepEqual(kept.map((row) => row.path), rows.map((row) => row.path), 'le vrai cœur garde tout ce qui n’est pas parti');
+  // Renvoyée, elle est « déjà partie » et quitte la vue.
+  const again = await answer(backend.removeLeftovers([rows[0]?.key ?? 0]), 400);
+  assert.deepEqual(again.results, [{ key: rows[0]?.key, outcome: 'alreadyGone' }]);
+  const left = again.view.follow.phase === 'removed' ? again.view.follow.leftovers : [];
+  assert.equal(left.length, rows.length - 1);
+
+  // Une recherche neuve ne retrouve pas ce qui a été supprimé.
+  const other = demo('?appsflow=leftovers&appsfail=destroyed');
+  const first = await answer(other.appsView());
+  const paths = first.follow.phase === 'removed' ? first.follow.leftovers.map((row) => row.path) : [];
+  await answer(other.removeLeftovers([0]), 400);
+  const rescanned = await answer(other.rescanLeftovers());
+  const found = rescanned.follow.phase === 'removed' ? rescanned.follow.leftovers.map((row) => row.path) : [];
+  assert.deepEqual(found, paths.slice(1));
 });

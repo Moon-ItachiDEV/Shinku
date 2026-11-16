@@ -1309,7 +1309,8 @@ async function checkStartup(window) {
 
 /** Ce que la page Désinstallation montre : le titre, la phrase, les lignes de la liste, les restes, le pied. */
 function readUninstall(dom) {
-  const text = (element) => (element?.innerText ?? '').replace(/[   ]+/g, ' ').trim();
+  // `innerText` met un saut de ligne entre deux blocs : tout blanc se replie, comme dans `flat` de tests/uninstall.test.ts.
+  const text = (element) => (element?.innerText ?? '').replace(/[\u00a0\u202f\s]+/g, ' ').trim();
   return {
     title: text(document.querySelector(dom.title)),
     lead: text(document.querySelector(dom.lead)),

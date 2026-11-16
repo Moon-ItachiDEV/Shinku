@@ -19,9 +19,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use windows::Win32::Foundation::{
-    E_ABORT, E_ACCESSDENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+    E_ABORT, E_ACCESSDENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, S_OK,
 };
-use windows::Win32::Storage::FileSystem::GetVolumeNameForVolumeMountPointW;
+use windows::Win32::Storage::FileSystem::{
+    GetDiskFreeSpaceExW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
+};
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance, CoInitializeEx,
     CoTaskMemFree, CoUninitialize,
@@ -39,6 +41,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{HRESULT, HSTRING, PCWSTR, Ref, implement};
 
+use super::super::bin_rule::{self, BinSettings};
 use super::super::{RecycleBin, RecycleError, Sent};
 use super::startup::{Hive, open_key};
 use crate::fs::{DirReader, EntryKind, fold_path, same_file_id, to_display_path, to_internal_path};
@@ -347,23 +350,66 @@ const MAX_WEIGHED: u64 = 200_000;
 /// Temps maximal pour peser un dossier.
 const WEIGH_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Le GUID du volume d'un disque (`C:\`), sans accolades.
-fn volume_guid(root: &str) -> Option<String> {
-    let root = HSTRING::from(root);
+/// Le point de montage du volume qui porte ce chemin (`C:\`, ou `C:\Montage\`).
+fn mount_point(path: &str) -> Option<String> {
+    let path = HSTRING::from(path);
+    let mut buffer = [0u16; 1024];
+    // SAFETY: `path` est une chaîne terminée par zéro ; `buffer` est un tampon
+    // local dont la crate transmet la longueur.
+    unsafe { GetVolumePathNameW(&path, &mut buffer) }.ok()?;
+    let end = buffer.iter().position(|&unit| unit == 0)?;
+    String::from_utf16(&buffer[..end]).ok()
+}
+
+/// Le GUID d'un volume, par son point de montage, sans accolades.
+fn volume_guid(mount: &str) -> Option<String> {
+    let mount = HSTRING::from(mount);
     let mut buffer = [0u16; 64];
-    // SAFETY: `root` est une chaîne terminée par zéro ; `buffer` est un tampon
+    // SAFETY: `mount` est une chaîne terminée par zéro ; `buffer` est un tampon
     // local dont Windows ne dépasse pas la taille.
-    unsafe { GetVolumeNameForVolumeMountPointW(&root, &mut buffer) }.ok()?;
+    unsafe { GetVolumeNameForVolumeMountPointW(&mount, &mut buffer) }.ok()?;
     let end = buffer.iter().position(|&unit| unit == 0)?;
     let name = String::from_utf16(&buffer[..end]).ok()?;
     name.split(['{', '}']).nth(1).map(str::to_owned)
 }
 
-/// Une valeur `DWORD` de la corbeille, lue sans rien écrire. Absente ou
-/// illisible : `None`.
-fn bin_dword(key: &str, name: &str) -> Option<u32> {
-    let key = open_key(Hive::Current, key, KEY_READ).ok()??;
+/// La taille totale du volume monté là, si Windows la donne.
+fn volume_total(mount: &str) -> Option<u64> {
+    let mount = HSTRING::from(mount);
+    let mut total = 0u64;
+    // SAFETY: `mount` est une chaîne terminée par zéro ; le seul pointeur donné
+    // désigne une variable locale vivante.
+    unsafe { GetDiskFreeSpaceExW(&mount, None, Some(&raw mut total), None) }.ok()?;
+    Some(total)
+}
+
+/// Une valeur `DWORD` de la corbeille ou de ses stratégies, lue sans rien
+/// écrire. Absente ou illisible : `None`.
+fn bin_dword(hive: Hive, key: &str, name: &str) -> Option<u32> {
+    let key = open_key(hive, key, KEY_READ).ok()??;
     super::apps::dword(&key, name, &mut false).ok()?
+}
+
+/// La clé des stratégies de l'Explorateur (`NoRecycleFiles`).
+const POLICY_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+
+/// Les réglages de la corbeille pour ce volume, lus sans rien écrire.
+fn read_settings(mount: Option<&str>) -> BinSettings {
+    let volume_key =
+        mount.and_then(volume_guid).map(|guid| format!(r"{BIN_KEY}\Volume\{{{guid}}}"));
+    let volume =
+        |name: &str| volume_key.as_deref().and_then(|key| bin_dword(Hive::Current, key, name));
+    // La stratégie du compte, puis celle de la machine : l'une ou l'autre à 1.
+    let policy = [Hive::Current, Hive::Local]
+        .into_iter()
+        .filter_map(|hive| bin_dword(hive, POLICY_KEY, "NoRecycleFiles"))
+        .max();
+    BinSettings {
+        nuke_global: bin_dword(Hive::Current, BIN_KEY, "NukeOnDelete"),
+        nuke_volume: volume("NukeOnDelete"),
+        policy_no_recycle: policy,
+        max_capacity_mib: volume("MaxCapacity"),
+    }
 }
 
 /// Ce que pèse ce qui part, sans suivre aucun lien. `None` si la mesure échoue
@@ -381,6 +427,10 @@ fn weigh(path: &Path) -> Option<u64> {
         let mut inner: Vec<PathBuf> = Vec::new();
         let result = reader.read(&folder, None, &mut |name, meta| {
             seen += 1;
+            // Au-delà des bornes, on ne descend plus et on ne compte plus.
+            if seen > MAX_WEIGHED {
+                return;
+            }
             match meta.kind {
                 EntryKind::File => total = total.saturating_add(meta.size),
                 EntryKind::Dir if meta.is_walkable_dir() => inner.push(folder.join(name)),
@@ -395,30 +445,21 @@ fn weigh(path: &Path) -> Option<u64> {
     Some(total)
 }
 
-/// La garde de taille, **avant** de demander au shell : si les réglages de la
-/// corbeille du compte disent qu'elle supprime au lieu de recevoir
-/// (`NukeOnDelete` à 1, globale ou pour ce volume) ou qu'elle est trop petite
-/// pour ce qui part (`MaxCapacity`, en Mio), l'envoi est refusé. Des valeurs
-/// absentes ou illisibles ne refusent rien : le shell et le compte rendu
-/// ([`Sent`]) restent derrière. Ne fait que lire le registre.
+/// La garde, **avant** de demander au shell (la décision est
+/// [`bin_rule::judge`]) : la corbeille du compte est-elle désactivée
+/// (`NukeOnDelete`, `NoRecycleFiles`), ou trop petite pour ce qui part ? Windows
+/// supprimerait pour de bon, et ne le dirait qu'après. On vérifie d'abord ce
+/// qu'est le chemin (un lien est refusé **avant** toute lecture), puis on le
+/// mesure, toujours, et le volume est celui du chemin, pas celui de son lecteur.
+/// Ne fait que lire.
 fn bin_guard(path: &Path) -> Result<(), RecycleError> {
+    is_folder(path)?;
+    let size = weigh(path)
+        .ok_or_else(|| RecycleError::Failed("la taille de l'élément ne se mesure pas".into()))?;
     let shown = to_display_path(path).to_string_lossy().into_owned();
-    let root: String = shown.chars().take(3).collect();
-    let volume_key = volume_guid(&root).map(|guid| format!(r"{BIN_KEY}\Volume\{{{guid}}}"));
-    let nuke = |key: &str| bin_dword(key, "NukeOnDelete") == Some(1);
-    if nuke(BIN_KEY) || volume_key.as_deref().is_some_and(nuke) {
-        return Err(RecycleError::Refused);
-    }
-    let capacity = volume_key.as_deref().and_then(|key| bin_dword(key, "MaxCapacity"));
-    if let Some(mebibytes) = capacity {
-        let size = weigh(path).ok_or_else(|| {
-            RecycleError::Failed("la taille de l'élément ne se mesure pas".into())
-        })?;
-        if size > u64::from(mebibytes) * 1024 * 1024 {
-            return Err(RecycleError::Refused);
-        }
-    }
-    Ok(())
+    let mount = mount_point(&shown);
+    let settings = read_settings(mount.as_deref());
+    bin_rule::judge(&settings, size, mount.as_deref().and_then(volume_total))
 }
 
 /// Envoie un fichier ou un dossier à la corbeille, **sans** la garde de taille
@@ -504,6 +545,13 @@ fn send(path: &Path, extra: FILEOPERATION_FLAGS, seen: &Rc<Seen>) -> Result<Sent
     performed.map_err(failed)?;
     match seen.post.get() {
         Some((_, result, _)) if result.is_err() => Err(recycle_error(result)),
+        // Seule une réussite franche (`S_OK`) compte comme une suppression
+        // faite. Un autre code de réussite (« sauté », « déjà fait »…) sans
+        // élément de corbeille n'est ni `InBin` ni `Destroyed` : un échec.
+        Some((_, result, _)) if result != S_OK => Err(RecycleError::Failed(format!(
+            "Windows n'a pas dit avoir supprimé ({})",
+            describe(result)
+        ))),
         // Réussi, avec un élément dans la corbeille : restaurable. Réussi sans :
         // Windows a supprimé pour de bon (d'après la documentation de
         // `PostDeleteItem`, l'élément de corbeille est alors nul).
@@ -763,39 +811,47 @@ mod tests {
     }
 
     /// Une valeur `DWORD` de la corbeille du compte, notée avant d'être changée
-    /// et **remise quoi qu'il arrive** (fin normale ou panique).
+    /// et **remise quoi qu'il arrive** (fin normale ou panique). Si l'ancienne
+    /// valeur ne se lit pas pour une autre raison que « absente », l'essai
+    /// s'arrête **avant** de rien changer. Une clé que l'essai a dû créer est
+    /// retirée à la fin si elle est vide.
     struct BinSetting {
         key: String,
         name: &'static str,
         old: Option<u32>,
+        created_key: bool,
+    }
+
+    fn reg(args: &[&str]) -> std::process::Output {
+        std::process::Command::new("reg.exe").args(args).output().expect("reg.exe se lance")
     }
 
     impl BinSetting {
+        /// `key` s'écrit `HKCU\…`.
         fn set(key: &str, name: &'static str, value: u32) -> Self {
-            let reg = |args: &[&str]| {
-                std::process::Command::new("reg.exe").args(args).output().expect("reg.exe se lance")
+            let path = key.strip_prefix(r"HKCU\").expect("une clé du compte");
+            let (old, created_key) = match open_key(Hive::Current, path, KEY_READ) {
+                Ok(Some(opened)) => match super::super::apps::dword(&opened, name, &mut false) {
+                    Ok(old) => (old, false),
+                    Err(error) => {
+                        panic!("{key}\\{name} ne se lit pas ({error}) : rien n'est changé")
+                    }
+                },
+                Ok(None) => (None, true),
+                Err(error) => panic!("{key} ne s'ouvre pas ({error}) : rien n'est changé"),
             };
-            let shown = reg(&["query", key, "/v", name]);
-            let text = String::from_utf8_lossy(&shown.stdout).into_owned();
-            let old = shown.status.success().then(|| {
-                text.split_whitespace()
-                    .last()
-                    .and_then(|hex| u32::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
-            });
-            let old = old.flatten();
             println!("corbeille : {key}\\{name} valait {old:?}, passe à {value}");
             let done =
                 reg(&["add", key, "/v", name, "/t", "REG_DWORD", "/d", &value.to_string(), "/f"]);
             assert!(done.status.success(), "reg add {key} : {done:?}");
-            Self { key: key.to_owned(), name, old }
+            Self { key: key.to_owned(), name, old, created_key }
         }
     }
 
     impl Drop for BinSetting {
         fn drop(&mut self) {
-            let mut command = std::process::Command::new("reg.exe");
-            match self.old {
-                Some(old) => command.args([
+            let result = match self.old {
+                Some(old) => reg(&[
                     "add",
                     &self.key,
                     "/v",
@@ -806,10 +862,25 @@ mod tests {
                     &old.to_string(),
                     "/f",
                 ]),
-                None => command.args(["delete", &self.key, "/v", self.name, "/f"]),
+                None => reg(&["delete", &self.key, "/v", self.name, "/f"]),
             };
-            let result = command.output();
             println!("corbeille : {}\\{} remis à {:?} ({result:?})", self.key, self.name, self.old);
+            if self.created_key {
+                // Une clé créée par l'essai est retirée si elle est vide (aucune
+                // valeur, aucune sous-clé : une seule ligne, son nom).
+                let listing = reg(&["query", &self.key]);
+                let lines = String::from_utf8_lossy(&listing.stdout)
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .count();
+                if listing.status.success() && lines <= 1 {
+                    println!(
+                        "corbeille : {} retirée (vide) : {:?}",
+                        self.key,
+                        reg(&["delete", &self.key, "/f"])
+                    );
+                }
+            }
         }
     }
 
@@ -896,6 +967,40 @@ mod tests {
         let _global = BinSetting::set(&bin, "NukeOnDelete", 1);
         let _volume = BinSetting::set(&volume_key, "NukeOnDelete", 1);
         assert_refused_and_intact(&root, &drive, "corbeille désactivée");
+        // Sans la garde : ce que Windows fait seul est, lui aussi, un refus.
+        let drive_text = HSTRING::from(drive.as_str());
+        let (file, tree) = big_things(&root, "désactivée sans garde");
+        for (label, path) in [("le fichier", &file), ("le dossier", &tree)] {
+            let before = bin_of(&drive_text).map(|bin| bin.items);
+            let owned = path.clone();
+            let (sent, facts) =
+                on_shell_thread(move || recycle_unchecked(&owned, FILEOPERATION_FLAGS(0)))
+                    .expect("le fil du shell");
+            let after = bin_of(&drive_text).map(|bin| bin.items);
+            let from_sink = facts
+                .pre_flags
+                .is_some_and(|flags| flags & TSF_DELETE_RECYCLE_IF_POSSIBLE.0 as u32 == 0);
+            println!(
+                "{} ; le refus vient du {} ; éléments de la corbeille : {before:?} puis {after:?}",
+                fact_line(
+                    &format!("{label}, corbeille désactivée, sans la garde"),
+                    &sent,
+                    &facts,
+                    path.exists()
+                ),
+                if from_sink {
+                    "puits (PreDeleteItem sans le drapeau)"
+                } else {
+                    "code d'erreur du shell"
+                },
+            );
+            assert!(
+                matches!(sent, Err(RecycleError::Refused)) && path.exists() && before == after,
+                "{label} : sans la garde, Windows devait refuser et tout laisser intact ; \
+                 réponse {sent:?}, sur le disque : {}, corbeille : {before:?} puis {after:?}",
+                path.exists()
+            );
+        }
     }
 
     /// Une corbeille **trop petite** (`MaxCapacity` du volume, 1 Mio, pour 3 Mio) :
@@ -935,12 +1040,14 @@ mod tests {
         )
     }
 
-    /// Observe ce que Windows fait **seul** (sans la garde de taille) avec une
-    /// corbeille trop petite : il imprime les faits (`FAIT :`). Une seule chose
-    /// le fait échouer : que la fonction dise « à la corbeille » alors que
-    /// l'élément de corbeille est absent.
+    /// Ce que Windows fait **seul** (sans la garde de taille) avec une corbeille
+    /// trop petite : il imprime les faits (`FAIT :`), et **prouve** ce sur quoi
+    /// repose [`Sent`]. Si l'élément a disparu et que la corbeille n'a rien reçu
+    /// de plus, la fonction DOIT avoir rendu `Destroyed` ; si la corbeille compte
+    /// un élément de plus, elle DOIT avoir rendu `InBin`. Les essais passent un
+    /// par un : le compte est fiable.
     #[test]
-    fn what_windows_does_alone_with_a_too_small_bin_is_observed() {
+    fn what_windows_does_alone_with_a_too_small_bin_is_proved() {
         if std::env::var_os("SHINKU_ESSAI_CORBEILLE").is_none() {
             return;
         }
@@ -958,23 +1065,65 @@ mod tests {
                 on_shell_thread(move || recycle_unchecked(&owned, FILEOPERATION_FLAGS(0)))
                     .expect("le fil du shell");
             let after = bin_of(&drive_text).map(|bin| bin.items);
+            let gone = !path.exists();
             println!(
                 "{} ; éléments de la corbeille : {before:?} puis {after:?}",
                 fact_line(
                     &format!("{label}, corbeille trop petite, sans la garde"),
                     &sent,
                     &facts,
-                    path.exists()
+                    !gone
                 )
             );
-            let in_bin = facts.post.is_some_and(|(_, _, in_bin)| in_bin);
-            assert!(
-                !(matches!(sent, Ok(Sent::InBin)) && !in_bin),
-                "{label} : « à la corbeille » alors que l'élément de corbeille est absent"
-            );
-            if matches!(sent, Ok(Sent::InBin)) {
+            if let (Some(before), Some(after)) = (before, after) {
+                if gone && after == before {
+                    assert!(
+                        matches!(sent, Ok(Sent::Destroyed)),
+                        "{label} : disparu sans entrer dans la corbeille : `Destroyed` \
+                         était attendu, réponse {sent:?}"
+                    );
+                } else if gone && after > before {
+                    assert!(
+                        matches!(sent, Ok(Sent::InBin)),
+                        "{label} : entré dans la corbeille : `InBin` était attendu, \
+                         réponse {sent:?}"
+                    );
+                } else if !gone {
+                    assert!(sent.is_err(), "{label} : encore là, mais réponse {sent:?}");
+                }
+            }
+            if matches!(sent, Ok(Sent::InBin))
+                && std::env::var_os("SHINKU_ESSAI_VIDE_LA_CORBEILLE").is_some()
+            {
                 let _ = empty_bins(vec![drive.clone()]);
             }
+        }
+    }
+
+    /// Une corbeille **assez grande** accepte : avec `MaxCapacity` à 8 (Mio), un
+    /// fichier de 1 Mio part dans la corbeille. Tue la confusion Mio/Kio aussi
+    /// sur le vrai Windows.
+    #[test]
+    fn a_big_enough_recycle_bin_accepts() {
+        if std::env::var_os("SHINKU_ESSAI_CORBEILLE").is_none() {
+            return;
+        }
+        let _serial = bin_lock();
+        let workspace = tempfile::tempdir().unwrap();
+        let root = to_internal_path(workspace.path()).unwrap();
+        let (drive, _bin, volume_key) = bin_keys(&root);
+        let _roomy = BinSetting::set(&volume_key, "MaxCapacity", 8);
+        let file = root.join("un mio.bin");
+        std::fs::write(&file, vec![5u8; 1024 * 1024]).unwrap();
+        let sent = recycle(&file);
+        println!(
+            "essai : 1 Mio dans une corbeille de 8 Mio : {sent:?}, sur le disque : {}",
+            file.exists()
+        );
+        assert!(matches!(sent, Ok(Sent::InBin)), "{sent:?}");
+        assert!(!file.exists());
+        if std::env::var_os("SHINKU_ESSAI_VIDE_LA_CORBEILLE").is_some() {
+            let _ = empty_bins(vec![drive]);
         }
     }
 

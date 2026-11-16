@@ -126,7 +126,12 @@ function parseCompound(text: string): Compound {
         depth += rest[index] === '(' ? 1 : rest[index] === ')' ? -1 : 0;
         index += 1;
       }
-      compound.has.push(parseChain(rest.slice(found[0].length, index - 1)));
+      const inner = parseChain(rest.slice(found[0].length, index - 1));
+      if (inner.length !== 1) {
+        // Un navigateur lit « :has(A B) » dans l'élément ; ce lecteur-ci ne sait lire qu'un composé : il refuse le reste.
+        throw new Error(`sélecteur non pris en charge : « ${text} » (:has ne prend qu'un composé, sans combinateur)`);
+      }
+      compound.has.push(inner);
       rest = rest.slice(index);
       continue;
     } else {

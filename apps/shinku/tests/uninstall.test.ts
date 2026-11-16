@@ -339,6 +339,16 @@ test('« destroyed » : Windows a supprimé pour de bon, la ligne reste sans cas
   assert.ok(!gone.includes('type="checkbox"'), 'plus de case');
   assert.ok(gone.includes('Terminé') && !gone.includes('Mettre à la corbeille'));
   assert.ok(gone.includes('Il ne reste plus rien à te proposer.'));
+
+  // Comme le vrai cœur : la ligne détruite est encore dans la vue. Pas de case, et le pied est « Terminé », pas l'orbe de la corbeille.
+  const kept = page({
+    apps: view(ALL, { follow: removed({ leftovers: [FOLDER] }) }),
+    appsFailures: { [FOLDER.path]: 'destroyed' },
+  });
+  assert.ok(kept.includes(fr.uninstall.leftovers.destroyed));
+  assert.ok(!kept.includes('type="checkbox"'), 'plus de case');
+  assert.ok(kept.includes('Terminé') && !kept.includes('Mettre à la corbeille'), 'le pied est « Terminé »');
+  assert.ok(!/class="orb uorb"[^>]*uninstall-orb/.test(kept));
 });
 
 test('les échecs qui restent : les nouveaux, et ceux d’avant pour les restes qui n’ont pas été retentés', () => {
@@ -708,4 +718,6 @@ test('essai de la fenêtre : les sélecteurs de la page savent lire un sélecteu
   assert.equal(queryAll(page, '.mid').length, 0, 'l’ancienne classe des chemins n’existe plus');
   assert.equal(queryAll(page, '.page.uninstall li:has(input[type="radio"])').length, 0);
   assert.throws(() => queryAll(page, 'li + li'), /non pris en charge/);
+  assert.throws(() => queryAll(page, 'li:has(.page input)'), /non pris en charge/, ':has avec un combinateur est refusé');
+  assert.throws(() => queryAll(page, 'li:has(input, a)'), /non pris en charge|sélecteur/);
 });

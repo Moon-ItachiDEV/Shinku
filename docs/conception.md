@@ -1035,20 +1035,35 @@ du candidat a une écriture longue et, à côté, une écriture courte
 (`GetShortPathNameW`, lecteur fixe vérifié avant l'appel). Une voisine réclame
 le candidat si :
 
-- **3a** une ligne (désinstalleur, icône) le mentionne composant par composant,
-  suivi d'une barre, de la fin du texte, d'un guillemet, d'un blanc ou d'une
-  virgule (aussi avec `.` et `..` résolus par le texte seul, jamais au-dessus du
-  lecteur) ;
+- **3a** une ligne (désinstalleur, icône) le mentionne composant par composant.
+  Après le dernier composant, la mention tient **sauf si** le caractère suivant
+  est une lettre ou un chiffre : fin de texte, barre, guillemet, apostrophe, `;`,
+  `)`, `=`, `|`, `:`, virgule, blanc, point, tout réclame (volontairement large :
+  `-Target 'D:\…\Hades'` réclame `Hades`, `…\Hades2\x.exe` non). Le texte est
+  aussi lu avec `.` et `..` résolus par le texte seul, jamais au-dessus du
+  lecteur ;
 - **3b** son emplacement est le candidat, dedans, ou le contient (sauf si le
   garde refuse ce préfixe comme racine) ;
 - **3c** le candidat n'a pas d'écriture courte connue et un texte de voisine
   porte un nom court (`~` suivi d'un chiffre) : dans le doute, ce candidat seul
   est écarté.
 
+**Une seule mise en forme, des deux côtés** (candidat et voisines), avant toute
+comparaison : `/` devient `\`, un préfixe `\\?\` ou `\\.\` d'un emplacement
+est retiré, une suite de barres n'en fait qu'une, `.` et `..` sont résolus. Les
+points et espaces **finaux** d'un composant sont ignorés (Windows les ignore).
+Le pliage est celui de Windows, caractère par caractère (la majuscule simple,
+sinon le caractère tel quel : `σ` et `ς` se valent, `ß` reste `ß`). Un `%` dans
+un emplacement n'écarte rien (`100% Jus` est un vrai nom).
+
 Une voisine orpheline, une icône absente, un lecteur réseau débranché ne
 rendent donc rien illisible. **Les voisines ne sont illisibles que si une place
 du registre l'est** (illisible, incomplète, plus de 4096 inscriptions) : la page
 le dit (`complete: false`), rien n'est proposé ni retiré.
+
+Limite assumée de sûreté : **une seule sous-clé illisible, ou une seule valeur
+de plus de 32 Kio, dans l'une des quatre places suffit à ne rien proposer sur
+ce PC** : on ne sait pas ce que cette inscription réclame.
 
 Limites assumées : une voisine inscrite à travers une jonction ou un `subst`
 n'est comparée que par son texte ; une app Windows Installer sans emplacement
@@ -1065,7 +1080,8 @@ fermée dans les deux sens. Plus de 64 clés demandées : tout est refusé. À c
 est **revérifié à l'instant** : il existe, aucun lien, le garde l'accepte, aucune
 voisine ne le réclame, aucune app de la même famille n'est apparue, et un
 raccourci mène encore dans l'emplacement et nulle part. Seule la corbeille est
-utilisée, jamais une suppression définitive ; si elle refuse, l'élément reste et
+demandée ; une garde lit d'abord les réglages (voir plus bas) et, si Windows
+supprime quand même pour de bon, la page le dit (`destroyed`) ; si elle refuse, l'élément reste et
 la page le dit (`inUse`, `refused`, `partial`, `destroyed`). Un dossier entre à la corbeille
 comme **un seul élément** (`FOF_ALLOWUNDO`, sans suivre les liens), jamais fichier
 par fichier ; si Windows répond oui mais que le chemin est encore là, c'est
@@ -1074,15 +1090,36 @@ par fichier ; si Windows répond oui mais que le chemin est encore là, c'est
 **La corbeille a-t-elle vraiment reçu l'élément ?** `shell::recycle` rend
 `Sent::InBin` ou `Sent::Destroyed` : le puits de l'opération note, à
 `PostDeleteItem`, si Windows a donné un élément de corbeille (absent : la
-suppression est définitive). `Destroyed` devient `failed/destroyed`, sans octet
-compté. Avant de demander à Windows, un garde en lecture seule refuse si la
-corbeille est désactivée (`NukeOnDelete`, global ou du volume) ou si l'élément
-dépasse `MaxCapacity` (en Mo) du volume (clé `…\BitBucket\Volume\{GUID}`).
+suppression est définitive). Seule une réussite franche (`S_OK`) compte ; un
+autre code de réussite sans élément est un échec. `Destroyed` est un **constat
+après coup**, pas une barrière : le puits ne peut rien arrêter (le vrai Windows
+l'a montré : `PreDeleteItem` porte le drapeau « corbeille si possible » même
+quand elle est trop petite). Côté restes, après `Destroyed`, le disque tranche :
+absent avec certitude, `failed/destroyed` (sans octet compté) ; encore là,
+`failed` sans raison.
+
+**La garde, avant le shell** (la décision est une fonction pure, `bin_rule`,
+essayée sur toutes les machines). Elle lit, sans rien écrire : `NukeOnDelete`
+(global et du volume), la stratégie `NoRecycleFiles` (compte puis machine) et
+`MaxCapacity` du volume (en Mio). Le volume est celui **du chemin** (point de
+montage par `GetVolumePathNameW`, puis son GUID), pas celui de son lecteur.
+Règles : un `NukeOnDelete` ou `NoRecycleFiles` non nul refuse ; capacité connue :
+refus au-delà de **90 %** de `MaxCapacity` ; capacité inconnue : refus au-delà de
+**5 %** de la taille du volume, et refus si cette taille est inconnue aussi.
+La taille est toujours mesurée, après avoir vérifié que le chemin n'est pas un
+lien (la garde ne lit jamais la cible d'une jonction).
+
 Les essais sur la vraie corbeille ne tournent qu'en série, derrière
-`SHINKU_ESSAI_CORBEILLE`, et remettent toujours les réglages ; ce que fait
-Windows seul avec une corbeille trop petite, et `FOF_WANTNUKEWARNING` (dans un
-processus fils, 30 s au plus), sont **observés** et imprimés (`FAIT :`), sans
-faire échouer.
+`SHINKU_ESSAI_CORBEILLE`, et remettent toujours les réglages (ils s'arrêtent
+avant de rien changer si une valeur ne se lit pas ; une clé créée par l'essai
+est retirée si elle est vide). Rien ne vide la corbeille de la machine sans
+`SHINKU_ESSAI_VIDE_LA_CORBEILLE`. Ils **prouvent** : la garde refuse (corbeille
+désactivée, trop petite), sans la garde la corbeille désactivée est refusée par
+Windows, une corbeille de 8 Mio reçoit 1 Mio, et, sans la garde avec une
+corbeille trop petite, « disparu sans que la corbeille ait reçu quoi que ce soit
+» doit avoir donné `Destroyed` et « un élément de plus » `InBin`.
+`FOF_WANTNUKEWARNING` (processus fils, 30 s au plus) reste **observé** et
+imprimé (`FAIT :`).
 
 ### Limites connues
 
@@ -1111,20 +1148,22 @@ faire échouer.
   sous `HKLM` puis sous `HKCU`, lancée depuis la page.
 - Une corbeille pleine abandonne ses éléments les plus anciens (réglage de
   Windows).
+- **Le grand vide** (`Environment::recycle`, côté nettoyage) rend encore `Ok(())`
+  quand Windows a supprimé pour de bon : il peut annoncer « à la corbeille » ce
+  qui a été détruit. La garde de taille le rend rare, pas impossible. À traiter
+  par le chantier du nettoyage (`clean/` n'est pas touché ici).
+- La garde ne voit que des réglages : un cas qu'elle ne connaît pas se voit
+  seulement après coup (`destroyed`).
 - Une inscription du compte peut désigner n'importe quel programme (comme dans
   Windows) : Shinku ne lance qu'après un clic et une confirmation, sans droits de
   plus que la personne.
 - Les apps du Store (MSIX) ne sont pas listées.
-- Ce que les essais ne prouvent pas : le dossier de la corbeille réelle
-  (`the_real_recycle_bin_receives_a_whole_folder_or_nothing`, et le refus d'une
-  corbeille désactivée ou trop petite,
-  `a_disabled_recycle_bin_refuses_and_never_deletes` et
-  `a_too_small_recycle_bin_is_refused_by_the_guard`, qui posent
-  `NukeOnDelete` et `MaxCapacity` du compte et les remet ; tous derrière
-  `SHINKU_ESSAI_CORBEILLE`, donc seulement sur la machine jetable de la CI.
-  Où Windows 11 range ce réglage pour un volume n'est pas établi avec
-  certitude : l'essai pose la valeur globale et celle du volume, et dit en
-  clair s'il n'a pas pu conclure), `ShellExecuteExW` et sa fenêtre d'élévation, et les
+- Ce que les essais ne prouvent pas : l'essai sur la corbeille réelle
+  (`the_real_recycle_bin_receives_a_whole_folder_or_nothing`, les essais de
+  refus et de capacité décrits plus haut, tous derrière `SHINKU_ESSAI_CORBEILLE`)
+  ne tourne que sur la machine jetable de la CI. Les valeurs que Windows 11 lit
+  vraiment pour un volume (`NukeOnDelete`, `MaxCapacity`) se déduisent des
+  essais, pas d'une documentation. `ShellExecuteExW` et sa fenêtre d'élévation, et les
   scripts PowerShell ne tournent que sur un vrai Windows (intégration continue,
   `scripts/essai-desinstallation.ps1`).
 

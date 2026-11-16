@@ -23,6 +23,7 @@ use crate::model::Timestamp;
 use crate::startup::host::StartupHost;
 
 pub mod agent;
+mod bin_rule;
 
 #[cfg(unix)]
 mod unix;
@@ -158,9 +159,13 @@ pub struct RecycleBin {
 /// moitié.
 #[derive(Debug)]
 pub enum RecycleError {
-    /// La corbeille ne peut pas le recevoir : elle est désactivée, trop petite
-    /// pour lui, ou son disque n'en a pas. Windows l'aurait supprimé
-    /// définitivement : Shinku a refusé.
+    /// La corbeille ne peut pas le recevoir, **d'après ses réglages lus avant
+    /// l'envoi** (la garde : désactivée, stratégie `NoRecycleFiles`, trop petite
+    /// pour lui avec une marge de 10 %, ou sans capacité connue et plus grand que
+    /// 5 % du volume), ou, à défaut, d'après ce que le shell a dit en route.
+    /// Windows l'aurait supprimé définitivement : Shinku a refusé, et l'élément
+    /// est resté en entier. La garde ne voit que des réglages : si Windows
+    /// supprime quand même pour de bon, on ne le sait qu'après ([`Sent::Destroyed`]).
     Refused,
     /// Cette machine n'a pas de corbeille que Shinku sache utiliser.
     Unavailable,
@@ -186,13 +191,16 @@ impl fmt::Display for RecycleError {
 
 impl std::error::Error for RecycleError {}
 
-/// Où est parti un élément que Windows a accepté de supprimer.
+/// Où est parti un élément que Windows a accepté de supprimer. Seule une
+/// réussite franche du shell (`S_OK`) donne l'un ou l'autre ; tout le reste est
+/// une erreur.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sent {
     /// Dans la corbeille : l'élément y est, restaurable.
     InBin,
     /// Windows l'a supprimé pour de bon : il n'est pas dans la corbeille (le
-    /// shell n'a rendu aucun élément de corbeille).
+    /// shell n'a rendu aucun élément de corbeille). C'est un **constat après
+    /// coup**, pas une barrière : la barrière est la garde, avant l'envoi.
     Destroyed,
 }
 
@@ -244,14 +252,16 @@ pub trait Environment: Send + Sync + fmt::Debug {
     /// rien n'en soit parti. Un lien (jonction, lien symbolique) n'est jamais
     /// envoyé, ni un dossier dont le chemin en traverse un.
     ///
-    /// Ne supprime jamais définitivement, **par conception** : Shinku refuse
-    /// avant chaque suppression qui n'est pas un envoi à la corbeille, et si
-    /// elle ne peut pas recevoir l'élément, il reste à sa place et l'appel
-    /// échoue. Ce que l'essai de la vraie corbeille (désactivée ou trop petite,
-    /// `SHINKU_ESSAI_CORBEILLE`, machine jetable) prouve selon son issue : un
-    /// refus avec tout intact prouve la barrière ; un élément entré dans la
-    /// corbeille ne prouve rien (Windows a ignoré le réglage, « non
-    /// concluant ») ; un élément disparu hors de la corbeille est le défaut.
+    /// Ce qui est garanti : la garde de la corbeille (réglages lus avant
+    /// l'envoi, voir [`RecycleError::Refused`]) refuse ce que la corbeille ne
+    /// recevrait pas, et l'élément reste alors à sa place. **Ce qui ne l'est
+    /// pas** : si Windows supprime quand même pour de bon (réglage que la garde
+    /// ne voit pas), `Ok(())` est rendu ici comme pour un envoi réussi, car ce
+    /// trait ne distingue pas [`Sent::Destroyed`] de [`Sent::InBin`]. Limite
+    /// connue, à traiter dans le chantier du nettoyage ; l'appelant qui doit le
+    /// savoir (le module « Désinstallation ») passe par l'hôte, qui le dit. Les
+    /// essais de la vraie corbeille (`SHINKU_ESSAI_CORBEILLE`, machine jetable)
+    /// prouvent la garde, et ce que Windows fait seul sans elle.
     fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
         let _ = path;
         Err(RecycleError::Unavailable)

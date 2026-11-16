@@ -30,13 +30,25 @@
 //! écritures de celui de même rang. Les `.` et `..` d'un texte sont résolus
 //! **par le texte seul** (jamais plus haut que le lecteur).
 //!
+//! **Une seule mise en forme, des deux côtés** (candidat et voisines), avant
+//! toute comparaison : `/` devient `\`, un préfixe `\\?\` ou `\\.\` d'un
+//! emplacement est retiré, une suite de barres n'en fait qu'une, `.` et `..` sont
+//! résolus par le texte. Les points et espaces **finaux** d'un composant sont
+//! ignorés (Windows les ignore). Le pliage est celui de Windows, caractère par
+//! caractère : la majuscule simple, sinon le caractère tel quel (`σ` et `ς` se
+//! valent, `ß` reste `ß`). Un `%` dans un emplacement n'est pas un défaut : un
+//! vrai dossier peut s'appeler `100% Jus`. Seule compte la forme `X:\…` après
+//! développement.
+//!
 //! Une voisine réclame un candidat si :
 //!
 //! 1. **une ligne le mentionne** : le texte de son désinstalleur ou de son icône
 //!    (tel quel, et avec `.` et `..` résolus) porte, quelque part, le chemin du
-//!    candidat composant par composant, suivi d'une barre, de la fin du texte,
-//!    d'un guillemet, d'un blanc ou d'une virgule. `/dir="C:\…\Hades"` réclame
-//!    `Hades` ; `…\Foo2\x.exe` ne réclame pas `…\Foo` ;
+//!    candidat composant par composant. Après le dernier composant, la mention
+//!    tient **sauf si** le caractère suivant est une lettre ou un chiffre : fin
+//!    de texte, barre, guillemet, apostrophe, `;`, `)`, `=`, `|`, `:`, virgule,
+//!    blanc ou point réclament (volontairement large). `-Target 'C:\…\Hades'`
+//!    réclame `Hades` ; `…\Hades2\x.exe` ne réclame pas `…\Hades` ;
 //! 2. **son emplacement** est le candidat, ou dedans, ou le contient (sauf si
 //!    le garde refuse cet emplacement comme racine : une inscription mal écrite
 //!    ne doit pas éteindre tous les restes du PC) ;
@@ -49,7 +61,7 @@
 //! emplacement ni icône ne protège aucun dossier.
 
 use crate::apps::host::{AppsHost, RawRegistration};
-use crate::apps::paths::{is_absolute, norm};
+use crate::apps::paths::is_absolute;
 use crate::apps::{Place, names};
 
 /// Ce que Shinku retient d'une voisine : des textes, rien d'autre.
@@ -71,6 +83,42 @@ struct Neighbour {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Neighbours {
     list: Vec<Neighbour>,
+}
+
+/// La mise en forme commune : `/` devient `\`, un préfixe `\\?\` ou `\\.\`
+/// (au début seulement) est retiré, une suite de barres n'en fait qu'une.
+fn shape(text: &str) -> String {
+    let slashed = text.replace('/', "\\");
+    let bare =
+        slashed.strip_prefix(r"\\?\").or_else(|| slashed.strip_prefix(r"\\.\")).unwrap_or(&slashed);
+    let mut out = String::with_capacity(bare.len());
+    for c in bare.chars() {
+        if !(c == '\\' && out.ends_with('\\')) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Le pliage de Windows : caractère par caractère, la majuscule simple (si
+/// `to_uppercase` rend exactement un caractère), sinon le caractère tel quel.
+fn fold(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(one), None) => one,
+                _ => c,
+            }
+        })
+        .collect()
+}
+
+/// Un composant sans ses points et espaces finaux (Windows les ignore) ; le
+/// composant lui-même s'il ne reste rien.
+fn trim_part(part: &str) -> &str {
+    let trimmed = part.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() { part } else { trimmed }
 }
 
 /// Vrai si le texte porte un nom court : `~` suivi d'un chiffre.
@@ -106,15 +154,14 @@ fn neighbour(raw: &RawRegistration, host: &dyn AppsHost) -> Neighbour {
     let short = [&location_text, &uninstall, &icon].iter().any(|text| has_short_name(text));
 
     let trimmed = location_text.trim_matches(|c: char| c.is_whitespace() || c == '"');
-    let drive = trimmed.strip_prefix(r"\\?\").unwrap_or(trimmed);
-    let drive = drive.trim_end_matches(['\\', '/']);
-    let location = (!location_text.contains('%') && is_absolute(drive))
-        .then(|| norm(&resolve_dots(&drive.replace('/', "\\"))))
-        .filter(|text| is_absolute(text));
+    let drive = shape(trimmed);
+    let drive = drive.trim_end_matches('\\');
+    let location =
+        is_absolute(drive).then(|| fold(&resolve_dots(drive))).filter(|text| is_absolute(text));
 
     let mut lines = Vec::new();
     for text in [&uninstall, &icon] {
-        let folded = norm(text.trim());
+        let folded = fold(&shape(text.trim()));
         let resolved = resolve_dots(&folded);
         if resolved != folded {
             lines.push(resolved);
@@ -145,37 +192,47 @@ pub fn read(host: &dyn AppsHost) -> Option<Neighbours> {
 
 /// Les écritures admises de chaque composant d'un candidat.
 struct Writings {
-    /// Par rang : l'écriture longue, et la courte si elle est connue.
+    /// Le candidat mis en forme, **sans pliage**, par composant (pour le garde).
+    original: Vec<String>,
+    /// Par rang : l'écriture longue, et la courte si elle est connue (pliées,
+    /// sans points ni espaces finaux).
     parts: Vec<Vec<String>>,
     /// Vrai si l'écriture courte est connue (même nombre de composants).
     short_known: bool,
 }
 
+/// Les composants d'un chemin mis en forme, sans barre finale.
+fn components(path: &str) -> Vec<String> {
+    shape(path).trim_end_matches('\\').split('\\').map(str::to_owned).collect()
+}
+
 impl Writings {
     fn of(candidate: &str, host: &dyn AppsHost) -> Self {
-        let long: Vec<String> = norm(candidate).split('\\').map(str::to_owned).collect();
+        let original = components(candidate);
         let short: Option<Vec<String>> = host
             .short_path(candidate)
-            .map(|short| norm(&short).split('\\').map(str::to_owned).collect())
-            .filter(|short: &Vec<String>| short.len() == long.len());
+            .map(|short| components(&short))
+            .filter(|short| short.len() == original.len());
         let short_known = short.is_some();
-        let parts = long
+        let parts = original
             .iter()
             .enumerate()
             .map(|(rank, part)| {
-                let mut writings = vec![part.clone()];
-                if let Some(other) = short.as_ref().map(|short| &short[rank])
-                    && other != part
+                let own = fold(trim_part(part));
+                let mut writings = vec![own.clone()];
+                if let Some(other) = short.as_ref().map(|short| fold(trim_part(&short[rank])))
+                    && other != own
                 {
-                    writings.push(other.clone());
+                    writings.push(other);
                 }
                 writings
             })
             .collect();
-        Self { parts, short_known }
+        Self { original, parts, short_known }
     }
 
-    /// Ce texte mentionne-t-il le candidat, composant par composant ?
+    /// Ce texte (déjà mis en forme et plié) mentionne-t-il le candidat,
+    /// composant par composant ?
     fn mentioned_in(&self, text: &str) -> bool {
         let Some(drive) = self.parts.first().and_then(|writings| writings.first()) else {
             return false;
@@ -187,28 +244,29 @@ impl Writings {
     fn walk(&self, mut rest: &str) -> bool {
         for (rank, writings) in self.parts.iter().enumerate() {
             let last = rank + 1 == self.parts.len();
-            let hit = writings.iter().find(|writing| {
-                rest.starts_with(writing.as_str()) && {
-                    let after = rest[writing.len()..].chars().next();
-                    if last {
-                        after.is_none_or(|c| matches!(c, '\\' | '"' | ',') || c.is_whitespace())
-                    } else {
-                        after == Some('\\')
-                    }
+            let hit = writings.iter().find_map(|writing| {
+                let after = rest.strip_prefix(writing.as_str())?;
+                if last {
+                    // Tout sauf une lettre ou un chiffre : réclamé.
+                    return after.chars().next().is_none_or(|c| !c.is_alphanumeric()).then_some("");
                 }
+                // Les points et espaces finaux sont ignorés, puis une barre.
+                let after = after.trim_start_matches(['.', ' ']);
+                after.strip_prefix('\\')
             });
-            let Some(writing) = hit else { return false };
-            rest = &rest[(writing.len() + usize::from(!last)).min(rest.len())..];
+            let Some(next) = hit else { return false };
+            rest = next;
         }
         true
     }
 
-    /// Cet emplacement (déjà plié, de la forme `x:\…`) est-il le candidat, ou
-    /// dedans, ou le contient-il ? `Some(true)` : égal ou dedans ; `Some(false)` :
-    /// il contient le candidat, avec le nombre de composants en commun ; `None` :
-    /// sans rapport.
+    /// Cet emplacement (déjà mis en forme et plié, de la forme `x:\…`) est-il le
+    /// candidat, ou dedans, ou le contient-il ? `Some(n)` : ses `n` composants
+    /// valent ceux du candidat sur la longueur commune (`n` au moins égal à ceux
+    /// du candidat : égal ou dedans ; moins : il le contient) ; `None` : sans
+    /// rapport.
     fn compare(&self, location: &str) -> Option<usize> {
-        let parts: Vec<&str> = location.split('\\').collect();
+        let parts: Vec<&str> = location.split('\\').map(trim_part).collect();
         let common = parts.len().min(self.parts.len());
         let same =
             (0..common).all(|rank| self.parts[rank].iter().any(|writing| writing == parts[rank]));
@@ -233,8 +291,7 @@ impl Neighbours {
     /// courte.
     pub fn claims(&self, candidate: &str, host: &dyn AppsHost) -> bool {
         let writings = Writings::of(candidate, host);
-        let original: Vec<&str> =
-            candidate.trim_end_matches(['\\', '/']).split(['\\', '/']).collect();
+        let original = &writings.original;
         self.list.iter().any(|neighbour| {
             // 3. Pas d'écriture courte connue, et une voisine en nom court.
             if !writings.short_known && neighbour.short {
@@ -259,4 +316,10 @@ impl Neighbours {
             host.root_allowed(&prefix)
         })
     }
+}
+
+/// Le pliage, pour les essais.
+#[cfg(test)]
+pub(super) fn tests_fold(text: &str) -> String {
+    fold(text)
 }

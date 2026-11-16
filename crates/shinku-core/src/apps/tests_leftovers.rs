@@ -394,6 +394,45 @@ fn through_the_desk_the_removed_phase_lists_and_shrinks() {
     let _ = (PROFILE, Scope::Account);
 }
 
+#[test]
+fn a_failure_stays_in_the_list_and_only_what_left_goes_out() {
+    use crate::apps::view::FollowView;
+    for how in [FakeRecycle::Locked, FakeRecycle::Destroys, FakeRecycle::LeavesSome] {
+        let host = Arc::new(FakeAppsHost::new());
+        host.add_file(r"D:\Jeux\Hades\unins000.exe", 10);
+        host.add_file(&format!(r"{ROAMING}\Hades\save.sav"), 40);
+        host.add_registration(
+            Place::Machine64,
+            RawRegistration {
+                install_location: Some(r"D:\Jeux\Hades".into()),
+                ..reg("Hades", "Hades", r#""D:\Jeux\Hades\unins000.exe""#)
+            },
+        );
+        let desk = AppsDesk::new(host.clone());
+        desk.start("m6:Hades").expect("lancé");
+        host.remove_registration(Place::Machine64, "Hades");
+        let _ = desk.view();
+        host.advance(std::time::Duration::from_secs(3));
+        let _ = desk.view();
+        host.advance(std::time::Duration::from_secs(3));
+        let FollowView::Removed { leftovers, .. } = desk.view().follow else {
+            panic!("la phase « removed » était attendue");
+        };
+        let failing = leftovers
+            .iter()
+            .find(|left| left.path.ends_with("Hades") && left.path.starts_with("D:"));
+        let failing = failing.expect("le dossier de l'app");
+        let other = leftovers.iter().find(|left| left.key != failing.key).expect("l'autre reste");
+        host.fail_recycle(&failing.path, how);
+        let done = desk.remove(&[failing.key, other.key], &|| false).expect("rendu");
+        let FollowView::Removed { leftovers: rest, .. } = done.view.follow else {
+            panic!("la phase « removed » était attendue");
+        };
+        let keys: Vec<u32> = rest.iter().map(|left| left.key).collect();
+        assert_eq!(keys, [failing.key], "{how:?} : l'échec reste, ce qui est parti s'en va");
+    }
+}
+
 // --- Les règles de sûreté, une par une (chacune tuait une mutation) ---
 
 /// Une voisine installée, avec ce qu'on veut qu'elle réclame.
@@ -598,4 +637,15 @@ fn what_windows_destroyed_is_never_counted_as_sent_to_the_recycle_bin() {
     assert_eq!(bytes, 0, "pas un octet à la corbeille");
     assert!(host.recycled().is_empty());
     assert_eq!(serde_json::to_value(RemoveReason::Destroyed).unwrap(), "destroyed");
+}
+
+#[test]
+fn a_destroyed_answer_is_checked_against_the_disk() {
+    let (host, snapshot) = hades();
+    let found = find(&host, &snapshot);
+    host.fail_recycle(r"D:\Jeux\Hades", FakeRecycle::SaysDestroyed);
+    let (results, bytes) = remove(host.as_ref(), &snapshot, &found.leftovers, &[0]);
+    assert_eq!(results[0].outcome, RemoveOutcome::Failed);
+    assert_eq!(results[0].reason, None, "le chemin est encore là : pas de raison `destroyed`");
+    assert_eq!(bytes, 0);
 }

@@ -260,3 +260,133 @@ fn only_a_tilde_and_a_digit_make_a_short_name() {
     neighbour(&host, "t", "Autre", |raw| raw.display_icon = Some(r"E:\Tilde~a\i.ico".into()));
     assert!(hades_folder(&find(&host, &snapshot)), "`~a` n'est pas un nom court");
 }
+
+/// Vrai si l'emplacement d'une voisine laisse le dossier de Hades proposé.
+fn location_leaves_hades(location: &str) -> bool {
+    let (host, snapshot) = hades();
+    neighbour(&host, "loc", "Outil", |raw| raw.install_location = Some(location.into()));
+    let found = find(&host, &snapshot);
+    assert!(found.complete, "{location} : le PC reste lisible");
+    hades_folder(&found)
+}
+
+#[test]
+fn a_location_is_put_in_the_same_form_as_windows_reads_it() {
+    for location in [
+        r"D:\Jeux\\Hades\Dlc",
+        r"D:\\Jeux\Hades\Dlc",
+        r"D:\Jeux/\Hades\Dlc",
+        r"D:\Jeux\Hades.\Dlc",
+        r"D:\Jeux\Hades.",
+        r"D:\Jeux\Hades ",
+        r"D:\Jeux\Hades. .\Dlc",
+        r"\\.\D:\Jeux\Hades\Dlc",
+        r"\\?\D:\Jeux\\Hades",
+        r"D:\Jeux\Hades\100% Mod",
+        r"D:\Jeux\Hades\%INCONNUE%",
+    ] {
+        assert!(!location_leaves_hades(location), "{location} doit réclamer Hades");
+    }
+    // Un `%` dans un vrai nom de dossier n'écarte pas l'emplacement.
+    assert!(!location_leaves_hades(r"D:\Jeux\Hades\100% Jus"));
+    for location in [r"D:\Jeux\Hades2\Dlc", r"D:\Jeux\Hades.old\Dlc", r"D:\Jeux\.Hades\Dlc"] {
+        assert!(location_leaves_hades(location), "{location} ne doit pas réclamer Hades");
+    }
+}
+
+#[test]
+fn a_line_is_put_in_the_same_form_as_windows_reads_it() {
+    for line in [
+        r"D:\Jeux\\Hades\u.exe",
+        r"D:\\Jeux\Hades\u.exe",
+        r"D:\Jeux/\Hades\u.exe",
+        r"D:\Jeux.\Hades\u.exe",
+        r"D:\Jeux \Hades\u.exe",
+        r"D:\Jeux\Hades.\u.exe",
+        r"D:\Jeux\Hades \u.exe",
+        r"d:/jeux/hades/u.exe",
+        r"\\?\D:\Jeux\Hades\u.exe",
+        r"\\.\D:\Jeux\Hades\u.exe",
+    ] {
+        assert!(!with_line(line).1, "{line} doit réclamer Hades");
+    }
+}
+
+#[test]
+fn a_mention_holds_unless_a_letter_or_a_digit_follows() {
+    for line in [
+        r"x.exe -Target 'D:\Jeux\Hades'",
+        r"x.exe /dirs=D:\Jeux\Hades;E:\x",
+        r"x.exe (D:\Jeux\Hades)",
+        r"D:\Jeux\Hades=1",
+        r"D:\Jeux\Hades|x",
+        r"D:\Jeux\Hades:flux",
+        r"x.exe D:\Jeux\Hades.",
+        r"x.exe D:\Jeux\Hades>log",
+        r"x.exe D:\Jeux\Hades;",
+    ] {
+        assert!(!with_line(line).1, "{line} doit réclamer Hades");
+    }
+    for line in [r"D:\Jeux\Hades2\x.exe", r"D:\Jeux\HadesII\x.exe", r"x.exe D:\Jeux\Hadesé"] {
+        assert!(with_line(line).1, "{line} ne doit pas réclamer Hades");
+    }
+}
+
+#[test]
+fn names_are_folded_one_character_at_a_time_like_windows() {
+    let host = Arc::new(FakeAppsHost::new());
+    host.add_file(r"D:\Jeux\ΟΔΟΣ\unins000.exe", 10);
+    let raw = RawRegistration {
+        install_location: Some(r"D:\Jeux\ΟΔΟΣ".into()),
+        ..reg("Odos", "Odos", r#""D:\Jeux\ΟΔΟΣ\unins000.exe""#)
+    };
+    let snapshot = snapshot_of(&host, raw, Source::Machine64);
+    // Le sigma final (ς) et le sigma (σ) sont la même lettre pour Windows.
+    neighbour(&host, "grec", "Outil", |raw| {
+        raw.install_location = Some(r"D:\Jeux\οδοσ\Dlc".into())
+    });
+    let found = find(&host, &snapshot);
+    assert!(found.complete);
+    assert!(!paths(&found).contains(&r"D:\Jeux\ΟΔΟΣ".to_owned()));
+    // `ß` reste `ß` : ce n'est pas `SS`.
+    assert_eq!(super::claims::tests_fold("ß"), "ß");
+    assert_eq!(super::claims::tests_fold("οδος"), super::claims::tests_fold("ΟΔΟΣ"));
+}
+
+#[test]
+fn a_short_name_in_the_location_of_a_neighbour_drops_a_candidate_without_short_writing() {
+    let (host, snapshot) = hades();
+    host.set_short_path(HADES, None);
+    neighbour(&host, "court", "Outil", |raw| {
+        raw.install_location = Some(r"D:\JEUX~1\Hades\Dlc".into())
+    });
+    let found = find(&host, &snapshot);
+    assert!(found.complete && !hades_folder(&found));
+}
+
+#[test]
+fn the_guard_receives_the_prefix_of_the_length_of_the_location() {
+    // `D:\Jeux` est refusé comme racine : un emplacement `D:\Jeux` ne réclame rien.
+    let (host, snapshot) = hades();
+    host.protect_itself(r"D:\Jeux");
+    neighbour(&host, "gros", "Gros", |raw| raw.install_location = Some(r"D:\Jeux".into()));
+    assert!(hades_folder(&find(&host, &snapshot)));
+    // Un parent non protégé réclame ; un autre préfixe protégé n'y change rien.
+    let (host, snapshot) = hades();
+    host.protect_itself(r"D:\Jeux\Hades\Dlc");
+    neighbour(&host, "gros", "Gros", |raw| raw.install_location = Some(r"D:\Jeux".into()));
+    assert!(!hades_folder(&find(&host, &snapshot)));
+}
+
+#[test]
+fn the_limit_of_registrations_is_exact() {
+    let fill = |count: usize| {
+        let host = FakeAppsHost::new();
+        for number in 0..count {
+            host.add_registration(Place::Machine32, reg(&format!("k{number}"), "Autre", "x.exe"));
+        }
+        claims::read(&host).is_some()
+    };
+    assert!(fill(crate::apps::MAX_KEYS), "MAX_KEYS inscriptions : lisible");
+    assert!(!fill(crate::apps::MAX_KEYS + 1), "une de plus : illisible");
+}

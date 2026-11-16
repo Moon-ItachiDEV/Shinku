@@ -62,6 +62,8 @@ pub enum FakeRecycle {
     LeavesSome,
     /// Windows supprime pour de bon : rien n'entre dans la corbeille.
     Destroys,
+    /// Elle dit « supprimé pour de bon », mais le chemin est encore là.
+    SaysDestroyed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -415,14 +417,12 @@ impl FakeAppsHost {
         self.state().recycled.clone()
     }
 
-    /// La forme courte de ce chemin (`None` : Windows ne la donne pas). Sans
-    /// table, le chemin est rendu tel quel (volume sans noms courts).
+    /// La forme courte de ce chemin (`None` : Windows ne la donne pas).
     pub fn set_short_path(&self, path: &str, short: Option<&str>) {
         self.state().short_paths.insert(norm(path), short.map(str::to_owned));
     }
 
-    /// Combien de fois la machine a été **interrogée sur le disque** (existence,
-    /// lecteur, dossier, mesure, forme courte) : lire les voisines n'en fait aucun.
+    /// Combien de fois le disque a été **interrogé** : lire les voisines n'en fait aucun.
     pub fn disk_calls(&self) -> usize {
         self.state().disk_calls
     }
@@ -649,6 +649,7 @@ impl AppsHost for FakeAppsHost {
                 state.recycled.push(path.to_owned());
                 return Ok(Sent::InBin);
             }
+            Some(FakeRecycle::SaysDestroyed) => return Ok(Sent::Destroyed),
             Some(FakeRecycle::Destroys) => {
                 state.nodes.retain(|name, _| *name != key && !is_inside(name, &key));
                 return Ok(Sent::Destroyed);

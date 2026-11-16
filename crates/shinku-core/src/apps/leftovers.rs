@@ -452,9 +452,13 @@ pub fn remove(
             continue;
         }
         match host.recycle(path) {
-            // Windows a supprimé pour de bon : jamais compté comme envoyé à la corbeille.
+            // Windows dit avoir supprimé pour de bon : jamais compté comme envoyé à
+            // la corbeille, et jamais cru sur parole. Le disque tranche : absent
+            // avec certitude, c'est `destroyed` ; encore là, un échec sans raison.
             Ok(Sent::Destroyed) => {
-                results.push(result(key, RemoveOutcome::Failed, Some(RemoveReason::Destroyed)));
+                let reason =
+                    (host.existence(path) == Existence::Absent).then_some(RemoveReason::Destroyed);
+                results.push(result(key, RemoveOutcome::Failed, reason));
             }
             Ok(Sent::InBin) if host.existence(path) == Existence::Absent => {
                 bytes = bytes.saturating_add(measure.map_or(0, |measure| measure.bytes));
