@@ -526,7 +526,13 @@ impl Backend {
     /// vide a quelques secondes pour finir son fichier en cours et noter son
     /// bilan au journal. S'il n'y arrive pas, Shinku se ferme quand même, et
     /// l'annoncera au prochain lancement.
+    ///
+    /// La « Confidentialité » d'abord : « on ferme » est levé (plus aucune trace ne
+    /// démarre), puis l'appel attend la fin du lot de fichiers en cours, s'il y en a un
+    /// (section courte : quelques appels sur des fichiers déjà ouverts). Un lot n'est
+    /// donc jamais coupé entre son premier marquage et son dernier effacement.
     pub fn shutdown(&self) {
+        self.privacy.close();
         self.session.shutdown(SHUTDOWN_PATIENCE);
     }
 
@@ -704,14 +710,16 @@ impl Backend {
 
     /// Efface les traces de ces identifiants (ceux de [`Backend::privacy_view`] : la
     /// page n'envoie jamais un chemin, un nom ni une commande). `owner` est la
-    /// fenêtre de Shinku, pour le presse-papiers (0 : aucune) : l'appel doit se
-    /// faire pendant le clic.
+    /// fenêtre de Shinku, pour le presse-papiers (0 : aucune).
     ///
     /// **Exclusif, dans les deux sens** : le verrou est celui de
     /// [`AppsDesk::try_exclusive`], le même que celui du grand vide et de la mise à
-    /// la corbeille des restes. Il est pris d'abord, puis l'état du grand vide est
-    /// lu (un grand vide en cours : `busy`). Fenêtre fermée pendant un
-    /// effacement : le lot en cours finit, aucun autre ne commence.
+    /// la corbeille des restes. Ordre réel du code : le verrou est pris d'abord (déjà
+    /// tenu : `busy`), puis l'état du grand vide est lu (en cours : `busy`), **et
+    /// seulement ensuite** le guichet compte les identifiants (plus de 64 : `tooMany`) :
+    /// une demande trop longue faite pendant un grand vide reçoit donc `busy`, non
+    /// `tooMany`. Fenêtre fermée pendant un effacement : le lot en cours finit
+    /// ([`Backend::shutdown`]), aucun autre ne commence.
     pub fn erase_traces(&self, ids: &[String], owner: isize) -> Result<ErasedTraces, BackendError> {
         let Some(_exclusive) = self.apps.try_exclusive() else {
             return Err(privacy_refused(PrivacyRefusal::Busy));
@@ -1604,6 +1612,16 @@ mod tests {
         assert!(host.clipboard_calls().is_empty(), "rien n'a été touché");
         assert!(backend.erase_traces(&ids[..64], 3).is_ok());
         assert_eq!(host.clipboard_calls(), [3]);
+    }
+
+    #[test]
+    fn once_the_backend_shuts_down_no_trace_starts() {
+        let pc = pc();
+        let (backend, host) = privacy_backend(&pc);
+        backend.shutdown();
+        let done = backend.erase_traces(&["wc".to_owned()], 5).expect("la demande est reçue");
+        assert_eq!(done.results[0].outcome, crate::privacy::view::TraceOutcome::Failed);
+        assert!(host.clipboard_calls().is_empty(), "rien n'a été touché");
     }
 
     #[test]

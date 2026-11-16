@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use crate::fs::{Expected, Removal, RemoveError};
+use crate::fs::{EntryMeta, Expected, Removal, RemoveError};
 use crate::privacy::host::{
     CurrentClear, HistoryClear, PrivacyHost, RegistryError, RegistryValues,
 };
@@ -52,26 +52,98 @@ fn opening_failed(error: &RemoveError) -> TraceOutcome {
     }
 }
 
+/// Un fichier du lot est effaçable : ordinaire, et que la liste a pu **identifier**.
+/// Sans identifiant, `Removal` ne pourrait pas vérifier que c'est bien le fichier
+/// vu ; ici, un tel lot est irrégulier et rien ne part (les autres usages de
+/// `fs/` gardent leur comportement).
+pub fn erasable(meta: &EntryMeta) -> bool {
+    meta.is_readable_file() && meta.file_id.is_some()
+}
+
+/// Ce que l'effacement d'un lot demande à la machine, poignées tenues.
+pub struct Gate<'a> {
+    /// Le navigateur est fermé.
+    pub closed: &'a dyn Fn() -> bool,
+    /// Le dossier du profil, relisté, ne contient **exactement** que les fichiers
+    /// de la règle qui sont ouverts : aucune annexe n'est apparue depuis l'inventaire.
+    pub same_lot: &'a dyn Fn() -> bool,
+    /// La section critique : elle exécute le corps, ou rend `Failed` sans
+    /// l'exécuter si Shinku se ferme. Elle empêche la fermeture de la fenêtre
+    /// de couper le lot entre son premier marquage et son dernier effacement.
+    pub critical: &'a dyn Fn(&mut dyn FnMut() -> TraceOutcome) -> TraceOutcome,
+}
+
+impl std::fmt::Debug for Gate<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Gate")
+    }
+}
+
+impl Gate<'static> {
+    /// Un navigateur fermé, un dossier inchangé, une section sans condition (essais).
+    #[cfg(test)]
+    pub const fn free() -> Self {
+        Self { closed: &|| true, same_lot: &|| true, critical: &|body| body() }
+    }
+}
+
+/// L'ordre de marquage : **chaque base suivie de ses propres annexes**
+/// (`-journal`, `-wal`, `-shm`), base par base, dans l'ordre reçu. Une annexe
+/// dont la base n'est pas dans le lot passe à la fin.
+///
+/// Pourquoi cet ordre : si le marquage est coupé net (arrêt brutal du processus),
+/// Windows supprime ce qui est déjà marqué, et rien d'autre. Une annexe
+/// orpheline (`-journal`, `-wal`) à côté d'une base **absente** est écartée par
+/// SQLite quand le navigateur recrée la base **[à vérifier : preuve 8 du test
+/// Windows]**. L'inverse, une base qui reste sans son journal chaud, est ce qui
+/// l'abîme. Avec « chaque base avant ses annexes », une coupure ne laisse donc que
+/// des annexes sans base, jamais une base sans ses annexes.
+pub fn marking_order(lot: &[LotFile]) -> Vec<usize> {
+    let annex_of = |name: &str| -> Option<String> {
+        rules::ANNEXES.iter().find_map(|annex| name.strip_suffix(annex)).map(str::to_owned)
+    };
+    let is_base = |file: &LotFile| annex_of(&file.name).is_none();
+    let mut order: Vec<usize> = Vec::with_capacity(lot.len());
+    for (at, base) in lot.iter().enumerate().filter(|(_, file)| is_base(file)) {
+        order.push(at);
+        for annex in rules::ANNEXES {
+            let wanted = format!("{}{annex}", base.name);
+            order.extend(
+                lot.iter().enumerate().filter(|(_, file)| file.name == wanted).map(|(at, _)| at),
+            );
+        }
+    }
+    // Les annexes sans base dans le lot : à la fin, dans l'ordre reçu.
+    for at in 0..lot.len() {
+        if !order.contains(&at) {
+            order.push(at);
+        }
+    }
+    order
+}
+
 /// Efface tout le lot, ou rien.
 ///
-/// 1. aucun nom interdit ([`rules::is_forbidden`]) ;
-/// 2. **tout le lot est ouvert** sans partage ni lien ; chaque fichier doit être
-///    ordinaire, n'avoir **qu'un seul nom** et ne pas être « en ligne
-///    uniquement ». Une seule ouverture qui échoue : on lâche tout, rien n'est touché ;
-/// 3. poignées tenues, `closed` revérifie que le navigateur est fermé ;
-/// 4. **tout est marqué** (la base d'abord), puis **tout est confirmé** (les
-///    annexes, puis la base). Si un marquage échoue, lâcher les poignées retire
-///    les demandes : rien ne part.
-pub fn erase_lot(lot: &[LotFile], open: Opener<'_>, closed: &dyn Fn() -> bool) -> TraceOutcome {
+/// 1. aucun nom interdit ([`rules::is_forbidden`]), tous identifiables ([`erasable`]) ;
+/// 2. **tout le lot est ouvert** sans partage ni lien, dans l'ordre de
+///    [`marking_order`] ; chaque fichier doit être ordinaire, n'avoir **qu'un
+///    seul nom** et ne pas être « en ligne uniquement ». Une seule ouverture qui
+///    échoue : on lâche tout, rien n'est touché ;
+/// 3. section critique ([`Gate::critical`]), poignées tenues : `closed`
+///    revérifie que le navigateur est fermé, `same_lot` que le dossier n'a pas
+///    gagné d'annexe (sinon `changed`, rien n'est marqué) ;
+/// 4. **tout est marqué** (dans le même ordre), puis **tout est confirmé**. Si un
+///    marquage échoue, lâcher les poignées retire les demandes : rien ne part.
+pub fn erase_lot(lot: &[LotFile], open: Opener<'_>, gate: &Gate<'_>) -> TraceOutcome {
     if lot.is_empty() {
         return TraceOutcome::Nothing;
     }
-    if lot.iter().any(|file| rules::is_forbidden(&file.name)) {
+    if lot.iter().any(|file| rules::is_forbidden(&file.name) || file.expected.file_id.is_none()) {
         return TraceOutcome::Failed;
     }
     let mut open_files: Vec<Removal> = Vec::with_capacity(lot.len());
-    for file in lot {
-        let removal = match open(file) {
+    for at in marking_order(lot) {
+        let removal = match open(&lot[at]) {
             Ok(removal) => removal,
             Err(error) => return opening_failed(&error),
         };
@@ -82,29 +154,34 @@ pub fn erase_lot(lot: &[LotFile], open: Opener<'_>, closed: &dyn Fn() -> bool) -
         }
         open_files.push(removal);
     }
-    // Les poignées sont tenues : le navigateur ne peut plus ouvrir ces fichiers.
-    // C'est maintenant qu'on est sûr qu'il est fermé.
-    if !closed() {
-        return TraceOutcome::InUse;
-    }
-    for removal in &mut open_files {
-        if let Err(error) = removal.mark() {
-            // `open_files` est lâché en sortant : les demandes déjà posées sont retirées.
-            return match error {
-                RemoveError::Locked => TraceOutcome::InUse,
-                _ => TraceOutcome::Failed,
-            };
+    (gate.critical)(&mut || {
+        // Les poignées sont tenues : le navigateur ne peut plus ouvrir ces fichiers.
+        // C'est maintenant qu'on est sûr qu'il est fermé, et que la liste est complète.
+        if !(gate.closed)() {
+            return TraceOutcome::InUse;
         }
-    }
-    // Tout est marqué : même un arrêt brutal ici supprime l'ensemble, Windows
-    // fermant les poignées avec la demande posée. Confirmé dans l'ordre inverse.
-    let mut failed = false;
-    while let Some(removal) = open_files.pop() {
-        if removal.commit().is_err() {
-            failed = true;
+        if !(gate.same_lot)() {
+            return TraceOutcome::Changed;
         }
-    }
-    if failed { TraceOutcome::Failed } else { TraceOutcome::Erased }
+        for removal in &mut open_files {
+            if let Err(error) = removal.mark() {
+                // `open_files` est lâché plus tard : les demandes déjà posées sont retirées.
+                return match error {
+                    RemoveError::Locked => TraceOutcome::InUse,
+                    _ => TraceOutcome::Failed,
+                };
+            }
+        }
+        // Tout est marqué : même un arrêt brutal ici supprime l'ensemble, Windows
+        // fermant les poignées avec la demande posée. Confirmé dans l'ordre inverse.
+        let mut failed = false;
+        while let Some(removal) = open_files.pop() {
+            if removal.commit().is_err() {
+                failed = true;
+            }
+        }
+        if failed { TraceOutcome::Failed } else { TraceOutcome::Erased }
+    })
 }
 
 // --- Le registre ---
@@ -150,6 +227,12 @@ pub fn erase_key(host: &dyn PrivacyHost, key: TypedKey) -> KeyOutcome {
     }
     let mut deleted = 0usize;
     for name in deletion_order(key, &first.names) {
+        // Un nom qui contient un zéro serait coupé par Windows à ce zéro : il viserait une
+        // autre valeur. Jamais passé à la suppression : la valeur reste, la relecture la
+        // compte et la clé ne peut pas être donnée pour vidée.
+        if name.0.contains(&0) {
+            continue;
+        }
         match host.registry_delete(key, &name) {
             Ok(()) => deleted += 1,
             // Devenue un lien entre-temps : on s'arrête net.
@@ -189,9 +272,19 @@ pub fn erase_typed(host: &dyn PrivacyHost) -> TraceOutcome {
 
 // --- Les récents et le presse-papiers ---
 
+/// Combien de fois le nombre de raccourcis est relu avant de conclure, et
+/// l'attente entre deux lectures : l'Explorateur retire peut-être les `.lnk`
+/// un peu après l'appel **[à vérifier sur le vrai Windows]**.
+pub const RECENT_READS: u32 = 5;
+/// L'attente entre deux lectures, en millisecondes.
+pub const RECENT_WAIT_MS: u64 = 100;
+
 /// Efface les fichiers et dossiers récents, puis relit leur nombre : un
-/// appel qui ne rend rien ne prouve rien. Zéro : `erased` ; moins qu'avant :
-/// `partial` ; autant ou plus (ou illisible) : `failed`.
+/// appel qui ne rend rien ne prouve rien. La relecture **attend avant de
+/// conclure** : tant qu'il reste des raccourcis, elle recommence (au plus
+/// [`RECENT_READS`] lectures, [`RECENT_WAIT_MS`] ms entre deux) ; le premier
+/// zéro donne `erased`. Sinon : moins qu'avant, `partial` ; autant ou plus (ou
+/// illisible) : `failed`.
 pub fn erase_recent(host: &dyn PrivacyHost) -> TraceOutcome {
     let Ok(before) = host.recent_count() else { return TraceOutcome::Failed };
     if before == 0 {
@@ -200,12 +293,19 @@ pub fn erase_recent(host: &dyn PrivacyHost) -> TraceOutcome {
     if host.clear_recent().is_err() {
         return TraceOutcome::Failed;
     }
-    match host.recent_count() {
-        Ok(0) => TraceOutcome::Erased,
-        // Une partie est partie, une autre reste : « pas pu être effacé » serait faux.
-        Ok(left) if left < before => TraceOutcome::Partial,
-        _ => TraceOutcome::Failed,
+    let mut left = before;
+    for read in 0..RECENT_READS {
+        if read > 0 {
+            host.pause(RECENT_WAIT_MS);
+        }
+        match host.recent_count() {
+            Ok(0) => return TraceOutcome::Erased,
+            Ok(count) => left = count,
+            Err(_) => return TraceOutcome::Failed,
+        }
     }
+    // Une partie est partie, une autre reste : « pas pu être effacé » serait faux.
+    if left < before { TraceOutcome::Partial } else { TraceOutcome::Failed }
 }
 
 /// Vide l'historique du presse-papiers puis son contenu actuel. Un historique
@@ -319,6 +419,27 @@ mod tests {
     }
 
     #[test]
+    fn a_value_name_with_a_nul_is_never_deleted_and_the_key_is_partial() {
+        let host = FakePrivacyHost::new(None);
+        host.set_values(TypedKey::RunMru, &["a", "ab\0c", "ab", "MRUList"]);
+        assert_eq!(erase_key(&host, TypedKey::RunMru), KeyOutcome::Partial);
+        // `ab` (la valeur que Windows aurait visée en coupant `ab\0c`) est partie par son
+        // propre nom ; le nom à zéro, lui, n'a jamais été passé à la suppression.
+        let deleted = host.deleted();
+        assert_eq!(deleted.len(), 3);
+        assert!(deleted.iter().all(|(_, name)| !name.contains('\0')));
+        assert_eq!(host.remaining(TypedKey::RunMru), ["ab\0c"]);
+        let host = FakePrivacyHost::new(None);
+        host.set_values(TypedKey::RunMru, &["a", "ab\0c"]);
+        assert_eq!(erase_typed(&host), TraceOutcome::Partial);
+        // Seul, il n'y a rien d'effacé : `failed`, et toujours rien de supprimé.
+        let host = FakePrivacyHost::new(None);
+        host.set_values(TypedKey::RunMru, &["ab\0c"]);
+        assert_eq!(erase_key(&host, TypedKey::RunMru), KeyOutcome::Failed);
+        assert!(host.deleted().is_empty());
+    }
+
+    #[test]
     fn a_list_cut_by_a_bound_cannot_be_called_erased() {
         let host = FakePrivacyHost::new(None);
         host.set_values(TypedKey::RunMru, &["a"]);
@@ -371,6 +492,30 @@ mod tests {
         assert_eq!(erase_recent(&host), TraceOutcome::Failed);
         host.make_recent_unreadable();
         assert_eq!(erase_recent(&host), TraceOutcome::Failed);
+    }
+
+    #[test]
+    fn recent_waits_before_concluding_and_the_first_zero_is_erased() {
+        // Les raccourcis partent un peu après l'appel : deux relectures les voient encore.
+        let host = FakePrivacyHost::new(None);
+        host.set_recent(5, RecentClear::After(2));
+        assert_eq!(erase_recent(&host), TraceOutcome::Erased);
+        // Trois lectures : deux attentes, aucune de plus une fois le zéro vu.
+        assert_eq!(host.pauses(), [RECENT_WAIT_MS; 2]);
+        // Partis dès la première relecture : aucune attente.
+        let host = FakePrivacyHost::new(None);
+        host.set_recent(5, RecentClear::All);
+        assert_eq!(erase_recent(&host), TraceOutcome::Erased);
+        assert!(host.pauses().is_empty());
+        // Trop tard pour la dernière lecture : on a attendu, puis `failed`.
+        let host = FakePrivacyHost::new(None);
+        host.set_recent(5, RecentClear::After(RECENT_READS));
+        assert_eq!(erase_recent(&host), TraceOutcome::Failed);
+        assert_eq!(host.pauses().len(), (RECENT_READS - 1) as usize);
+        // Juste à temps : la dernière lecture voit zéro.
+        let host = FakePrivacyHost::new(None);
+        host.set_recent(5, RecentClear::After(RECENT_READS - 1));
+        assert_eq!(erase_recent(&host), TraceOutcome::Erased);
     }
 
     #[test]
@@ -430,14 +575,13 @@ mod tests {
         }
 
         const NAMES: [&str; 4] = ["History", "History-journal", "History-wal", "Favicons"];
-        const ALWAYS_CLOSED: &dyn Fn() -> bool = &|| true;
 
         #[test]
         fn the_whole_lot_goes() {
             let temp = tempfile::tempdir().unwrap();
             let lot = lot_of(temp.path(), &NAMES);
             fs::write(temp.path().join("Bookmarks"), "favoris").unwrap();
-            assert_eq!(erase_lot(&lot, &open_real, ALWAYS_CLOSED), TraceOutcome::Erased);
+            assert_eq!(erase_lot(&lot, &open_real, &Gate::free()), TraceOutcome::Erased);
             assert_eq!(present(temp.path(), &NAMES), [false; 4]);
             assert!(temp.path().join("Bookmarks").exists(), "les voisins restent");
         }
@@ -455,7 +599,7 @@ mod tests {
                     opened.borrow_mut().push(file.name.clone());
                     open_real(file)
                 };
-                assert_eq!(erase_lot(&lot, &open, ALWAYS_CLOSED), TraceOutcome::InUse, "{refused}");
+                assert_eq!(erase_lot(&lot, &open, &Gate::free()), TraceOutcome::InUse, "{refused}");
                 assert_eq!(present(temp.path(), &NAMES), [true; 4], "{refused}");
             }
         }
@@ -477,7 +621,7 @@ mod tests {
                     }
                     open_real(file)
                 };
-                assert_eq!(erase_lot(&lot, &open, ALWAYS_CLOSED), wanted);
+                assert_eq!(erase_lot(&lot, &open, &Gate::free()), wanted);
                 assert_eq!(present(temp.path(), &NAMES), [true; 4]);
             }
         }
@@ -488,7 +632,7 @@ mod tests {
             let lot = lot_of(temp.path(), &NAMES);
             let other = tempfile::tempdir().unwrap();
             fs::hard_link(temp.path().join("History"), other.path().join("ma-copie")).unwrap();
-            assert_eq!(erase_lot(&lot, &open_real, ALWAYS_CLOSED), TraceOutcome::Failed);
+            assert_eq!(erase_lot(&lot, &open_real, &Gate::free()), TraceOutcome::Failed);
             assert_eq!(present(temp.path(), &NAMES), [true; 4]);
             assert!(other.path().join("ma-copie").exists());
         }
@@ -498,7 +642,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let lot = lot_of(temp.path(), &NAMES);
             fs::write(temp.path().join("History-wal"), "autre chose, plus long qu'avant").unwrap();
-            assert_eq!(erase_lot(&lot, &open_real, ALWAYS_CLOSED), TraceOutcome::Changed);
+            assert_eq!(erase_lot(&lot, &open_real, &Gate::free()), TraceOutcome::Changed);
             assert_eq!(present(temp.path(), &NAMES), [true; 4]);
         }
 
@@ -512,7 +656,7 @@ mod tests {
             fs::remove_file(temp.path().join("History")).unwrap();
             std::os::unix::fs::symlink(target.path().join("cible"), temp.path().join("History"))
                 .unwrap();
-            let outcome = erase_lot(&lot, &open_real, ALWAYS_CLOSED);
+            let outcome = erase_lot(&lot, &open_real, &Gate::free());
             assert_ne!(outcome, TraceOutcome::Erased);
             assert_eq!(fs::read_to_string(target.path().join("cible")).unwrap(), "précieux");
             assert_eq!(present(temp.path(), &NAMES[1..]), [true; 3]);
@@ -533,7 +677,8 @@ mod tests {
                 assert_eq!(*opened.borrow(), all_open);
                 false
             };
-            assert_eq!(erase_lot(&lot, &open, &closed), TraceOutcome::InUse);
+            let gate = Gate { closed: &closed, ..Gate::free() };
+            assert_eq!(erase_lot(&lot, &open, &gate), TraceOutcome::InUse);
             assert_eq!(present(temp.path(), &NAMES), [true; 4]);
         }
 
@@ -544,7 +689,7 @@ mod tests {
             lot[1].name = "Login Data".to_owned();
             let open =
                 |_: &LotFile| -> Result<Removal, RemoveError> { panic!("rien ne doit s'ouvrir") };
-            assert_eq!(erase_lot(&lot, &open, ALWAYS_CLOSED), TraceOutcome::Failed);
+            assert_eq!(erase_lot(&lot, &open, &Gate::free()), TraceOutcome::Failed);
             assert_eq!(present(temp.path(), &["History", "Login Data"]), [true; 2]);
         }
 
@@ -563,7 +708,7 @@ mod tests {
                     .open(temp.path().join(NAMES[held]))
                     .unwrap();
                 assert_eq!(
-                    erase_lot(&lot, &open_real, ALWAYS_CLOSED),
+                    erase_lot(&lot, &open_real, &Gate::free()),
                     TraceOutcome::InUse,
                     "{held}"
                 );
@@ -573,9 +718,217 @@ mod tests {
             }
         }
 
+        fn lot_file(name: &str) -> LotFile {
+            use crate::fs::EntryKind;
+            use crate::model::{FileId, Timestamp};
+            LotFile {
+                name: name.to_owned(),
+                path: PathBuf::from(name),
+                expected: Expected {
+                    kind: EntryKind::File,
+                    size: 0,
+                    modified: Timestamp::default(),
+                    file_id: Some(FileId(1)),
+                },
+            }
+        }
+
+        fn names_in(lot: &[LotFile], order: &[usize]) -> Vec<String> {
+            order.iter().map(|at| lot[*at].name.clone()).collect()
+        }
+
+        #[test]
+        fn each_base_is_marked_before_its_own_annexes() {
+            // Un lot reçu dans le désordre : les annexes avant leur base, deux bases mêlées.
+            let lot: Vec<LotFile> = [
+                "History-wal",
+                "Favicons-journal",
+                "History",
+                "History-journal",
+                "Favicons",
+                "Favicons-shm",
+                "Shortcuts-wal",
+            ]
+            .iter()
+            .map(|name| lot_file(name))
+            .collect();
+            assert_eq!(
+                names_in(&lot, &marking_order(&lot)),
+                [
+                    "History",
+                    "History-journal",
+                    "History-wal",
+                    "Favicons",
+                    "Favicons-journal",
+                    "Favicons-shm",
+                    // Une annexe sans base dans le lot passe à la fin.
+                    "Shortcuts-wal",
+                ]
+            );
+            // Chaque fichier est là une fois, ni perdu ni doublé.
+            let mut seen = marking_order(&lot);
+            seen.sort_unstable();
+            assert_eq!(seen, (0..lot.len()).collect::<Vec<_>>());
+            // L'ordre de la règle, lui, est déjà le bon.
+            let rule: Vec<LotFile> =
+                rules::history_lot(rules::Browser::Chrome).iter().map(|n| lot_file(n)).collect();
+            assert_eq!(marking_order(&rule), (0..rule.len()).collect::<Vec<_>>());
+        }
+
+        #[test]
+        fn the_lot_is_opened_and_so_marked_in_that_order() {
+            let temp = tempfile::tempdir().unwrap();
+            let names = ["History-wal", "Favicons-journal", "History", "Favicons"];
+            let lot = lot_of(temp.path(), &names);
+            let opened = RefCell::new(Vec::new());
+            let open = |file: &LotFile| {
+                opened.borrow_mut().push(file.name.clone());
+                open_real(file)
+            };
+            assert_eq!(erase_lot(&lot, &open, &Gate::free()), TraceOutcome::Erased);
+            assert_eq!(
+                *opened.borrow(),
+                ["History", "History-wal", "Favicons", "Favicons-journal"]
+            );
+        }
+
+        #[test]
+        fn a_closing_machine_starts_nothing_and_a_changed_folder_marks_nothing() {
+            let temp = tempfile::tempdir().unwrap();
+            let lot = lot_of(temp.path(), &NAMES);
+            // La section critique refuse (Shinku se ferme) : le corps ne s'exécute pas.
+            let refuse = |_: &mut dyn FnMut() -> TraceOutcome| TraceOutcome::Failed;
+            let gate = Gate { critical: &refuse, ..Gate::free() };
+            assert_eq!(erase_lot(&lot, &open_real, &gate), TraceOutcome::Failed);
+            assert_eq!(present(temp.path(), &NAMES), [true; 4]);
+            // Une annexe apparue depuis l'inventaire : `changed`, rien n'est marqué.
+            let marked_something = RefCell::new(false);
+            let critical = |body: &mut dyn FnMut() -> TraceOutcome| {
+                let outcome = body();
+                *marked_something.borrow_mut() = outcome == TraceOutcome::Erased;
+                outcome
+            };
+            let changed = || false;
+            let gate = Gate { same_lot: &changed, critical: &critical, ..Gate::free() };
+            assert_eq!(erase_lot(&lot, &open_real, &gate), TraceOutcome::Changed);
+            assert!(!*marked_something.borrow());
+            assert_eq!(present(temp.path(), &NAMES), [true; 4]);
+        }
+
+        #[test]
+        fn a_lot_file_without_an_id_is_not_erasable_and_nothing_goes() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut lot = lot_of(temp.path(), &NAMES);
+            lot[2].expected.file_id = None;
+            let open =
+                |_: &LotFile| -> Result<Removal, RemoveError> { panic!("rien ne doit s'ouvrir") };
+            assert_eq!(erase_lot(&lot, &open, &Gate::free()), TraceOutcome::Failed);
+            assert_eq!(present(temp.path(), &NAMES), [true; 4]);
+            // Et l'inventaire d'un fichier sans identifiant le rend irrégulier.
+            let meta = |id| {
+                let mut found = None;
+                DirReader::new()
+                    .read(&to_internal_path(temp.path()).unwrap(), None, &mut |name, meta| {
+                        if name == OsStr::new("History") {
+                            found = Some(*meta);
+                        }
+                    })
+                    .unwrap();
+                let mut meta = found.unwrap();
+                meta.file_id = id;
+                meta
+            };
+            assert!(erasable(&meta(Some(crate::model::FileId(1)))));
+            assert!(!erasable(&meta(None)));
+        }
+
+        #[test]
+        fn a_directory_in_the_lot_is_not_a_regular_file_and_nothing_goes() {
+            let temp = tempfile::tempdir().unwrap();
+            // L'inventaire a vu un dossier à la place de `History-wal` (qu'un lot réel
+            // refuse déjà) : la garde sur le fichier ouvert tient seule.
+            fs::create_dir(temp.path().join("History-wal")).unwrap();
+            let files = ["History", "History-journal", "Favicons"];
+            let mut lot = lot_of(temp.path(), &files);
+            let dir = to_internal_path(temp.path()).unwrap();
+            let mut metas: Vec<(String, EntryMeta)> = Vec::new();
+            DirReader::new()
+                .read(&dir, None, &mut |name: &OsStr, meta: &EntryMeta| {
+                    metas.push((name.to_string_lossy().into_owned(), *meta));
+                })
+                .unwrap();
+            let meta = metas.iter().find(|(n, _)| n == "History-wal").unwrap().1;
+            lot.insert(
+                2,
+                LotFile {
+                    name: "History-wal".to_owned(),
+                    path: dir.join("History-wal"),
+                    expected: meta.expected(),
+                },
+            );
+            assert_eq!(erase_lot(&lot, &open_real, &Gate::free()), TraceOutcome::Failed);
+            assert!(temp.path().join("History-wal").is_dir());
+            assert_eq!(present(temp.path(), &files), [true; 3]);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn a_link_the_inventory_took_for_the_file_is_not_a_regular_file_either() {
+            // Un lien (un seul nom, aucun dossier) que l'inventaire aurait vu : la garde
+            // `regular` sur l'entrée ouverte est la seule à le refuser, et sa cible reste.
+            let temp = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir().unwrap();
+            fs::write(target.path().join("cible"), "précieux").unwrap();
+            std::os::unix::fs::symlink(
+                target.path().join("cible"),
+                temp.path().join("History-wal"),
+            )
+            .unwrap();
+            let dir = to_internal_path(temp.path()).unwrap();
+            let mut seen: Option<EntryMeta> = None;
+            DirReader::new()
+                .read(&dir, None, &mut |name: &OsStr, meta: &EntryMeta| {
+                    if name == OsStr::new("History-wal") {
+                        seen = Some(*meta);
+                    }
+                })
+                .unwrap();
+            let files = ["History", "Favicons"];
+            let mut lot = lot_of(temp.path(), &files);
+            lot.insert(
+                1,
+                LotFile {
+                    name: "History-wal".to_owned(),
+                    path: dir.join("History-wal"),
+                    expected: seen.unwrap().expected(),
+                },
+            );
+            assert_eq!(erase_lot(&lot, &open_real, &Gate::free()), TraceOutcome::Failed);
+            assert_eq!(fs::read_to_string(target.path().join("cible")).unwrap(), "précieux");
+            assert_eq!(present(temp.path(), &files), [true; 2]);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn a_second_name_that_appears_between_the_inventory_and_the_open_refuses_the_lot() {
+            let temp = tempfile::tempdir().unwrap();
+            let lot = lot_of(temp.path(), &NAMES);
+            let other = tempfile::tempdir().unwrap();
+            // Le lien physique est posé juste avant l'ouverture de `History-wal`.
+            let open = |file: &LotFile| {
+                if file.name == "History-wal" {
+                    fs::hard_link(temp.path().join("History-wal"), other.path().join("copie"))
+                        .unwrap();
+                }
+                open_real(file)
+            };
+            assert_eq!(erase_lot(&lot, &open, &Gate::free()), TraceOutcome::Failed);
+            assert_eq!(present(temp.path(), &NAMES), [true; 4]);
+        }
+
         #[test]
         fn an_empty_lot_has_nothing_to_erase() {
-            assert_eq!(erase_lot(&[], &open_real, ALWAYS_CLOSED), TraceOutcome::Nothing);
+            assert_eq!(erase_lot(&[], &open_real, &Gate::free()), TraceOutcome::Nothing);
         }
     }
 }

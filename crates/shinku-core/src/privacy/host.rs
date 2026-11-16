@@ -108,6 +108,9 @@ pub trait PrivacyHost: Send + Sync + fmt::Debug {
     /// Supprime cette valeur de cette clé. Une valeur déjà absente n'est pas une erreur.
     fn registry_delete(&self, key: TypedKey, name: &ValueName) -> Result<(), RegistryError>;
 
+    /// Attend ce nombre de millisecondes (les essais n'attendent pas).
+    fn pause(&self, millis: u64);
+
     /// Le presse-papiers contient quelque chose en ce moment.
     fn clipboard_filled(&self) -> io::Result<bool>;
 
@@ -116,7 +119,7 @@ pub trait PrivacyHost: Send + Sync + fmt::Debug {
     fn clipboard_history_enabled(&self) -> io::Result<bool>;
 
     /// Vide l'historique du presse-papiers puis son contenu actuel. `owner` est
-    /// la fenêtre de Shinku (0 : aucune) ; l'appel se fait **pendant le clic**.
+    /// la fenêtre de Shinku (0 : aucune) ; l'appel vient d'un fil de travail, pas du fil de la fenêtre.
     fn clear_clipboard(&self, owner: isize) -> ClipboardClear;
 }
 
@@ -156,6 +159,8 @@ impl PrivacyHost for InertPrivacyHost {
     fn registry_delete(&self, _key: TypedKey, _name: &ValueName) -> Result<(), RegistryError> {
         Ok(())
     }
+
+    fn pause(&self, _millis: u64) {}
 
     fn clipboard_filled(&self) -> io::Result<bool> {
         Ok(false)

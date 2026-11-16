@@ -319,8 +319,10 @@ pub fn privacy_view(backend: State<'_, Backend>) -> PrivacyView {
 
 /// Efface les traces de ces identifiants (ceux de [`privacy_view`]), et rien
 /// d'autre : aucun chemin, aucun nom. La fenêtre sert de propriétaire au
-/// presse-papiers (Windows exige de le vider depuis une fenêtre, pendant le clic :
-/// la commande est appelée par le clic, la fenêtre est au premier plan).
+/// presse-papiers. La commande est `async` : elle tourne sur un **fil de travail** de
+/// Tauri, pas sur le fil de la fenêtre. Que `OpenClipboard` avec la fenêtre d'un autre
+/// fil, `ClearHistory` et `SHAddToRecentDocs` (COM en STA, sans boucle de messages)
+/// marchent ainsi est **[à vérifier sur le vrai Windows]**.
 #[tauri::command(async)]
 pub fn erase_traces(
     backend: State<'_, Backend>,

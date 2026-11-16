@@ -5,9 +5,11 @@
 //!
 //! L'analyse ([`scan`]) est en lecture seule. Seul le grand vide ([`clean`])
 //! supprime, et seulement ce que l'analyse a montré. En dehors de lui, le
-//! cœur n'écrit que ses propres fichiers : les réglages et le journal. La
-//! « Confidentialité » ([`privacy`]) est le seul autre module qui supprime :
-//! des traces d'une liste fermée, que la personne a cochées.
+//! cœur n'écrit que ses propres fichiers : les réglages et le journal. Deux
+//! autres modules suppriment, chacun dans son périmètre : la « Désinstallation »
+//! (les restes d'une app, mis à la corbeille ou, faute de mieux, détruits) et la
+//! « Confidentialité » ([`privacy`], des traces d'une liste fermée que la
+//! personne a cochées).
 //!
 //! Les trois exécutables (`shinku`, `shinku-helper`, `shinku-agent`) s'appuient
 //! sur lui.

@@ -293,18 +293,115 @@ fn a_hard_linked_file_refuses_the_whole_lot() {
 }
 
 #[test]
-fn a_changed_file_since_the_view_is_a_change_and_nothing_goes() {
+fn a_file_rewritten_or_replaced_since_the_view_is_read_again_and_the_lot_goes() {
+    // La liste est refaite à l'effacement : ce que la vue avait vu ne compte plus, et ce
+    // qui a changé depuis est simplement relu. `changed` à l'ouverture (fichier changé entre
+    // la liste et l'ouverture) est prouvé sur `erase_lot`, où l'ouverture se contrôle.
     let pc = pc();
     let dir = pc.profile(Browser::Chrome, "Default");
     let id = pc.history_id(Browser::Chrome, 0);
     fs::write(dir.join("History-wal"), "le navigateur a écrit entre-temps, plus long").unwrap();
-    // La liste est refaite à l'effacement : la taille relue est la nouvelle, le lot part.
-    // Mais un fichier remplacé par un autre (autre identité) est refusé.
     let replaced = dir.join("Favicons");
     fs::remove_file(&replaced).unwrap();
     fs::write(&replaced, "remplacé").unwrap();
-    let outcome = pc.erase(&[id]);
-    assert!(matches!(outcome[0], TraceOutcome::Erased | TraceOutcome::Changed));
+    assert_eq!(pc.erase(&[id]), [TraceOutcome::Erased]);
+    assert!(exists(&dir, &history_lot(Browser::Chrome)).iter().all(|e| !e));
+}
+
+#[test]
+fn an_annex_that_appears_after_the_files_are_open_is_a_change_and_nothing_is_marked() {
+    let pc = pc();
+    let dir = pc.profile(Browser::Chrome, "Default");
+    fs::remove_file(dir.join("History-wal")).unwrap();
+    let id = pc.history_id(Browser::Chrome, 0);
+    // Au second contrôle du navigateur (poignées tenues), une annexe est déjà apparue.
+    let late = dir.join("History-wal");
+    pc.host.run_at_process_call(2, move || fs::write(&late, "né après l'inventaire").unwrap());
+    assert_eq!(pc.erase(&[id]), [TraceOutcome::Changed]);
+    let mut names = history_lot(Browser::Chrome);
+    names.retain(|name| name != "History-wal");
+    assert!(exists(&dir, &names).iter().all(|e| *e), "rien n'est marqué ni effacé");
+    assert!(dir.join("History-wal").exists());
+}
+
+#[test]
+fn the_second_browser_check_is_wired_and_stops_the_whole_lot() {
+    let pc = pc();
+    let dir = pc.profile(Browser::Chrome, "Default");
+    let id = pc.history_id(Browser::Chrome, 0);
+    // Fermé au premier contrôle, ouvert au second (poignées tenues).
+    pc.host.script_processes(&[Some(&[]), Some(&["chrome.exe"])]);
+    assert_eq!(pc.erase(&[id]), [TraceOutcome::InUse]);
+    assert!(exists(&dir, &history_lot(Browser::Chrome)).iter().all(|e| *e));
+}
+
+#[test]
+fn a_stale_id_does_not_stop_the_valid_ones_after_it() {
+    let pc = pc();
+    let dir = pc.profile(Browser::Chrome, "Default");
+    pc.host.set_values(TypedKey::RunMru, &["a", "MRUList"]);
+    let history = pc.history_id(Browser::Chrome, 0);
+    let out = pc.erase(&["pas un id".to_owned(), history, "wt".to_owned()]);
+    assert_eq!(out, [TraceOutcome::Changed, TraceOutcome::Erased, TraceOutcome::Erased]);
+    assert!(pc.host.remaining(TypedKey::RunMru).is_empty());
+    assert!(exists(&dir, &history_lot(Browser::Chrome)).iter().all(|e| !e));
+}
+
+#[test]
+fn a_directory_in_place_of_a_lot_file_makes_the_line_inert_and_nothing_goes() {
+    let pc = pc();
+    let dir = pc.profile(Browser::Chrome, "Default");
+    fs::remove_file(dir.join("Favicons")).unwrap();
+    fs::create_dir(dir.join("Favicons")).unwrap();
+    let view = pc.desk.view();
+    let item = &group(&view, Browser::Chrome, 0).items[0];
+    assert_eq!((item.state, item.bytes), (TraceState::Unreadable, None));
+    assert_eq!(pc.erase(&[item.id.to_string()]), [TraceOutcome::Failed]);
+    assert!(dir.join("History").exists() && dir.join("Favicons").is_dir());
+}
+
+#[test]
+fn closing_waits_for_the_lot_in_progress_and_then_nothing_starts() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    let pc = pc();
+    let dir = pc.profile(Browser::Chrome, "Default");
+    let id = pc.history_id(Browser::Chrome, 0);
+    // Le second contrôle du navigateur se fait dans la section critique du lot : on l'y tient.
+    let (entered, release) = pc.host.block_process_call(2);
+    let closed = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        // Possédée ici : si l'essai échoue, elle est lâchée et le lot bloqué repart.
+        let release = release;
+        let eraser = scope.spawn(|| pc.erase(std::slice::from_ref(&id)));
+        entered
+            .recv_timeout(Duration::from_secs(10))
+            .expect("le lot arrive à son second contrôle du navigateur");
+        let closer = scope.spawn(|| {
+            pc.desk.close();
+            closed.store(true, Ordering::SeqCst);
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!closed.load(Ordering::SeqCst), "la fermeture attend la fin du lot");
+        assert!(exists(&dir, &history_lot(Browser::Chrome)).iter().all(|e| *e));
+        release.send(()).unwrap();
+        assert_eq!(eraser.join().unwrap(), [TraceOutcome::Erased]);
+        closer.join().unwrap();
+        assert!(closed.load(Ordering::SeqCst));
+    });
+    // Le lot est allé jusqu'au bout.
+    assert!(exists(&dir, &history_lot(Browser::Chrome)).iter().all(|e| !e));
+    // Une fois « on ferme » levé, aucune trace ne démarre, de quelque sorte qu'elle soit.
+    let other = pc.profile(Browser::Edge, "Default");
+    let edge = pc.history_id(Browser::Edge, 0);
+    pc.host.set_recent(4, RecentClear::All);
+    pc.host.set_values(TypedKey::TypedPaths, &["url1"]);
+    let out = pc.erase(&[edge, "wr".to_owned(), "wt".to_owned(), "wc".to_owned()]);
+    assert_eq!(out, [TraceOutcome::Failed; 4]);
+    assert!(exists(&other, &history_lot(Browser::Edge)).iter().all(|e| *e));
+    assert_eq!(pc.host.recent_calls(), 0);
+    assert!(pc.host.deleted().is_empty());
+    assert!(pc.host.clipboard_calls().is_empty());
 }
 
 #[cfg(unix)]
@@ -405,7 +502,8 @@ fn windows_traces_are_counted_and_erased() {
     let view = pc.desk.view();
     let items = &view.groups.last().unwrap().items;
     assert_eq!(items[0].count, Some(7));
-    assert_eq!(items[1].count, Some(4));
+    // `MRUList` et `MRUListEx` sont des index, pas des saisies : deux seulement.
+    assert_eq!(items[1].count, Some(2));
     assert_eq!(items[2].state, TraceState::Present);
     assert!(items.iter().all(|i| i.bytes.is_none() && i.state == TraceState::Present));
     let ids: Vec<String> = items.iter().map(|i| i.id.to_string()).collect();

@@ -51,7 +51,7 @@ pub enum TraceOutcome {
     InUse,
     /// Ce n'est plus ce que la page avait montré : elle doit regarder de nouveau.
     Changed,
-    /// Une partie reste, ou est revenue (le registre seulement).
+    /// Une partie reste, ou est revenue (le registre, ou les fichiers récents dont une partie seulement est partie).
     Partial,
     /// Pas pu être effacée : rien n'est touché (fichiers).
     Failed,

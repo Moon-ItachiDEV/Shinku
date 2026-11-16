@@ -14,12 +14,13 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::fs::{
     DirReader, EntryMeta, Identity, PathState, fold_name, identity, inspect_dir_chain,
 };
-use crate::privacy::erase::{self, LotFile, erase_lot, open_real};
+use crate::privacy::erase::{self, Gate, LotFile, erasable, erase_lot, open_real};
 use crate::privacy::host::PrivacyHost;
 use crate::privacy::id::{TraceId, name_stamp};
 use crate::privacy::names::read_display_names;
@@ -70,6 +71,11 @@ enum LotView {
 #[derive(Debug)]
 pub struct PrivacyDesk {
     host: Arc<dyn PrivacyHost>,
+    /// « On ferme » : levé par [`Self::close`], jamais baissé. Aucune trace ne démarre ensuite.
+    closing: AtomicBool,
+    /// Tenu pendant la section critique d'un lot (de la revérification du
+    /// navigateur au dernier effacement) : [`Self::close`] l'attend.
+    critical: Mutex<()>,
 }
 
 /// Vrai si ce programme tourne. Une machine qui ne sait pas dire ce qui tourne
@@ -81,7 +87,31 @@ fn is_running(processes: Option<&[String]>, exe: &str) -> bool {
 impl PrivacyDesk {
     /// Un guichet sur cette machine.
     pub fn new(host: Arc<dyn PrivacyHost>) -> Self {
-        Self { host }
+        Self { host, closing: AtomicBool::new(false), critical: Mutex::new(()) }
+    }
+
+    /// Shinku se ferme : plus aucune trace ne démarre, et **le lot en cours, s'il y en a un,
+    /// va jusqu'au bout** avant que cet appel ne rende la main. La section est
+    /// courte (quelques appels système sur des fichiers déjà ouverts), donc la fermeture
+    /// n'attend rien d'autre. Appelé par `Backend::shutdown`.
+    pub fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+        drop(self.critical.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+
+    fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::SeqCst)
+    }
+
+    /// La section critique d'un lot : refusée (le corps ne s'exécute pas) si Shinku se ferme.
+    /// Le drapeau est lu **sous le verrou** : `close` lève le drapeau puis attend le verrou,
+    /// donc un lot soit finit avant la fermeture, soit ne commence pas.
+    fn critical_section(&self, body: &mut dyn FnMut() -> TraceOutcome) -> TraceOutcome {
+        let _held = self.critical.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_closing() {
+            return TraceOutcome::Failed;
+        }
+        body()
     }
 
     fn user_data_path(&self, browser: Browser) -> Option<PathBuf> {
@@ -173,7 +203,7 @@ impl PrivacyDesk {
             return LotView::Empty;
         }
         found.sort_by_key(|(at, _, _)| *at);
-        if found.iter().any(|(_, _, meta)| !meta.is_readable_file()) {
+        if found.iter().any(|(_, _, meta)| !erasable(meta)) {
             return LotView::Irregular;
         }
         LotView::Files(found.into_iter().map(|(_, name, meta)| (name, meta)).collect())
@@ -208,7 +238,13 @@ impl PrivacyDesk {
             match self.host.registry_values(key) {
                 Ok(None) => {}
                 Ok(Some(found)) => {
-                    values += found.names.len();
+                    // Les valeurs d'index (`MRUList`, `MRUListEx`) et le nom vide ne sont
+                    // pas des saisies : ils ne comptent pas.
+                    values += found
+                        .names
+                        .iter()
+                        .filter(|name| !name.is_index_of(key) && !name.0.is_empty())
+                        .count();
                     complete &= found.complete;
                 }
                 Err(_) => readable = false,
@@ -298,7 +334,7 @@ impl PrivacyDesk {
     /// page regarde de nouveau, les autres traces sont traitées.
     ///
     /// L'appelant tient l'exclusivité (voir le guichet principal). `owner` est la
-    /// fenêtre de Shinku, pour le presse-papiers : l'appel doit se faire pendant le clic.
+    /// fenêtre de Shinku, pour le presse-papiers.
     pub fn erase(&self, ids: &[String], owner: isize) -> Result<ErasedTraces, PrivacyRefusal> {
         if ids.len() > MAX_IDS {
             return Err(PrivacyRefusal::TooMany);
@@ -311,6 +347,8 @@ impl PrivacyDesk {
             }
             let outcome = match TraceId::parse(text) {
                 None => TraceOutcome::Changed,
+                // Shinku se ferme : rien ne démarre plus (la fenêtre ne verra pas la réponse).
+                Some(_) if self.is_closing() => TraceOutcome::Failed,
                 Some(id) => self.erase_one(id, owner),
             };
             results.push(TraceResult { id: text.clone(), outcome });
@@ -371,8 +409,23 @@ impl PrivacyDesk {
                 expected: meta.expected(),
             })
             .collect();
-        // 2 à 4 : ouvrir tout le lot, revérifier le navigateur fermé poignées tenues,
-        // tout marquer, tout confirmer.
-        erase_lot(&lot, &open_real, &|| !self.browser_running(browser, &user_data))
+        // 2 à 4 : ouvrir tout le lot, revérifier le navigateur fermé et le dossier
+        // inchangé poignées tenues, tout marquer, tout confirmer.
+        let names: Vec<&str> = lot.iter().map(|file| file.name.as_str()).collect();
+        let closed = || !self.browser_running(browser, &user_data);
+        // Les fichiers de la règle présents sont **exactement** ceux qui sont ouverts.
+        let same_lot = || match self.read_lot(browser, &profile) {
+            LotView::Files(now) => {
+                now.len() == names.len()
+                    && now.iter().zip(&names).all(|((name, _), wanted)| name == wanted)
+            }
+            _ => false,
+        };
+        let critical = |body: &mut dyn FnMut() -> TraceOutcome| self.critical_section(body);
+        erase_lot(
+            &lot,
+            &open_real,
+            &Gate { closed: &closed, same_lot: &same_lot, critical: &critical },
+        )
     }
 }

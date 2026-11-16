@@ -204,7 +204,7 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | `%LOCALAPPDATA%\fr.shinku.app\` | Le cache de WebView2 pour la fenêtre. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\{RunMRU, TypedPaths, WordWheelQuery}` | Les **valeurs** de ces trois clés sont **supprimées** quand la personne coche « Ce que tu as tapé dans Windows » (voir « Confidentialité »). Les clés restent. C'est la première fois que Shinku supprime dans le registre. |
 | `%LOCALAPPDATA%\{Google\Chrome, Microsoft\Edge, BraveSoftware\Brave-Browser, Vivaldi}\User Data\{Default, Profile N}\` | Les fichiers de l'**historique** d'un profil (liste fermée, voir « Confidentialité ») sont supprimés, directement, quand la personne le coche. Rien d'autre du profil. |
-| Fichiers récents de Windows, presse-papiers | Vidés par Windows (`SHAddToRecentDocs`, `Clipboard.ClearHistory`) quand la personne le coche. |
+| Fichiers récents de Windows, presse-papiers | Vidés quand la personne le coche : les récents par Windows (`SHAddToRecentDocs`), l'historique du presse-papiers par Windows (`Clipboard.ClearHistory`), et son contenu actuel par Shinku lui-même (`OpenClipboard`, `EmptyClipboard`). |
 
 Rien d'autre, et rien hors du PC. `shinku.exe` n'écrit jamais sous `HKLM` : la
 seule écriture de ce genre est la valeur d'approbation ci-dessus, faite par
@@ -1357,13 +1357,13 @@ d'éléments. La conception complète est dans `specs/confidentialite-spec.md`
   fichiers : `History`, `Archived History`, `Visited Links`, `Favicons`,
   `Shortcuts`, `Network Action Predictor`, et `Top Sites` sauf pour Edge, chacun
   avec `-journal`, `-wal`, `-shm`, rien d'autre. **Jamais** : `Local State`,
-  `Login Data`, `Web Data`, `Bookmarks`, `Preferences`, `Sessions`, `Cookies`,
+  `Login Data`, `Web Data`, `Bookmarks`, `Preferences`, `Secure Preferences`, `Sessions`, `Current Session`, `Sync Data`, `Cookies`,
   `Network`, `Local Storage`, `IndexedDB`, `Extensions`, `Local Extension
-  Settings`. Un essai parcourt toutes les règles et échoue si l'un de ces noms y
+  Settings` (la liste de la spécification, plus trois noms de la critique ; un essai la compare, écrite en dur). Un essai parcourt toutes les règles et échoue si l'un de ces noms y
   apparaît ; l'effacement refuse aussi, par `is_forbidden`, tout lot qui en
   contiendrait un.
 - **Fichiers récents** : `SHAddToRecentDocs(SHARD_PIDL, NULL)` sous COM, puis le
-  nombre de raccourcis de `Recent` est **relu** (l'appel ne rend rien) ; zéro, `erased` ; moins qu'avant, `partial` ; autant ou plus, `failed`.
+  nombre de raccourcis de `Recent` est **relu** (l'appel ne rend rien). Tant qu'il en reste, la relecture attend et recommence (cinq lectures au plus, 100 ms entre deux) : le premier zéro donne `erased` ; sinon, moins qu'avant, `partial` ; autant ou plus, `failed`.
 - **Ce qui a été tapé** : les **valeurs** de `RunMRU`, `TypedPaths`,
   `WordWheelQuery` sous `HKCU`. Les clés sont une énumération compilée : l'hôte
   ne reçoit jamais une chaîne de chemin.
@@ -1376,14 +1376,25 @@ d'éléments. La conception complète est dans `specs/confidentialite-spec.md`
 
 Quatre étapes, avec `fs::Removal` : (1) la chaîne de dossiers du profil est
 revérifiée **à l'effacement** (aucun lien) ; (2) **tout le lot** est ouvert sans
-aucun partage et sans suivre de lien, chaque fichier doit être ordinaire, **n'avoir
-qu'un seul nom** et ne pas être « en ligne uniquement » ; une seule ouverture qui
-échoue (`inUse`, `failed`, `changed`) et rien n'est touché, annexes comprises ;
-(3) poignées tenues, le navigateur est revérifié fermé ; (4) tout est marqué, la
-base d'abord, puis tout est confirmé, les annexes d'abord. Une base ne part jamais
-sans ses annexes : `partial` n'existe pas pour les fichiers (il vaut pour le registre et pour `recent`). Pour lire le nombre
-de noms et « en ligne uniquement » sur l'entrée ouverte, `fs::Removal::facts` a
-été ajouté ; ses autres usages (le grand vide) sont inchangés.
+aucun partage et sans suivre de lien, chaque fichier doit être ordinaire, **identifié
+par la liste** (un fichier sans identifiant rend le lot irrégulier : rien ne part),
+**n'avoir qu'un seul nom** et ne pas être « en ligne uniquement » ; une seule ouverture
+qui échoue (`inUse`, `failed`, `changed`) et rien n'est touché, annexes comprises ;
+(3) poignées tenues, dans la section critique (voir « Exclusivité »), le navigateur est
+revérifié fermé **et le dossier du profil est relisté** : les fichiers de la règle
+présents doivent être exactement ceux qui sont ouverts, sinon `changed` et rien n'est
+marqué (une annexe apparue depuis l'inventaire) ; (4) tout est marqué, **chaque base
+avant ses propres annexes** (`marking_order`), puis tout est confirmé. Une base ne part
+jamais sans ses annexes : `partial` n'existe pas pour les fichiers (il vaut pour le
+registre et pour `recent`). Pour lire le nombre de noms et « en ligne uniquement » sur
+l'entrée ouverte, `fs::Removal::facts` a été ajouté ; ses autres usages (le grand vide)
+sont inchangés.
+
+**Pourquoi base d'abord.** Si le marquage était coupé net (arrêt brutal), Windows
+supprimerait ce qui est déjà marqué. Une annexe (`-journal`, `-wal`) orpheline à côté d'une
+base absente est écartée par SQLite quand le navigateur recrée la base **[à vérifier
+sur le vrai Windows : preuve 8 du test]** ; une base qui reste sans son journal chaud
+est ce qui l'abîme. Avec cet ordre, une coupure ne laisse que des annexes sans base.
 
 **Navigateur ouvert** : un processus du nom de l'exécutable (toutes les sessions)
 **ou** le `lockfile` de `User Data` tenu. Une machine qui ne sait pas lister ses
@@ -1396,7 +1407,7 @@ d'écrire des valeurs ; refusée si elle porte `SymbolicLinkValue` de type
 `REG_LINK`. Les noms sont énumérés (4096 valeurs, 255 unités au plus), puis
 supprimés **par nom**, la valeur d'index (`MRUList`, `MRUListEx`) d'abord ; la clé
 reste ; puis **relecture** : des valeurs restées ou revenues (l'Explorateur qui
-réécrit ce qu'il a en mémoire) donnent `partial`, jamais `erased`.
+réécrit ce qu'il a en mémoire) donnent `partial`, jamais `erased`. Un nom de valeur qui contient un zéro n'est **jamais** passé à la suppression (Windows le couperait et viserait une autre valeur) : la valeur reste, la liste est dite incomplète, donc `partial`. Le compte affiché (`typed`) ne compte ni les valeurs d'index (`MRUList`, `MRUListEx`) ni le nom vide.
 
 ### Identifiants, nom des profils, résultats
 
@@ -1416,13 +1427,18 @@ grand vide est lu une fois le verrou pris. Un effacement refuse (`busy`) pendant
 grand vide, une mise à la corbeille de restes ou un autre effacement, **et
 l'inverse**.
 
-Fenêtre fermée pendant un effacement : rien n'attend la fin, le programme sort.
-Les fichiers d'un profil restent tout ou rien (avant le marquage, rien ne part ;
-une fois tout marqué, même un arrêt brutal supprime le lot en entier). Les
-valeurs du registre, les fichiers récents et le presse-papiers ne sont pas
-atomiques : un effacement coupé en route peut laisser une de ces traces à moitié
-vidée, sans dommage (l'index part d'abord) et sans bilan affiché. Aucune autre
-trace ne commence.
+**Fenêtre fermée pendant un effacement.** `Backend::shutdown` lève d'abord un drapeau
+« on ferme » : plus aucune trace ne démarre, le guichet le lit avant chacune. Puis il
+attend, sur un verrou, la fin de la section critique d'un lot de fichiers
+(de la revérification du navigateur au dernier effacement : quelques appels
+système sur des fichiers déjà ouverts, donc très court). Les fichiers d'un profil sont
+donc tenus **par construction** : la fermeture ne peut pas tomber entre le premier
+marquage et le dernier effacement. Ils le sont aussi **par l'ordre** : chaque base est
+marquée avant ses annexes, de sorte que même un arrêt qu'aucun verrou n'arrête (le
+Gestionnaire des tâches, un plantage) ne laisse que des annexes sans base. Mais l'ensemble
+**n'est pas atomique** : le registre, les récents et le presse-papiers sont faits trace par
+trace, et un effacement coupé en route peut laisser l'une d'elles à moitié vidée, sans
+dommage (l'index part d'abord) et sans bilan affiché.
 
 ### Limites connues
 
@@ -1433,6 +1449,14 @@ trace ne commence.
 - Un `User Data` derrière un lien ou une jonction (déplacement du profil sur
   un autre disque) n'est pas proposé : Shinku n'entre dans aucun lien.
 - Un lot marqué puis une coupure de courant : aucun bilan (aucun journal).
+- `REG_OPTION_OPEN_LINK` ne protège que le **dernier** composant du chemin d'une clé : un lien
+  posé plus haut (`…\Explorer`) serait suivi. Il faut déjà un programme du même
+  compte pour le poser.
+- Les noms de fichiers d'un lot sont comparés **exactement** : un `HISTORY` en majuscules
+  n'est pas vu (la ligne dit « Rien à effacer »), sans danger.
+- `lockfile` est ouvert avec l'accès en écriture, **jamais écrit ni créé** : c'est la
+  demande d'écriture qui entre en conflit de partage avec un navigateur ouvert
+  **[à vérifier sur le vrai Windows]**.
 - Pas de nom en double distingué (« Perso (2) ») : deux profils de même nom
   portent des numéros différents.
 - Ne sont pas faits : cookies et données de sites, Firefox, Opera, versions
@@ -1444,7 +1468,11 @@ trace ne commence.
   fait `SHAddToRecentDocs(NULL)` des épinglés et de « Recommandé » ; si
   `ClearHistory` exige la fenêtre au premier plan ; ce que fait l'Explorateur de
   `TypedPaths` à la fermeture d'une fenêtre ; les liens physiques NTFS et les
-  verrous réels.
+  verrous réels ; si `SHAddToRecentDocs` (COM en STA, sur un fil de travail sans boucle de
+  messages) et `ClearHistory` / `OpenClipboard` (avec la fenêtre d'un autre fil) marchent depuis
+  la commande `async` ; si l'Explorateur retire les raccourcis `.lnk` après l'appel (d'où
+  les relectures de `recent`) ; si SQLite écarte bien une annexe orpheline à côté d'une
+  base recréée (preuve 8).
 - Sept pages des réglages de Windows sont ouvertes par Shinku (liste fermée,
   `WindowsPage`), dont `ms-settings:privacy-activityhistory`,
   `ms-settings:search-permissions` et `ms-settings:privacy-feedback`.

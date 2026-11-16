@@ -434,7 +434,20 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     assert_eq!(privacy.groups[0].items[0].bytes, Some(55_000));
     assert_eq!(privacy.groups[4].items.len(), 3);
     assert!(privacy.groups[4].items.iter().all(|item| item.state == TraceState::Present));
-    samples.insert("privacyView", to_json(&privacy));
+    // `profile` (et `app`, `slot`) peut valoir `null` : un profil sans nom lisible, le bloc
+    // Windows. La forme du contrat réunit les deux (une valeur nulle n'apprend rien), donc le
+    // fichier note `"string"` ; la nullité est tenue ici, par l'échantillon lui-même, qui
+    // doit porter les deux cas, et par les types de la page (`string | null`).
+    let sent = to_json(&privacy);
+    let profiles: Vec<&Value> = sent["groups"]
+        .as_array()
+        .expect("des blocs")
+        .iter()
+        .map(|group| &group["profile"])
+        .collect();
+    assert!(profiles.iter().any(|profile| profile.is_string()), "un profil nommé");
+    assert!(profiles.iter().any(|profile| profile.is_null()), "un profil sans nom : null");
+    samples.insert("privacyView", sent);
     let ids: Vec<String> = [&privacy.groups[0], &privacy.groups[4]]
         .iter()
         .flat_map(|group| group.items.iter().map(|item| item.id.to_string()))

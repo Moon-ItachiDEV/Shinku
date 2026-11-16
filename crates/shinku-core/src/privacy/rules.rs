@@ -156,13 +156,16 @@ pub fn history_lot(browser: Browser) -> Vec<String> {
 /// favoris, les réglages, les onglets, les cookies, les données des sites et
 /// les extensions. Un essai en parcourt les règles ; l'effacement lui-même
 /// refuse un lot où l'un de ces noms apparaîtrait ([`is_forbidden`]).
-pub const NEVER: [&str; 12] = [
+pub const NEVER: [&str; 15] = [
     "Local State",
     "Login Data",
     "Web Data",
     "Bookmarks",
     "Preferences",
+    "Secure Preferences",
     "Sessions",
+    "Current Session",
+    "Sync Data",
     "Cookies",
     "Network",
     "Local Storage",
@@ -385,6 +388,34 @@ mod tests {
                 assert!(!part.contains(['\\', '/', '*', '?', ':']) && !part.contains(".."));
             }
         }
+    }
+
+    #[test]
+    fn the_never_list_is_exactly_the_one_of_the_spec() {
+        // La liste de la spécification, écrite en dur (`Network\Cookies` y est un chemin :
+        // ici `Network` et `Cookies` le couvrent), plus ce que la critique (M2) ajoute.
+        let mut written = vec![
+            "Local State",
+            "Login Data",
+            "Web Data",
+            "Bookmarks",
+            "Preferences",
+            "Sessions",
+            "Network",
+            "Cookies",
+            "Local Storage",
+            "IndexedDB",
+            "Extensions",
+            "Local Extension Settings",
+            "Secure Preferences",
+            "Current Session",
+            "Sync Data",
+        ];
+        let mut actual = NEVER.to_vec();
+        written.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, written);
+        assert!(is_forbidden(r"Network\Cookies"));
     }
 
     #[test]

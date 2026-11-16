@@ -60,7 +60,7 @@ const INHERIT_ONLY: u8 = 0x08;
 const MAX_ACES: u32 = 4096;
 
 /// Le texte d'un SID (`S-1-5-32-544`), `None` s'il n'est pas valide.
-fn sid_text(sid: PSID) -> Option<String> {
+pub(super) fn sid_text(sid: PSID) -> Option<String> {
     if sid.0.is_null() {
         return None;
     }

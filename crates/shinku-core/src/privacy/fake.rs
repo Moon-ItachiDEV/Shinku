@@ -6,7 +6,7 @@
 //! profil, le registre (avec ses clés liens et ses valeurs qui reviennent),
 //! les raccourcis récents et le presse-papiers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -26,6 +26,9 @@ pub enum RecentClear {
     Nothing,
     /// Il en laisse exactement ce nombre (plus ou moins qu'avant).
     Leaves(u32),
+    /// Il en laisse le nombre d'avant, qui ne tombe à zéro qu'après ce nombre de
+    /// relectures (l'Explorateur qui retire les raccourcis un peu plus tard).
+    After(u32),
     /// L'appel échoue.
     Fails,
 }
@@ -59,7 +62,29 @@ struct Fake {
     clipboard_result: ClipboardClear,
     clipboard_calls: Vec<isize>,
     recent_calls: u32,
+    /// Relectures qui voient encore les raccourcis avant qu'ils ne disparaissent.
+    recent_late: Option<u32>,
+    pauses: Vec<u64>,
     gate: Option<(Sender<()>, Receiver<()>)>,
+    /// Les réponses de `running_processes`, une par appel, avant `processes`.
+    process_script: VecDeque<Option<Vec<String>>>,
+    process_calls: usize,
+    /// À cet appel (numéro absolu) de `running_processes`, ce qu'il faut faire.
+    process_hook: Option<(usize, ProcessHook)>,
+}
+
+/// Ce que le faux hôte fait quand `running_processes` atteint un certain appel.
+pub enum ProcessHook {
+    /// S'arrêter jusqu'à ce que le test lâche la barrière.
+    Block(Sender<()>, Receiver<()>),
+    /// Exécuter ceci (un autre acteur qui agit sur le disque à ce moment).
+    Run(Box<dyn FnOnce() + Send>),
+}
+
+impl std::fmt::Debug for ProcessHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProcessHook")
+    }
 }
 
 /// La machine des essais.
@@ -91,7 +116,12 @@ impl FakePrivacyHost {
                 },
                 clipboard_calls: Vec::new(),
                 recent_calls: 0,
+                recent_late: None,
+                pauses: Vec::new(),
                 gate: None,
+                process_script: VecDeque::new(),
+                process_calls: 0,
+                process_hook: None,
             }),
         }
     }
@@ -123,6 +153,45 @@ impl FakePrivacyHost {
     pub fn set_processes(&self, processes: Option<&[&str]>) {
         self.state().processes =
             processes.map(|list| list.iter().map(|s| (*s).to_owned()).collect());
+    }
+
+    /// Les prochains appels de `running_processes` donnent ces réponses, dans
+    /// l'ordre ; ensuite, `set_processes` reprend la main.
+    pub fn script_processes(&self, answers: &[Option<&[&str]>]) {
+        self.state().process_script = answers
+            .iter()
+            .map(|answer| answer.map(|list| list.iter().map(|s| (*s).to_owned()).collect()))
+            .collect();
+    }
+
+    /// Combien de fois `running_processes` a été appelé.
+    pub fn process_calls(&self) -> usize {
+        self.state().process_calls
+    }
+
+    /// Au `call`-ième appel (à partir de 1, **à partir de maintenant**) de `running_processes`, la machine s'arrête
+    /// jusqu'à ce que le test lâche la barrière. Rend ce que le test attend pour savoir
+    /// que l'appel est arrivé là, et ce qu'il envoie pour le laisser finir.
+    pub fn block_process_call(&self, call: usize) -> (Receiver<()>, Sender<()>) {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let mut state = self.state();
+        let at = state.process_calls + call;
+        state.process_hook = Some((at, ProcessHook::Block(entered_tx, release_rx)));
+        (entered_rx, release_tx)
+    }
+
+    /// Au `call`-ième appel (à partir de 1, à partir de maintenant) de `running_processes`, exécute `action`
+    /// (une fois) : quelqu'un d'autre agit sur le disque pile à ce moment.
+    pub fn run_at_process_call(&self, call: usize, action: impl FnOnce() + Send + 'static) {
+        let mut state = self.state();
+        let at = state.process_calls + call;
+        state.process_hook = Some((at, ProcessHook::Run(Box::new(action))));
+    }
+
+    /// Les attentes demandées par le cœur (millisecondes), dans l'ordre. Elles ne durent pas.
+    pub fn pauses(&self) -> Vec<u64> {
+        self.state().pauses.clone()
     }
 
     /// Le verrou de ce dossier `User Data` est tenu (ou lâché).
@@ -245,7 +314,30 @@ impl PrivacyHost for FakePrivacyHost {
     }
 
     fn running_processes(&self) -> Option<Vec<String>> {
-        self.state().processes.clone()
+        let hook = {
+            let mut state = self.state();
+            state.process_calls += 1;
+            let call = state.process_calls;
+            if state.process_hook.as_ref().is_some_and(|(at, _)| *at == call) {
+                state.process_hook.take().map(|(_, hook)| hook)
+            } else {
+                None
+            }
+        };
+        // Le verrou de l'état est lâché : le crochet peut bloquer ou agir sans l'empêcher.
+        match hook {
+            Some(ProcessHook::Block(entered, release)) => {
+                let _ = entered.send(());
+                let _ = release.recv();
+            }
+            Some(ProcessHook::Run(action)) => action(),
+            None => {}
+        }
+        let mut state = self.state();
+        match state.process_script.pop_front() {
+            Some(answer) => answer,
+            None => state.processes.clone(),
+        }
     }
 
     fn lockfile_held(&self, user_data: &Path) -> bool {
@@ -253,11 +345,23 @@ impl PrivacyHost for FakePrivacyHost {
     }
 
     fn recent_count(&self) -> io::Result<u32> {
-        let state = self.state();
+        let mut state = self.state();
         if state.recent_unreadable {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));
         }
+        match state.recent_late {
+            Some(0) => {
+                state.recent = 0;
+                state.recent_late = None;
+            }
+            Some(reads) => state.recent_late = Some(reads - 1),
+            None => {}
+        }
         Ok(state.recent)
+    }
+
+    fn pause(&self, millis: u64) {
+        self.state().pauses.push(millis);
     }
 
     fn clear_recent(&self) -> io::Result<()> {
@@ -271,6 +375,10 @@ impl PrivacyHost for FakePrivacyHost {
             RecentClear::Nothing => Ok(()),
             RecentClear::Leaves(left) => {
                 state.recent = left;
+                Ok(())
+            }
+            RecentClear::After(reads) => {
+                state.recent_late = Some(reads);
                 Ok(())
             }
             RecentClear::Fails => Err(io::Error::other("refusé")),

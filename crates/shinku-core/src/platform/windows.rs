@@ -347,11 +347,12 @@ pub(super) fn apps_host() -> Arc<dyn AppsHost> {
     Arc::new(apps::SystemAppsHost::new())
 }
 
-/// Le module « Démarrage » sur cette machine.
+/// Le module « Confidentialité » sur cette machine.
 pub(super) fn privacy_host() -> Arc<dyn PrivacyHost> {
     Arc::new(privacy::SystemPrivacyHost::new())
 }
 
+/// Le module « Démarrage » sur cette machine.
 pub(super) fn startup_host() -> Arc<dyn StartupHost> {
     Arc::new(startup::SystemStartupHost::new())
 }

@@ -89,6 +89,11 @@ impl SystemPrivacyHost {
 
     /// Ouvre la clé sans suivre de lien, avec les seuls droits de lire et d'écrire des
     /// valeurs. `Ok(None)` : elle n'existe pas. Un lien de registre est refusé.
+    ///
+    /// Limite connue : `REG_OPTION_OPEN_LINK` ne protège que le **dernier** composant
+    /// du chemin. Un lien posé plus haut (`…\CurrentVersion\Explorer`, par exemple) serait
+    /// suivi par Windows. Le poser demande un programme déjà installé dans le même compte,
+    /// et l'Explorateur lui-même ne marcherait plus.
     fn open(&self, key: TypedKey) -> Result<Option<Key>, RegistryError> {
         let mut handle = HKEY::default();
         // SAFETY: le chemin est une chaîne terminée par zéro, valide pendant l'appel ;
@@ -152,10 +157,11 @@ impl PrivacyHost for SystemPrivacyHost {
     }
 
     fn lockfile_held(&self, user_data: &Path) -> bool {
-        // On essaie d'ouvrir `lockfile` en lecture **et en écriture**, sans le
-        // créer ni rien y écrire : le navigateur le tient sans partage, ou avec un
-        // partage en lecture seule, et les deux refusent cette ouverture.
-        // [à vérifier sur un vrai Chrome : le mode de partage exact de `lockfile`.]
+        // `lockfile` est ouvert avec l'accès en écriture, **jamais écrit ni créé** (pas de
+        // `create`). C'est la demande d'écriture qui entre en conflit de partage avec un
+        // navigateur ouvert : le navigateur le tient sans partage, ou avec un partage en
+        // lecture seule, et les deux refusent cette ouverture.
+        // [à vérifier sur le vrai Windows : le mode de partage exact de `lockfile`.]
         let result = OpenOptions::new()
             .read(true)
             .write(true)
@@ -272,6 +278,11 @@ impl PrivacyHost for SystemPrivacyHost {
 
     fn registry_delete(&self, key: TypedKey, name: &ValueName) -> Result<(), RegistryError> {
         let Some(open) = self.open(key)? else { return Ok(()) };
+        // Un zéro dans le nom le couperait : il viserait une autre valeur. Le cœur ne
+        // le passe jamais ; ceinture et bretelles.
+        if name.0.contains(&0) {
+            return Err(RegistryError::Io(io::Error::from(io::ErrorKind::InvalidInput)));
+        }
         let mut wide = name.0.clone();
         wide.push(0);
         // SAFETY: la clé est ouverte pour `open` ; `wide` est terminée par zéro et
@@ -282,6 +293,10 @@ impl PrivacyHost for SystemPrivacyHost {
         } else {
             Err(RegistryError::Io(os_error(result)))
         }
+    }
+
+    fn pause(&self, millis: u64) {
+        thread::sleep(Duration::from_millis(millis));
     }
 
     fn clipboard_filled(&self) -> io::Result<bool> {
@@ -442,13 +457,72 @@ mod tests {
         assert_eq!(sandbox.names(TypedKey::RunMru), None);
     }
 
+    /// Le SID du compte qui lance l'essai, lu dans le jeton : `HKCU` est
+    /// `\Registry\User\<ce SID>`.
+    fn current_user_sid() -> String {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Security::{GetTokenInformation, TOKEN_USER, TokenUser};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        // SAFETY: pseudo-handle du processus courant, toujours valide.
+        let token = super::super::token_of(unsafe { GetCurrentProcess() }).expect("jeton");
+        let handle = HANDLE(token.as_raw_handle());
+        let mut size = 0u32;
+        // SAFETY: premier appel pour connaître la taille : aucun tampon n'est donné.
+        let _ = unsafe { GetTokenInformation(handle, TokenUser, None, 0, &raw mut size) };
+        // Des `u64` : le tampon est aligné pour un `TOKEN_USER`.
+        let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+        // SAFETY: `buffer` fait au moins `size` octets ; Windows y écrit un `TOKEN_USER`.
+        unsafe {
+            GetTokenInformation(
+                handle,
+                TokenUser,
+                Some(buffer.as_mut_ptr().cast()),
+                size,
+                &raw mut size,
+            )
+        }
+        .expect("TokenUser");
+        // SAFETY: le tampon contient un `TOKEN_USER` valide, vivant pendant la lecture ;
+        // le SID qu'il désigne est dans le même tampon.
+        let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+        super::super::security::sid_text(sid).expect("SID du compte")
+    }
+
+    /// Vrai si ouvrir la clé **en suivant** les liens (sans `REG_OPTION_OPEN_LINK`) lit
+    /// cette valeur : le lien mène donc bien à la cible.
+    fn link_leads_to(sandbox: &Sandbox, key: TypedKey, value: &str) -> bool {
+        let mut handle = HKEY::default();
+        // SAFETY: chaîne terminée par zéro ; `handle` reçoit le handle.
+        let opened = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                &HSTRING::from(sandbox.host.key_path(key)),
+                None,
+                KEY_QUERY_VALUE,
+                &raw mut handle,
+            )
+        };
+        if opened != ERROR_SUCCESS {
+            return false;
+        }
+        let key = Key(handle);
+        // SAFETY: clé ouverte ; ni type ni données ne sont demandés.
+        let read =
+            unsafe { RegQueryValueExW(key.0, &HSTRING::from(value), None, None, None, None) };
+        read == ERROR_SUCCESS || read == ERROR_MORE_DATA
+    }
+
     #[test]
     fn a_registry_link_is_refused_and_its_target_untouched() {
         let sandbox = Sandbox::new();
-        // La cible : une clé d'essai sous la même racine, pleine.
+        // La cible : une clé qui existe vraiment, sous `HKCU` de ce compte, avec une valeur.
         sandbox.text(TypedKey::TypedPaths, "cible");
-        let target =
-            format!(r"\Registry\User\.Default\{}", sandbox.host.key_path(TypedKey::TypedPaths));
+        let target = format!(
+            r"\Registry\User\{}\{}",
+            current_user_sid(),
+            sandbox.host.key_path(TypedKey::TypedPaths)
+        );
         let Some(link) = sandbox.create(
             TypedKey::RunMru,
             REG_OPTION_CREATE_LINK,
@@ -468,6 +542,12 @@ mod tests {
             eprintln!("[à vérifier] valeur de lien refusée : essai passé");
             return;
         }
+        // Avant tout : en suivant le lien, on tombe bien sur la cible (sinon l'essai ne
+        // prouverait rien).
+        assert!(
+            link_leads_to(&sandbox, TypedKey::RunMru, "cible"),
+            "le lien doit mener à la valeur de la cible"
+        );
         match sandbox.host.registry_values(TypedKey::RunMru) {
             Err(RegistryError::Link) => {}
             other => panic!("un lien devait être refusé : {other:?}"),
@@ -477,7 +557,43 @@ mod tests {
             Err(RegistryError::Link)
         ));
         assert_eq!(erase_key(&sandbox.host, TypedKey::RunMru), KeyOutcome::Failed);
+        // La cible est intacte : sa valeur est toujours là, et c'est la même clé que le lien vise.
         assert_eq!(sandbox.names(TypedKey::TypedPaths).unwrap(), ["cible"]);
+        assert!(link_leads_to(&sandbox, TypedKey::RunMru, "cible"));
+    }
+
+    #[test]
+    fn a_value_name_longer_than_the_bound_is_left_and_the_key_is_partial() {
+        let sandbox = Sandbox::new();
+        let longest = "n".repeat(MAX_VALUE_NAME);
+        let too_long = "m".repeat(MAX_VALUE_NAME + 1);
+        sandbox.text(TypedKey::TypedPaths, "url1");
+        sandbox.text(TypedKey::TypedPaths, &longest);
+        sandbox.text(TypedKey::TypedPaths, &too_long);
+        let found = sandbox.host.registry_values(TypedKey::TypedPaths).unwrap().unwrap();
+        // 255 unités : encore prise ; 256 : laissée, et la liste est dite incomplète.
+        assert!(!found.complete);
+        let names: Vec<String> =
+            found.names.iter().map(|n| String::from_utf16_lossy(&n.0)).collect();
+        assert!(names.contains(&longest) && names.contains(&"url1".to_owned()));
+        assert!(!names.contains(&too_long));
+        assert_eq!(names.len(), 2);
+        assert_eq!(erase_key(&sandbox.host, TypedKey::TypedPaths), KeyOutcome::Partial);
+        // Le nom trop long n'est pas listé (jamais supprimé), mais il compte : liste incomplète.
+        let left = sandbox.host.registry_values(TypedKey::TypedPaths).unwrap().unwrap();
+        assert!(left.names.is_empty() && !left.complete);
+    }
+
+    #[test]
+    fn a_name_with_a_nul_is_refused_by_the_host_itself() {
+        let sandbox = Sandbox::new();
+        sandbox.text(TypedKey::RunMru, "ab");
+        let name = ValueName(vec![u16::from(b'a'), 0, u16::from(b'c')]);
+        assert!(matches!(
+            sandbox.host.registry_delete(TypedKey::RunMru, &name),
+            Err(RegistryError::Io(_))
+        ));
+        assert_eq!(sandbox.names(TypedKey::RunMru).unwrap(), ["ab"]);
     }
 
     #[test]
