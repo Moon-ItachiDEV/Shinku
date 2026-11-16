@@ -11,7 +11,7 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 
 import type { Backend, HistoryView } from '../src/backend/types.ts';
 import { journalFocus } from '../src/model/journal.ts';
-import { IDLE_SESSION } from '../src/state.ts';
+import { IDLE_SESSION, initialState } from '../src/state.ts';
 
 // ── Un faux environnement de page ──────────────────────────────────────────
 
@@ -58,6 +58,7 @@ Object.assign(globalThis, {
 });
 
 const { App } = await import('../src/app.ts');
+const { pageKey } = await import('../src/views/shell.ts');
 
 // ── Un faux cœur dont les réponses se résolvent à la main ──────────────────
 
@@ -103,9 +104,9 @@ function view(...lines: HistoryView['lines']): HistoryView {
 
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
-function start() {
+function start(focusable: unknown[] = []) {
   const fake = fakeBackend();
-  const root = { querySelectorAll: () => [] } as unknown as HTMLElement;
+  const root = { querySelectorAll: () => focusable } as unknown as HTMLElement;
   const app = new App(fake.backend, root, () => {});
   const actions = app['actions'];
   return {
@@ -256,4 +257,38 @@ test('« Voir leurs licences » : rien n’est dit si le fichier s’ouvre, une 
 
 test('le repère du titre existe pour rendre le focus après l’oubli', () => {
   assert.equal(journalFocus.title, 'journal-title');
+});
+
+test('un double clic sur « Voir leurs licences » n’appelle le cœur qu’une fois', async () => {
+  const page = start();
+  page.actions.openLicences();
+  page.actions.openLicences();
+  assert.equal(page.of('openLicences').length, 1, 'le second geste, pendant l’appel, ne part pas');
+  page.of('openLicences')[0]?.resolve('opened');
+  await flush();
+  page.actions.openLicences();
+  assert.equal(page.of('openLicences').length, 2, 'une fois la réponse venue, on peut recommencer');
+});
+
+test('un grand vide qui se termine sur le Journal ne redessine pas toute la page', () => {
+  // `keyed` redessine tout ce qui est sous une clé qui change, et le bouton qui avait le focus le perd.
+  const state = (pane: 'home' | 'scan', route: 'journal' | 'privacy') => ({ ...initialState(NOW), route, pane });
+  assert.equal(pageKey(state('home', 'journal')), pageKey(state('scan', 'journal')));
+  // Les autres pages gardent leur clé par volet.
+  assert.notEqual(pageKey(state('home', 'privacy')), pageKey(state('scan', 'privacy')));
+  const cleaning = { ...state('home', 'journal'), session: { ...IDLE_SESSION, state: 'cleaning' as const, clean: {} as never } };
+  assert.equal(pageKey(cleaning), pageKey(state('home', 'journal')));
+});
+
+test('après « Oublier » confirmé, le focus est rendu au titre de la page', async () => {
+  const focused: string[] = [];
+  const element = (key: string) => ({ dataset: { fk: key }, focus: () => focused.push(key) });
+  const page = start([element(journalFocus.forget), element(journalFocus.title)]);
+  await page.open(view(UNINSTALL));
+  page.actions.askForgetUninstalls();
+  page.actions.confirmForgetUninstalls();
+  page.of('forgetUninstalls')[0]?.resolve(view());
+  await flush();
+  await flush();
+  assert.deepEqual(focused, [journalFocus.title]);
 });

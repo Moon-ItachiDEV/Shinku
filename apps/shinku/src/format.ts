@@ -156,12 +156,13 @@ export function formatSince(then: number, now: number): string {
   const dayOf = (value: Date): number => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
   // Les jours se comptent sur le calendrier, pas en tranches de 24 h : un changement d'heure ne les décale pas.
   const days = Math.round((dayOf(today) - dayOf(date)) / DAY);
-  if (days <= 0) {
+  if (days === 0) {
     return clock;
   }
   if (days === 1) {
     return `hier, ${clock}`;
   }
+  // Un jour après aujourd'hui (une horloge en avance : le cœur tolère 24 h) montre son vrai jour.
   return `${formatDay(then, now)}, ${clock}`;
 }
 

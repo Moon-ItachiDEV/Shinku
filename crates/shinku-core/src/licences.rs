@@ -103,6 +103,14 @@ impl LicencesHost for InertLicences {
     }
 }
 
+/// Le fichier des licences à côté de cet exécutable : son dossier, sans `\\?\`
+/// (le shell ne comprend pas ce préfixe ; un chemin réseau `\\?\UNC\` le garde),
+/// puis le nom fixe. `None` si le chemin n'est pas du texte.
+pub fn licences_path(exe: &Path) -> Option<PathBuf> {
+    let dir = without_verbatim(exe.parent()?.to_str()?);
+    Some(Path::new(&dir).join(FILE_NAME))
+}
+
 /// Cette machine : le fichier est dans le dossier de l'exécutable en cours.
 #[derive(Debug)]
 pub struct SystemLicences;
@@ -113,9 +121,7 @@ impl LicencesHost for SystemLicences {
         if !cfg!(windows) {
             return None;
         }
-        let exe = std::env::current_exe().ok()?;
-        let dir = without_verbatim(exe.parent()?.to_str()?);
-        Some(Path::new(&dir).join(FILE_NAME))
+        licences_path(&std::env::current_exe().ok()?)
     }
 
     fn facts(&self, path: &Path) -> Option<FileFacts> {
@@ -151,6 +157,22 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    /// Les chemins de Windows ne se lisent qu'avec les règles de Windows : sous
+    /// Wine et sur la machine d'intégration, pas sous Linux.
+    #[cfg(windows)]
+    #[test]
+    fn the_file_is_next_to_the_executable_without_the_verbatim_prefix() {
+        let local = licences_path(Path::new(r"\\?\C:\Program Files\Shinku\shinku.exe"));
+        assert_eq!(local, Some(PathBuf::from(r"C:\Program Files\Shinku\LICENCES-TIERS.txt")));
+        let plain = licences_path(Path::new(r"C:\Shinku\shinku.exe"));
+        assert_eq!(plain, Some(PathBuf::from(r"C:\Shinku\LICENCES-TIERS.txt")));
+        let network = licences_path(Path::new(r"\\?\UNC\serveur\partage\Shinku\shinku.exe"));
+        assert_eq!(
+            network,
+            Some(PathBuf::from(r"\\?\UNC\serveur\partage\Shinku\LICENCES-TIERS.txt"))
+        );
+    }
 
     #[derive(Debug)]
     struct Fake {

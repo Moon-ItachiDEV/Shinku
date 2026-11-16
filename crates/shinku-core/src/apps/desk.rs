@@ -25,7 +25,7 @@ use crate::apps::host::{AppsHost, RawRegistration};
 use crate::apps::launch::{Plan, plan};
 use crate::apps::leftovers::{self, RemoveOutcome, RemoveResult, Snapshot};
 use crate::apps::notes::{UninstallNote, UninstallStore};
-use crate::apps::view::{AppRow, AppsView, FollowView, Outcome, RemoveLeftovers, UninstallRefusal};
+use crate::apps::view::{AppRow, AppsView, Outcome, RemoveLeftovers, UninstallRefusal};
 use crate::apps::{AppId, MAX_LEFTOVERS, Removal, app_from, list};
 
 /// L'heure murale, en millisecondes depuis 1970. Les essais la remplacent.
@@ -43,7 +43,13 @@ pub struct AppsDesk {
     host: Arc<dyn AppsHost>,
     follow: Mutex<Follow>,
     /// `uninstalls.json`. Seul ce guichet l'écrit, et jamais sous le verrou du
-    /// suivi : l'ordre est toujours suivi **puis plus rien**, ou notes seules.
+    /// suivi. **Ordre des verrous : les notes d'abord, puis le suivi** (le
+    /// suivi est rendu aussitôt) ; aucun chemin ne prend le suivi puis les notes.
+    ///
+    /// Invariant : `Notes::current` désigne la note de la dernière app vue
+    /// partie, ou rien (écriture ratée, pas de magasin, « Oublier »). Les restes
+    /// ne s'ajoutent qu'en phase `Removed`, qu'on n'atteint qu'après le passage
+    /// qui lève le drapeau, et `settle_note` écrit la note avant tout ajout.
     notes: Mutex<Notes>,
     clock: Clock,
     /// Pris (sans attendre) par une mise à la corbeille, un `rescan`, ou le
@@ -100,18 +106,15 @@ impl AppsDesk {
         }
     }
 
-    /// Écrit la note d'une app vue partie, et en garde la clé.
-    fn write_note(&self, name: &str) {
-        let at_ms = (self.clock)();
-        let mut notes = self.notes_lock();
-        let Some(store) = &notes.store else { return };
-        let mut file = store.load();
-        file.push(UninstallNote::new(at_ms, name));
-        // Une écriture qui échoue n'empêche rien : la clé n'est gardée que si la
-        // note est partie.
-        if store.save(&file).is_ok() {
-            notes.current = Some(at_ms);
-        }
+    /// Écrit la note d'une app vue partie, sous le verrou des notes déjà pris
+    /// par l'appelant. La clé devient l'heure de la note si elle est partie, et
+    /// rien sinon : elle ne désigne jamais la note d'une autre app.
+    fn write_note(notes: &mut Notes, at_ms: i64, name: &str) {
+        notes.current = notes.store.as_ref().and_then(|store| {
+            let mut file = store.load();
+            file.push(UninstallNote::new(at_ms, name));
+            store.save(&file).ok().map(|_| at_ms)
+        });
     }
 
     /// Ajoute des restes mis à la corbeille à la note courante, s'il y en a une.
@@ -131,18 +134,14 @@ impl AppsDesk {
         let _ = store.save(&file);
     }
 
-    /// Oublie la clé de la note courante (le suivi est revenu à `Idle`, ou une
-    /// autre désinstallation commence).
-    fn end_note(&self) {
-        self.notes_lock().current = None;
-    }
-
-    /// Relève le drapeau « l'app est partie » et écrit la note, hors du verrou
-    /// du suivi.
+    /// Relève le drapeau « l'app est partie » et écrit la note. Les notes
+    /// d'abord, puis le suivi (rendu aussitôt) : la clé et la note changent
+    /// ensemble, et l'écriture du fichier ne se fait pas sous le verrou du suivi.
     fn settle_note(&self) {
+        let mut notes = self.notes_lock();
         let gone = self.follow().take_gone();
         if let Some(name) = gone {
-            self.write_note(&name);
+            Self::write_note(&mut notes, (self.clock)(), &name);
         }
     }
 
@@ -168,7 +167,7 @@ impl AppsDesk {
     }
 
     /// Un pas de suivi, puis, s'il le faut, la recherche des restes (hors verrou).
-    fn poll(&self) {
+    pub(super) fn poll(&self) {
         let step = self.follow().poll(self.host.as_ref());
         if let Step::Search { generation, snapshot, mut next_key } = step {
             let found = leftovers::search(self.host.as_ref(), &snapshot, &mut next_key);
@@ -183,12 +182,7 @@ impl AppsDesk {
             let mut follow = self.follow();
             (follow.view(self.host.uptime()), follow.take_kept())
         };
-        // Le drapeau est relevé avant de regarder si le suivi est revenu à `Idle` :
-        // un « Revenir à la liste » après le passage garde sa note, et en oublie la clé.
         self.settle_note();
-        if matches!(follow, FollowView::Idle) {
-            self.end_note();
-        }
         AppsView {
             apps: listing.apps.iter().map(AppRow::from).collect(),
             complete: listing.complete,
@@ -240,7 +234,6 @@ impl AppsDesk {
         // `Launching` avant de lancer : un second geste est refusé pendant que
         // la fenêtre de Windows attend la personne.
         let generation = self.follow().begin(tracked).ok_or(UninstallRefusal::Busy)?;
-        self.end_note();
         let launched = host.launch(&program, &parameters, elevated, installer);
         self.follow().launched(generation, launched, host.uptime())?;
         Ok(self.view())

@@ -118,6 +118,14 @@ test('la page Mode jeu écrit la durée par la même fonction, et se tait sans e
   assert.ok(fr.game.lastOk('X', '5 min').includes(', 5 min.'));
 });
 
+test('une date jusqu’à un jour dans le futur montre son vrai jour, pas une heure d’aujourd’hui', () => {
+  const tomorrow = new Date(NOW + 20 * HOUR);
+  const row = rowOf(uninstall({ atMs: tomorrow.getTime() }), NOW);
+  assert.ok(row.date !== null);
+  const shown = textOf(journalView({ ...initialState(NOW), history: { lines: [uninstall({ atMs: tomorrow.getTime() })], more: false } } as never, noActions));
+  assert.ok(/le \d+\u00a0\S+, \d\d:\d\d/.test(shown), shown);
+});
+
 test('la durée n’existe que si la fin est après le début', () => {
   assert.equal(formatSpan(10, 10), null);
   assert.equal(formatSpan(20, 10), null);
@@ -161,7 +169,7 @@ test('la page vide, en attente, en échec, et la note de fin', () => {
   assert.ok(htmlOf(journalView({ ...initialState(NOW), history: { lines: [clean()], more: true } } as never, noActions)).includes(fr.journal.more));
 });
 
-test('un nom est du texte : jamais écrit comme du HTML, et entier dans title', () => {
+test('un nom est du texte : jamais écrit comme du HTML, isolé par <bdi>, entier et sans title', () => {
   // Le faux gabarit des essais n'échappe pas ; c'est lit-html qui le fait, sauf `unsafeHTML`, que la page n'emploie pas.
   for (const file of ['../src/views/journal.ts', '../src/model/journal.ts']) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
@@ -169,7 +177,13 @@ test('un nom est du texte : jamais écrit comme du HTML, et entier dans title', 
   }
   const name = 'Un très long nom '.repeat(8);
   const shown: Node | null = query(parse(page([uninstall({ name })])), 'bdi.jname');
-  assert.equal(shown?.attrs['title'], name);
+  assert.ok(shown !== null, 'le nom est isolé par <bdi>');
+  assert.equal(shown?.attrs['title'], undefined, 'le nom est écrit en entier : pas de title');
+  assert.ok(textOfNode(shown as Node).includes(name.trim()));
+  // La feuille de style le laisse passer à la ligne : ni points de suspension, ni largeur bornée.
+  const css = readFileSync(new URL('../src/styles/journal.css', import.meta.url), 'utf8');
+  assert.ok(css.includes('overflow-wrap: anywhere'));
+  assert.ok(!/text-overflow|inline-block|max-width: \d+ch/.test(css));
 });
 
 test('la confirmation de l’oubli : ses mots, et rien tant qu’elle n’est pas demandée', () => {
@@ -200,8 +214,18 @@ test('le faux cœur : une ligne de chaque sorte, et « Oublier » ne retire que 
   const backend = mockBackend(demoOptions(''));
   const first = await backend.historyView();
   assert.deepEqual([...new Set(first.lines.map((line) => line.kind))].sort(), ['clean', 'game', 'startupCut', 'uninstall']);
-  assert.ok(first.lines.some((line) => line.kind === 'clean' && line.state === 'running'));
-  assert.ok(first.lines.some((line) => line.kind === 'clean' && line.state === 'interrupted'));
+  // Comme le produit : une seule partie, pas de grand vide « en cours » vieux de plusieurs jours.
+  assert.equal(first.lines.filter((line) => line.kind === 'game').length, 1);
+  assert.ok(!first.lines.some((line) => line.kind === 'clean' && line.state === 'running'));
+  assert.ok(first.lines.some((line) => line.kind === 'clean' && line.state === 'completed' && line.recoverableBytes > 0));
+  assert.ok(first.lines.some((line) => line.kind === 'clean' && line.state === 'cancelled'));
+  const uninstalls = first.lines.filter((line) => line.kind === 'uninstall');
+  assert.equal(uninstalls.length, 2);
+  assert.ok(uninstalls.some((line) => line.leftovers > 0) && uninstalls.some((line) => line.leftovers === 0));
+  assert.ok(uninstalls.some((line) => line.name.length > 100));
+  const cuts = first.lines.filter((line) => line.kind === 'startupCut');
+  assert.equal(cuts.length, 2);
+  assert.ok(cuts.some((line) => line.backMs !== null) && cuts.some((line) => line.atMs === null));
   const after = await backend.forgetUninstalls();
   assert.ok(after.lines.length > 0 && after.lines.every((line) => line.kind !== 'uninstall'));
   assert.equal(await backend.openLicences(), 'missing');
@@ -224,6 +248,9 @@ test('l’essai de la fenêtre trouve dans la page ce qu’il cherche, et ses te
   assert.equal(EXPECTED.licences, fr.settings.licences);
   assert.equal(EXPECTED.uninstalled, fr.journal.uninstall.before.trim().replace(/[\u00a0\u202f]/g, ' '));
   assert.ok(fr.journal.clean.completed('x').replace(/[\u00a0\u202f]/g, ' ').startsWith(EXPECTED.cleaned));
+  const plain = (text: string): string => text.replace(/[\u00a0\u202f]/g, ' ');
+  assert.ok(plain(fr.journal.clean.totals(1, 0)).includes(EXPECTED.freed), 'les totaux disent « libérés »');
+  assert.ok(plain(fr.journal.clean.totals(0, 1)).includes(EXPECTED.binned), 'les totaux disent « mis à la corbeille »');
   assert.ok(fr.journal.uninstall.leftovers(3, 0).replace(/[\u00a0\u202f]/g, ' ').startsWith(EXPECTED.leftovers));
 });
 
@@ -236,5 +263,8 @@ test('l’essai de la fenêtre ne clique ni sur « Voir leurs licences » ni sur
   // Aucun clic sur ces boutons : pas de `click(` ni de `clickInPage` à leur sujet, ni de sélecteur de leurs boutons.
   assert.ok(!/click\([^)]*(licences|forget|JOURNAL_DOM)/i.test(part), 'aucun clic sur un bouton du Journal ou des licences');
   assert.ok(!/EXPECTED\.(licences|forget)[^;]*\bclick/.test(part));
+  const journal = source.slice(source.indexOf('async function checkJournal'), source.indexOf('async function checkSingleWindow'));
+  assert.ok(journal.includes('cleanStartedAt') && journal.includes('Date.parse(row.iso)'), 'les dates des lignes sont jugées');
+  assert.ok(journal.includes('cleaned.sentence.startsWith(JOURNAL_EXPECTED.cleaned)'), 'la ligne doit commencer par « Grand vide : »');
   assert.ok(/await checkClean\(window, planted\);\s*\}\s*await checkJournal\(window\);\s*if \(onWindows\)/.test(source), 'le Journal vient après le grand vide');
 });

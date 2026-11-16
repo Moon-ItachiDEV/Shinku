@@ -143,9 +143,11 @@ changer un réglage, faire le vide.
   Ctrl+F, le menu contextuel et leurs semblables sont neutralisés
   (`shortcuts.ts`). Copier, coller et tout sélectionner restent disponibles.
 
-La liste des commandes existe en quatre endroits (le code Rust, `build.rs`, les
-permissions, `backend/tauri.ts`). Le test `tests/wiring.test.ts` vérifie
-qu'ils s'accordent, sans avoir à lancer la fenêtre.
+La liste des commandes existe en six endroits : `build.rs`, `generate_handler!`
+(`app.rs`), `commands.rs`, les permissions (`capabilities/default.json`),
+`backend/tauri.ts`, et les types de l'interface (`backend/types.ts`, tenus par le
+contrat). Le test `tests/wiring.test.ts` vérifie qu'ils s'accordent, sans avoir
+à lancer la fenêtre.
 
 ### Écart avec le document d'architecture : l'avancement est demandé, pas poussé
 
@@ -1157,11 +1159,16 @@ rien et n'emprunte pas la clé de la note précédente.
 **Ce que la page montre, et ne montre pas.** Une phrase par ligne, une date, et
 quand le geste a un retour (la corbeille, la page Démarrage, la page Mode jeu)
 un bouton qui y mène. Aucun chemin, aucun identifiant : un nom d'app est du
-texte, coupé à l'affichage s'il est long, entier dans `title`. Les dates hors de
-1970 et de demain deviennent « date inconnue » (le cœur les assainit, la page
-aussi). 200 lignes au plus, `more` le dit. Un grand vide qui se termine pendant
-que la page est ouverte la recharge une fois ; sinon elle se demande à l'arrivée
-et rien d'autre (ni minuterie, ni retour du focus).
+texte, écrit en entier, qui passe à la ligne comme le reste de la phrase. Une
+date avant 1970, ou plus d'un jour après maintenant, devient « date inconnue »
+(le cœur l'assainit). Une date du lendemain s'écrit avec son jour, pas comme une
+heure d'aujourd'hui. Les poids et les compteurs ne dépassent jamais
+`2^53 - 1`, le plus grand entier que la page lit sans erreur. 200 lignes au
+plus, `more` le dit. La page se demande **une fois, quand on y arrive** ; elle
+ne se redemande pas toute seule (pas de minuterie), ni quand la fenêtre
+retrouve le focus : seul un grand vide qui se termine pendant qu'elle est
+ouverte la relit, une fois, sans la redessiner entière (le focus ne se perd
+pas).
 
 **« Oublier les désinstallations ».** Un bouton, après confirmation, vide
 `uninstalls.json` (`Backend::forget_uninstalls`) et rend la vue relue. Il
@@ -1177,9 +1184,27 @@ le fait ouvrir par `ShellExecuteW` (`platform::open_file`, qui généralise
 `shell_open`). La page ne donne ni chemin ni nom. Réponses : `opened` (la page
 ne dit rien), `missing`, `failed` (une phrase).
 
-**Limites connues.** Un désinstalleur qui rend la main avant d'avoir fini peut
-faire noter la désinstallation un peu tôt, ou jamais (30 minutes) : le registre
-décide. Une désinstallation faite hors de Shinku n'est pas notée. L'ouverture
+**La note courante et ses verrous.** `AppsDesk` garde la clé (l'heure) de la
+note de la dernière app vue partie. Invariant : cette clé désigne cette note,
+ou rien (écriture ratée, pas de fichier, « Oublier »). Les restes ne s'y
+ajoutent qu'en phase `removed`, qu'on n'atteint qu'en passant par le drapeau,
+donc par l'écriture de la note (`settle_note` s'en assure avant tout ajout) :
+aucune remise à zéro n'est nécessaire au lancement d'une autre désinstallation.
+Deux notes de même milliseconde ne se confondent pas (les restes vont à la plus
+récente). **Ordre des deux verrous : les notes d'abord, puis le suivi**, rendu
+aussitôt ; aucun chemin ne prend le suivi puis les notes, et le fichier ne
+s'écrit jamais sous le verrou du suivi. `uninstalls.json` ne lit pas son champ
+`version`, comme `startup.json` et `game.json` : une version inconnue est lue
+comme la 1.
+
+**Limites connues.** « S'est remise toute seule depuis… » veut dire « Shinku
+l'a revue active une fois », pas « elle est active maintenant ». Un nom d'app
+garde ses caractères de mise en forme (sens d'écriture, par exemple) : la page
+les isole par `<bdi>`, elle ne les retire pas. `journal.json` est lu **sans
+borne de taille** (`clean/journal.rs`, d'avant ce lot) : à borner dans un lot à
+part ; le Journal est un lecteur de plus de ce fichier. Un désinstalleur qui
+rend la main avant d'avoir fini peut faire noter la désinstallation un peu tôt,
+ou jamais (30 minutes) : le registre décide. Une désinstallation faite hors de Shinku n'est pas notée. L'ouverture
 du fichier des licences dépend de l'association des fichiers `.txt` de la
 machine ; elle n'est essayée que par la forme de la page sur la machine
 d'intégration (où tout est élevé : l'essai cherche le bouton, il ne le clique

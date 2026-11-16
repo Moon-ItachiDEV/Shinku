@@ -778,7 +778,12 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
   let traces: PrivacyGroup[] = privacyGroups(options.privacy.data);
   /** Un effacement est en vol : un second est refusé, comme par le cœur. */
   let erasing = false;
-  /** Une ligne de chaque forme, dont une sans date et un nom très long ; « Oublier » retire celles des désinstallations. */
+  /**
+   * Ce que le Journal du produit peut montrer : un grand vide fini (avec corbeille) et un arrêté en route, deux
+   * désinstallations (l'une avec restes, l'autre sans, au nom très long), la dernière partie (le mode jeu n'en garde
+   * qu'une), deux coupures du Démarrage (l'une remise toute seule, l'autre sans date). « Oublier » retire les
+   * désinstallations.
+   */
   let historyLines: HistoryLine[] | null = null;
   const historyLinesNow = (): HistoryLine[] => {
     if (historyLines === null) {
@@ -809,37 +814,20 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
         {
           kind: 'uninstall',
           atMs: now - 3 * day,
-          name: 'Un logiciel dont le nom est vraiment très long, pour voir comment la ligne le coupe sans casser la page ni le reste de la liste',
+          name: 'Un logiciel dont le nom est vraiment très long, pour voir comment la ligne le montre en entier sans casser la page ni le reste de la liste',
           leftovers: 0,
           leftoverBytes: 0,
         },
         {
           kind: 'clean',
           startedMs: now - 4 * day,
-          finishedMs: null,
-          state: 'interrupted',
+          finishedMs: now - 4 * day + 120_000,
+          state: 'cancelled',
           freedBytes: 800_000_000,
           recoverableBytes: 0,
           skippedFiles: 0,
         },
-        {
-          kind: 'clean',
-          startedMs: now - 5 * day,
-          finishedMs: null,
-          state: 'running',
-          freedBytes: 0,
-          recoverableBytes: 0,
-          skippedFiles: 0,
-        },
-        {
-          kind: 'game',
-          startedMs: null,
-          endedMs: null,
-          name: 'Une partie sans date',
-          powerRestored: null,
-          appsRestored: 0,
-          complete: false,
-        },
+        { kind: 'startupCut', atMs: null, name: 'Lanceur de mises à jour', backMs: null },
       ];
     }
     return historyLines;

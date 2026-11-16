@@ -240,8 +240,10 @@ pub fn open_windows_settings(page: WindowsPage) -> io::Result<()> {
 }
 
 /// Ouvre ce fichier avec le programme que le compte y associe (le verbe `open`
-/// du shell). Le chemin est calculé par le cœur, jamais reçu de la page.
-pub fn open_file(path: &Path) -> io::Result<()> {
+/// du shell). Réservée à `licences.rs`, qui calcule le chemin lui-même
+/// (`licences_path`) : aucun chemin reçu de la page ne doit jamais arriver ici,
+/// et la fonction n'est pas visible hors du cœur pour que le type le tienne.
+pub(crate) fn open_file(path: &Path) -> io::Result<()> {
     imp::agent::open_file(path)
 }
 

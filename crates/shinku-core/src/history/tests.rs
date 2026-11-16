@@ -282,3 +282,30 @@ fn the_json_uses_camel_case_and_a_kind_tag() {
     assert_eq!(json["lines"][1]["kind"], "uninstall");
     assert_eq!(json["lines"][1]["leftoverBytes"], 0);
 }
+
+#[test]
+fn no_number_of_bytes_or_files_goes_past_the_largest_safe_integer() {
+    let mut huge = run(NOW - 1000, Some(NOW), RunState::Completed);
+    huge.freed_bytes = u64::MAX;
+    huge.recoverable_bytes = u64::MAX;
+    huge.skipped_files = u64::MAX;
+    let mut gone = note(NOW - 2000, "Essai");
+    gone.leftover_bytes = u64::MAX;
+    gone.leftovers = u32::MAX;
+    let view = assemble(NOW, &[huge], &[], None, &[gone]);
+    let safe = (1_u64 << 53) - 1;
+    assert_eq!(SAFE_INTEGER, safe);
+    assert!(matches!(
+        &view.lines[0],
+        HistoryLine::Clean { freed_bytes, recoverable_bytes, skipped_files, .. }
+            if (*freed_bytes, *recoverable_bytes, *skipped_files) == (safe, safe, safe)
+    ));
+    assert!(matches!(
+        &view.lines[1],
+        HistoryLine::Uninstall { leftover_bytes, leftovers, .. }
+            if *leftover_bytes == safe && *leftovers == u32::MAX
+    ));
+    // Une valeur sûre passe telle quelle.
+    let small = assemble(NOW, &[run(NOW - 1, Some(NOW), RunState::Completed)], &[], None, &[]);
+    assert!(matches!(&small.lines[0], HistoryLine::Clean { freed_bytes: 100, .. }));
+}

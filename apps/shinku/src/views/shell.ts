@@ -158,6 +158,14 @@ function bootScreen(state: AppState): TemplateResult {
   </div>`;
 }
 
+/**
+ * La clé de la page : quand elle change, toute la page est redessinée (et le focus d'un bouton est perdu). Le Journal
+ * n'a pas de volet : un grand vide qui se termine pendant qu'il est ouvert ne doit pas le redessiner.
+ */
+export function pageKey(state: AppState): string {
+  return state.route === 'journal' ? 'journal' : `${state.route}:${shownPane(state)}`;
+}
+
 export function appView(state: AppState, actions: Actions): TemplateResult {
   const ready = state.boot === 'ready';
   return html`<div class="app">
@@ -165,7 +173,7 @@ export function appView(state: AppState, actions: Actions): TemplateResult {
     ${windowButtons(actions)}
     ${ready
       ? html`${sidebar(state, actions)}
-          <main class="main">${keyed(state.route === 'journal' ? 'journal' : `${state.route}:${shownPane(state)}`, page(state, actions))}</main>
+          <main class="main">${keyed(pageKey(state), page(state, actions))}</main>
           ${confirmDialog(state, actions)} ${pickerDialog(state, actions)} ${uninstallDialog(state, actions)}
           ${privacyDialog(state, actions)} ${journalDialog(state, actions)}`
       : bootScreen(state)}

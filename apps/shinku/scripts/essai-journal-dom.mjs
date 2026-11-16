@@ -31,10 +31,13 @@ export const EXPECTED = {
   licences: 'Voir leurs licences',
   uninstalled: 'Désinstallé :',
   cleaned: 'Grand vide :',
+  /** Les mots des totaux d'un grand vide fini (`fr.journal.clean.totals`) : l'un des deux au moins. */
+  freed: 'libérés',
+  binned: 'mis à la corbeille',
   leftovers: '3 restes mis à la corbeille',
 };
 
-/** La page Journal : son titre, son attente, ses lignes (phrase, date, lien), la présence du bouton « Oublier ». S'exécute dans la page. */
+/** La page Journal : son titre, son attente, ses lignes (phrase, date, `datetime`, lien), la présence du bouton « Oublier ». S'exécute dans la page. */
 export function readJournal(dom) {
   const text = (element) => (element?.innerText ?? '').replace(/[   ]+/g, ' ').trim();
   return {
@@ -44,6 +47,8 @@ export function readJournal(dom) {
     rows: [...document.querySelectorAll(dom.row)].map((row) => ({
       sentence: text(row.querySelector(dom.sentence)),
       date: text(row.querySelector(dom.date)),
+      /** L'attribut `datetime` du `<time>` de la ligne ; vide s'il n'y en a pas. */
+      iso: row.querySelector(`${dom.date}[datetime]`)?.getAttribute('datetime') ?? '',
       link: text(row.querySelector(dom.link)),
     })),
     forget: text(document.querySelector(dom.forget)),

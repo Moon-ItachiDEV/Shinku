@@ -2,7 +2,7 @@
 //
 // Elle ne fait rien : chaque ligne a, à droite, le chemin du retour quand il existe (la page où le geste est déjà).
 // Aucun chemin ni nom de fichier n'y figure ; un nom d'app est du texte, montré tel quel (lit-html l'échappe),
-// coupé par le style s'il est long, entier dans `title`.
+// passant à la ligne comme le reste de la phrase s'il est long.
 
 import { html, nothing, type TemplateResult } from 'lit-html';
 import { ref } from 'lit-html/directives/ref.js';
@@ -31,7 +31,7 @@ function line(row: JournalRow, now: number, actions: Actions): TemplateResult {
       ><span class="t1 jsentence"
         >${row.before}${row.name === null
           ? nothing
-          : html`<bdi class="jname" title=${row.name.name}>${row.name.name}</bdi>`}${row.after}</span
+          : html`<bdi class="jname">${row.name.name}</bdi>`}${row.after}</span
       ><span class="t2">${when(row, now)}</span></span
     >
     ${row.link === null

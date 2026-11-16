@@ -284,6 +284,19 @@ mod tests {
     }
 
     #[test]
+    fn a_byte_order_mark_at_the_start_is_ignored_and_the_version_does_not_bind() {
+        let (_temp, store) = store();
+        // Comme `startup.json` et `game.json` : la version n'écarte rien, une marque d'ordre des octets non plus.
+        write_raw(
+            &store,
+            "\u{feff}{\"version\":99,\"notes\":[{\"atMs\":5,\"name\":\"Essai\",\"leftovers\":1,\"leftoverBytes\":2}]}",
+        );
+        let file = store.load();
+        assert_eq!(file.notes.len(), 1);
+        assert_eq!((file.notes[0].at_ms, file.notes[0].name.as_str()), (5, "Essai"));
+    }
+
+    #[test]
     fn a_name_is_cut_to_two_hundred_characters_never_inside_one() {
         let long = "é".repeat(500);
         let note = UninstallNote::new(1, &long);

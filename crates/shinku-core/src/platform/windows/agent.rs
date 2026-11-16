@@ -605,14 +605,14 @@ pub(in crate::platform) fn open_file(path: &Path) -> io::Result<()> {
 /// Ouvre une cible avec le shell (verbe `open`), dans un appartement COM
 /// initialisé pour la durée de l'appel. La cible est l'une des sept adresses
 /// fixes `ms-settings:` de `WindowsPage`, ou le fichier des licences dont le
-/// chemin vient du cœur.
+/// chemin est calculé par le cœur (`licences::licences_path`) : l'appelant en
+/// répond, cette fonction ne vérifie rien.
 fn shell_open(target: &str) -> io::Result<()> {
     // SAFETY: appel sans pointeur, sur un fil qui n'a encore rien initialisé ;
     // l'appartement est libéré plus bas, une fois, si l'initialisation a réussi.
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    // SAFETY: les trois chaînes sont terminées par zéro et valides pendant
-    // l'appel ; la cible est une adresse de `WindowsPage` ou le chemin calculé par
-    // le cœur (jamais reçu de la page).
+    // SAFETY: les `HSTRING` sont terminées par zéro et vivent jusqu'à la fin de
+    // l'appel ; les paramètres et le dossier de travail sont nuls.
     let result = unsafe {
         ShellExecuteW(
             None,

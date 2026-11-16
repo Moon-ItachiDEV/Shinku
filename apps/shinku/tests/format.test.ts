@@ -143,6 +143,8 @@ test('le début d’une partie dit le jour quand ce n’est pas aujourd’hui', 
   assert.equal(formatSince(at(2026, 11, 15, 8, 30), now), '08:30');
   // Hier soir, même à moins de 24 h : la veille s'annonce.
   assert.equal(formatSince(at(2026, 11, 14, 23, 40), now), 'hier, 23:40');
+  // Une horloge en avance (jusqu'à 24 h) : le lendemain montre son jour, pas une heure d'aujourd'hui.
+  assert.equal(formatSince(at(2026, 11, 16, 1, 5), now), `le 16${NBSP}nov., 01:05`);
   assert.equal(formatSince(at(2026, 11, 14, 0, 0), now), 'hier, 00:00');
   assert.equal(formatSince(at(2026, 11, 14, 23, 40), at(2026, 11, 14, 23, 50)), '23:40');
   // Plus loin : le jour et le mois, sans l'année de cette année.

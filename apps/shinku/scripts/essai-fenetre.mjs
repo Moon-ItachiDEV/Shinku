@@ -1044,7 +1044,11 @@ async function chooseKept(window, planted) {
  * Le grand vide, pour de bon : confirmer, suivre l'avancement, lire le bilan,
  * puis regarder sur le disque ce que les fichiers déposés sont devenus.
  */
+/** L'instant où `checkClean` a commencé (`null` s'il n'a pas tourné) : le Journal doit dater le grand vide après lui. */
+let cleanStartedAt = null;
+
 async function checkClean(window, planted) {
+  cleanStartedAt = Date.now();
   const wanted = planted === null ? null : await chooseKept(window, planted);
   await window.click('Grand vide', 'button.nav', 'Grand vide');
   await until('les résultats sont de nouveau affichés', 20_000, async () =>
@@ -1972,7 +1976,12 @@ async function checkMenuFits(window) {
     }
     done(`à ${MINIMUM.width} × ${MINIMUM.height}, le menu (${menu.entries} entrées) tient sans défiler (dernière entrée à ${menu.lastBottom} px)`);
   } finally {
-    await window.session.send('Emulation.clearDeviceMetricsOverride');
+    // La taille est rendue à part : si elle échoue aussi, on le note sans cacher l'erreur d'origine.
+    try {
+      await window.session.send('Emulation.clearDeviceMetricsOverride');
+    } catch (error) {
+      note(`la taille de la fenêtre n’a pas pu être rendue : ${error.message}`);
+    }
   }
 }
 
@@ -2003,19 +2012,37 @@ async function checkJournal(window) {
     await window.capture('journal');
     return;
   }
+  // La date d'une ligne : l'attribut `datetime` de son <time>, lisible, entre `from` et maintenant plus une minute.
+  const dated = (row, what, from) => {
+    const at = Date.parse(row.iso);
+    if (row.iso === '' || Number.isNaN(at)) {
+      fail(`la ligne ${what} n’a pas de date lisible (datetime « ${row.iso} ») : « ${row.sentence} »`);
+    }
+    if (at < from) {
+      fail(`la ligne ${what} est datée ${row.iso}, avant le début de l’essai (${new Date(from).toISOString()}) : « ${row.sentence} »`);
+    }
+    if (at > Date.now() + 60_000) {
+      fail(`la ligne ${what} est datée ${row.iso}, dans le futur : « ${row.sentence} »`);
+    }
+  };
   const seen = [];
   if (options['grand-vide']) {
-    const cleaned = lineOf(JOURNAL_EXPECTED.cleaned);
+    if (cleanStartedAt === null) {
+      fail('le Journal ne peut juger le grand vide : checkClean n’a pas tourné');
+    }
+    // La première ligne « Grand vide » est la plus récente (la liste est triée) : c'est celle de l'essai.
+    const cleaned = screen.rows.find((row) => shows(row.sentence, 'Grand vide'));
     if (cleaned === undefined) {
-      fail(`le Journal n’a pas de ligne « ${JOURNAL_EXPECTED.cleaned} » après le grand vide`);
+      fail('le Journal n’a aucune ligne « Grand vide » après le grand vide');
     }
-    if (shows(cleaned.sentence, 'en cours') || shows(cleaned.sentence, 'coupé avant la fin')) {
-      fail(`le grand vide est fini, mais le Journal dit « ${cleaned.sentence} »`);
+    if (!cleaned.sentence.startsWith(JOURNAL_EXPECTED.cleaned)) {
+      fail(`la ligne la plus récente du grand vide n’est pas finie (attendu « ${JOURNAL_EXPECTED.cleaned} ») : « ${cleaned.sentence} »`);
     }
-    if (cleaned.date === '') {
-      fail('la ligne du grand vide n’a pas de date');
+    if (!shows(cleaned.sentence, JOURNAL_EXPECTED.freed) && !shows(cleaned.sentence, JOURNAL_EXPECTED.binned)) {
+      fail(`la ligne du grand vide n’a pas ses totaux (« ${JOURNAL_EXPECTED.freed} » ou « ${JOURNAL_EXPECTED.binned} ») : « ${cleaned.sentence} »`);
     }
-    seen.push('le grand vide, avec ses totaux');
+    dated(cleaned, 'du grand vide', cleanStartedAt);
+    seen.push('le grand vide fini, avec ses totaux et sa date');
   }
   if (process.env.LOCALAPPDATA !== undefined && process.env.APPDATA !== undefined) {
     // Le passage de la Désinstallation a eu lieu : l'App (trois restes mis à la corbeille) et la Jumelle 1.0 (aucun reste).
@@ -2026,9 +2053,7 @@ async function checkJournal(window) {
     if (!shows(app.sentence, JOURNAL_EXPECTED.leftovers)) {
       fail(`la ligne de l’App ne dit pas « ${JOURNAL_EXPECTED.leftovers} » : « ${app.sentence} »`);
     }
-    if (app.date === '' || shows(app.date, 'date inconnue')) {
-      fail(`la ligne de l’App n’a pas de date : « ${app.date} »`);
-    }
+    dated(app, 'de l’App', started);
     const twin = lineOf(`${JOURNAL_EXPECTED.uninstalled} Essai Shinku Jumelle 1.0`);
     if (twin === undefined) {
       fail(`le Journal n’a pas de ligne « ${JOURNAL_EXPECTED.uninstalled} Essai Shinku Jumelle 1.0 »`);
@@ -2036,10 +2061,15 @@ async function checkJournal(window) {
     if (shows(twin.sentence, 'corbeille') || shows(twin.sentence, 'reste')) {
       fail(`la Jumelle 1.0 n’avait aucun reste, mais le Journal dit « ${twin.sentence} »`);
     }
+    dated(twin, 'de la Jumelle 1.0', started);
     if (screen.forget === '' || !shows(screen.forget, JOURNAL_EXPECTED.forget)) {
       fail(`le Journal a des désinstallations mais pas son bouton « ${JOURNAL_EXPECTED.forget} »`);
     }
-    seen.push('l’App avec ses trois restes', 'la Jumelle 1.0 sans reste', `le bouton « ${JOURNAL_EXPECTED.forget} » (cherché, jamais cliqué)`);
+    seen.push(
+      'l’App avec ses trois restes et sa date',
+      'la Jumelle 1.0 sans reste et sa date',
+      `le bouton « ${JOURNAL_EXPECTED.forget} » (cherché, jamais cliqué)`,
+    );
   }
   if (seen.length === 0) {
     note('essai du Journal réduit : ni --grand-vide, ni LOCALAPPDATA et APPDATA');

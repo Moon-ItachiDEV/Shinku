@@ -10,7 +10,7 @@ import { fr } from '../i18n/fr.ts';
 import type { Route } from '../state.ts';
 import type { IconName } from '../views/art.ts';
 
-/** Un nom à montrer tel quel (c'est du texte), coupé par le style s'il est long, entier dans `title`. */
+/** Un nom à montrer tel quel (c'est du texte), entier : il passe à la ligne comme le reste de la phrase. */
 export interface JournalName {
   name: string;
 }

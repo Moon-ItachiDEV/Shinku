@@ -12,12 +12,12 @@ export const DOM: Record<
   | 'nav',
   string
 >;
-export const EXPECTED: Record<'title' | 'forget' | 'licences' | 'uninstalled' | 'cleaned' | 'leftovers', string>;
+export const EXPECTED: Record<'title' | 'forget' | 'licences' | 'uninstalled' | 'cleaned' | 'freed' | 'binned' | 'leftovers', string>;
 export function readJournal(dom: Record<string, string>): {
   title: string;
   ready: boolean;
   loading: boolean;
-  rows: Array<{ sentence: string; date: string; link: string }>;
+  rows: Array<{ sentence: string; date: string; iso: string; link: string }>;
   forget: string;
 };
 export function readAbout(dom: Record<string, string>): { licences: string | null; visible: boolean };

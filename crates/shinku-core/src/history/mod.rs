@@ -21,6 +21,9 @@ use crate::startup::store::CutLine;
 
 /// Nombre de lignes rendues, au plus.
 pub const LINES_KEPT: usize = 200;
+/// Le plus grand nombre que la page lit sans perdre un chiffre (`2^53 - 1`) :
+/// poids et compteurs de la vue ne le dépassent jamais.
+pub const SAFE_INTEGER: u64 = (1 << 53) - 1;
 /// Ce qu'on tolère d'avance sur l'heure d'à présent : une journée.
 const FUTURE_SLACK_MS: i64 = 24 * 3600 * 1000;
 
@@ -138,9 +141,9 @@ pub fn assemble(
             started_ms: date(run.started_ms),
             finished_ms: run.finished_ms.and_then(date),
             state: run.state,
-            freed_bytes: run.freed_bytes,
-            recoverable_bytes: run.recoverable_bytes,
-            skipped_files: run.skipped_files,
+            freed_bytes: run.freed_bytes.min(SAFE_INTEGER),
+            recoverable_bytes: run.recoverable_bytes.min(SAFE_INTEGER),
+            skipped_files: run.skipped_files.min(SAFE_INTEGER),
         });
     }
     for cut in cuts {
@@ -165,7 +168,7 @@ pub fn assemble(
             at_ms: date(note.at_ms),
             name: note.name.clone(),
             leftovers: note.leftovers,
-            leftover_bytes: note.leftover_bytes,
+            leftover_bytes: note.leftover_bytes.min(SAFE_INTEGER),
         });
     }
     lines.sort_by(|left, right| {

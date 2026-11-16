@@ -366,7 +366,7 @@ fn a_note_that_could_not_be_written_never_borrows_the_previous_notes_key() {
     // La seconde note ne peut pas partir : le voisin temporaire est un dossier.
     let blocker = rig.store.path().with_file_name("uninstalls.json.tmp");
     std::fs::create_dir(&blocker).unwrap();
-    rig.clock.store(9_000, Ordering::SeqCst);
+    // Même heure que la première note : la clé de Hades désignerait encore une note du fichier.
     let second = uninstall_and_wait(&rig, &host, "m6:Zeta", "Zeta");
     assert_eq!(notes(&rig).len(), 1, "la note de Zeta n'a pas pu être écrite");
     std::fs::remove_dir(&blocker).unwrap();
@@ -377,4 +377,45 @@ fn a_note_that_could_not_be_written_never_borrows_the_previous_notes_key() {
     let written = notes(&rig);
     assert_eq!(written.len(), 1);
     assert_eq!((written[0].name.as_str(), written[0].leftovers), ("Hades", 0));
+}
+
+#[test]
+fn two_uninstalls_noted_in_the_same_millisecond_keep_their_own_leftovers() {
+    let host = hades();
+    add_app(&host, "Zeta", "Zeta");
+    let rig = rig(&host);
+    // L'horloge ne bouge pas : les deux notes ont la même clé.
+    let first = uninstall_and_wait(&rig, &host, "m6:Hades", "Hades");
+    rig.desk.stop();
+    let second = uninstall_and_wait(&rig, &host, "m6:Zeta", "Zeta");
+    assert_eq!(first.len(), 2);
+    let zeta_data =
+        second.iter().find(|row| row.path.starts_with(ROAMING)).expect("réglages de Zeta").key;
+    rig.desk.remove(&[zeta_data], &|| false).expect("rendu");
+    let written = notes(&rig);
+    assert_eq!(written.len(), 2);
+    assert_eq!(written[0].at_ms, written[1].at_ms);
+    assert_eq!((written[0].name.as_str(), written[0].leftovers), ("Hades", 0));
+    assert_eq!((written[1].name.as_str(), written[1].leftovers), ("Zeta", 1));
+}
+
+#[test]
+fn leftovers_removed_without_any_view_since_the_search_still_find_their_note() {
+    let host = hades();
+    let rig = rig(&host);
+    rig.desk.start("m6:Hades").expect("lancé");
+    host.remove_registration(Place::Machine64, "Hades");
+    // Le suivi est mené à la main : aucune vue n'est demandée, personne ne relève le drapeau.
+    rig.desk.poll();
+    host.advance(secs(3));
+    rig.desk.poll();
+    host.advance(secs(3));
+    rig.desk.poll();
+    assert!(notes(&rig).is_empty(), "personne n'a encore relevé le drapeau");
+    // Les clés des restes se comptent à partir de zéro.
+    let done = rig.desk.remove(&[0, 1], &|| false).expect("rendu");
+    assert!(done.bytes > 0, "des restes sont partis");
+    let written = notes(&rig);
+    assert_eq!(written.len(), 1, "la mise à la corbeille a noté l'app avant de compter");
+    assert!(written[0].leftovers >= 1);
 }
