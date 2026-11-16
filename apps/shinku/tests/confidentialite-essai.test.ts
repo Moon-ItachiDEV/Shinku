@@ -364,7 +364,11 @@ test('la CI pose SHINKU_ESSAI_CONFIDENTIALITE sur les deux étapes de l’essai,
     assert.match(one, /\n {8}env:\n {10}SHINKU_ESSAI_CONFIDENTIALITE: '1'\n/);
   }
   // Ni au niveau du workflow, ni à celui du travail (leur `env:` est avant les `steps:`).
-  const beforeSteps = workflow.slice(0, workflow.indexOf('      - uses: actions/checkout@v4', workflow.indexOf('  windows:')));
+  // (Le premier pas du travail Windows est l'action checkout, désignée par l'empreinte de son commit.)
+  const windowsJob = workflow.indexOf('  windows:');
+  const firstStep = windowsJob + workflow.slice(windowsJob).search(/^ {6}- uses: actions\/checkout@[0-9a-f]{40} # v4\.\d+\.\d+$/m);
+  assert.ok(firstStep > windowsJob, 'le premier pas du travail Windows n’est plus l’action checkout épinglée');
+  const beforeSteps = workflow.slice(0, firstStep);
   assert.ok(!beforeSteps.includes('SHINKU_ESSAI_CONFIDENTIALITE'));
   assert.equal((workflow.match(/SHINKU_ESSAI_CONFIDENTIALITE: /g) ?? []).length, 2);
 });

@@ -42,9 +42,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -57,7 +57,7 @@ jobs:
           rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" \
             --profile minimal --component rustfmt --component clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Format
         run: cargo fmt --all --check
@@ -71,6 +71,14 @@ jobs:
       - name: Dépendances de l'interface
         working-directory: apps/shinku
         run: npm ci
+
+      # La garde des licences (apps/shinku/scripts/licences-tiers.mjs) : `npm test`
+      # la lance déjà sur le vrai dépôt, mais cette étape écrit aussi dans le journal
+      # l'empreinte SHA-256 du fichier de licences (ligne « licences-tiers : sha256 »),
+      # à comparer avec celle de la fabrication sur la machine Windows.
+      - name: Licences des dépendances
+        working-directory: apps/shinku
+        run: node scripts/licences-tiers.mjs --verifier
 
       - name: Types de l'interface
         working-directory: apps/shinku
@@ -89,9 +97,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -110,7 +118,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends mingw-w64
           rustup target add x86_64-pc-windows-gnu
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: windows-gnu
 
@@ -134,9 +142,9 @@ jobs:
       # l'installeur dans le journal (essai-installeur.ps1).
       CAPTURES_DANS_LE_JOURNAL: ${{ inputs.captures_dans_le_journal }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -149,7 +157,7 @@ jobs:
           rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" \
             --profile minimal --component rustfmt --component clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Tests du cœur sur un vrai NTFS
         run: cargo test --locked -p shinku-core -p shinku-helper -p shinku-agent
@@ -325,7 +333,7 @@ jobs:
 
       - name: Publier les captures de la confidentialité
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: captures-de-la-confidentialite
           path: ${{ runner.temp }}/captures-confidentialite
@@ -364,7 +372,7 @@ jobs:
 
       - name: Publier les captures de la fenêtre
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: captures-de-la-fenetre
           path: ${{ runner.temp }}/captures
@@ -386,7 +394,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $reglages)) { Set-Content -LiteralPath $reglages -Value '{}' -Encoding ASCII }
           $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
-          foreach ($fichier in 'shinku.exe', 'shinku-agent.exe', 'shinku-helper.exe', 'uninstall.exe') {
+          foreach ($fichier in 'shinku.exe', 'shinku-agent.exe', 'shinku-helper.exe', 'LICENCES-TIERS.txt', 'uninstall.exe') {
             if (-not (Test-Path "$dossier\$fichier")) { throw "L'installation silencieuse n'a pas posé $fichier." }
           }
           # Le désinstalleur se recopie dans le dossier temporaire
@@ -402,6 +410,7 @@ jobs:
             $copies = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' })
           } while (((Test-Path $dossier) -or $copies.Count -gt 0) -and (Get-Date) -lt $limite)
           if ($copies.Count -gt 0) { throw "Le désinstalleur silencieux tourne encore après 120 s." }
+          if (Test-Path "$dossier\LICENCES-TIERS.txt") { throw "La désinstallation silencieuse a laissé LICENCES-TIERS.txt." }
           if (Test-Path $dossier) { throw "La désinstallation silencieuse a laissé $dossier." }
           if (-not (Test-Path -LiteralPath $reglages)) { throw "La désinstallation silencieuse a supprimé les réglages." }
 
@@ -480,17 +489,37 @@ jobs:
 
       - name: Publier les captures de l'installeur
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: captures-de-l-installeur
           path: ${{ runner.temp }}/captures-installeur
           if-no-files-found: ignore
           retention-days: 14
 
+      # L'empreinte de l'installeur, pour qui le télécharge : une ligne
+      # « <empreinte SHA-256 en minuscules>, deux espaces, nom du fichier »,
+      # fins de ligne \n, sans marque d'ordre des octets. Un seul installeur
+      # est attendu. La liste des licences des composants tiers (fabriquée par
+      # beforeBuildCommand, la même que celle de l'installeur) est copiée à côté :
+      # l'artefact reçoit ainsi ses trois fichiers sans dossiers.
+      - name: Empreinte de l'installeur
+        run: |
+          $setups = @(Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe)
+          if ($setups.Count -ne 1) { throw "Un seul installeur (*-setup.exe) est attendu dans target/release/bundle/nsis, il y en a $($setups.Count)." }
+          $setup = $setups[0]
+          $empreinte = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup.FullName).Hash.ToLowerInvariant()
+          $ligne = "$empreinte  $($setup.Name)`n"
+          [System.IO.File]::WriteAllText((Join-Path $setup.DirectoryName 'SHA256SUMS.txt'), $ligne, (New-Object System.Text.UTF8Encoding $false))
+          Write-Host "SHA256SUMS.txt : $ligne"
+          Copy-Item -LiteralPath apps/shinku/src-tauri/licences/LICENCES-TIERS.txt -Destination (Join-Path $setup.DirectoryName 'LICENCES-TIERS.txt')
+
       - name: Publier l'installeur
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: shinku-installeur-x64
-          path: target/release/bundle/nsis/*-setup.exe
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/SHA256SUMS.txt
+            target/release/bundle/nsis/LICENCES-TIERS.txt
           if-no-files-found: error
           retention-days: 14

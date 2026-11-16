@@ -7,7 +7,9 @@ et sans télémétrie : rien ne quitte le PC.
 
 ## Où en est le projet
 
-Version 0.1, en cours de développement. Rien n'est encore publié.
+Version 0.1, en cours de développement. Aucune version n'est encore publiée :
+les installeurs fabriqués par l'intégration continue ne sont pas signés, et
+servent aux essais.
 
 Ce qui fonctionne :
 
@@ -28,9 +30,12 @@ Ce qui fonctionne :
   (six places : les valeurs `Run` du compte et du PC, en vues 64 et 32 bits, et
   les dossiers Démarrage du compte et commun), et un interrupteur par app du
   **compte** qui la coupe ou la remet **au même endroit que le Gestionnaire des
-  tâches** : l'app reste installée, rien n'est supprimé. Les entrées du PC sont
-  montrées en lecture seule, avec un bouton qui ouvre la page « Apps de
-  démarrage » de Windows. Rien n'y est lu hors d'un lecteur fixe (ni réseau, ni
+  tâches** : l'app reste installée, rien n'est supprimé. Les entrées du **PC**
+  (tous les comptes) ont le même interrupteur : Windows demande alors son
+  accord, puis une petite fenêtre « Shinku » redemande confirmation, et
+  l'assistant élevé (`shinku-helper.exe`) écrit cette seule valeur. Si le compte
+  ne peut pas obtenir cet accord, elles restent en lecture seule, avec un bouton
+  qui ouvre la page « Apps de démarrage » de Windows. Rien n'y est lu hors d'un lecteur fixe (ni réseau, ni
   amovible), et une liste que Windows n'a pas laissé lire en entier est dite
   incomplète au lieu de passer pour complète. Voir `docs/conception.md`, section
   « Démarrage » ;
@@ -42,20 +47,28 @@ Ce qui fonctionne :
   **corbeille** (jamais supprimé pour de bon), et rien n'est proposé tant qu'une
   app du même nom est encore installée. Shinku n'écrit jamais dans le registre
   pour cela. Voir `docs/conception.md`, section « Désinstallation » ;
+- le module Confidentialité : il efface, sur demande et sans rien cocher
+  d'avance, des traces locales du compte : l'historique de navigation de
+  Chrome, Edge, Brave et Vivaldi (profil par profil, navigateur fermé), les
+  fichiers récents de Windows, ce qui a été tapé dans « Exécuter » et dans
+  l'Explorateur, le presse-papiers. Il ne touche ni aux mots de passe, ni aux
+  favoris, ni aux cookies, et ne montre jamais le contenu d'une trace. Voir
+  `docs/conception.md`, section « Confidentialité » ;
 - l'interface complète, en deux modes d'affichage (Crépuscule et Brume),
   branchée sur le moteur ;
 - la fenêtre de l'application (`shinku.exe`) et son installeur pour Windows,
-  qui embarque l'agent.
+  qui embarque l'agent et l'assistant. À la désinstallation, les réglages sont
+  effacés par Shinku lui-même, avec les droits ordinaires de la personne
+  (`shinku.exe --oublier`), jamais par le désinstalleur élevé.
 
 Ce qui n'existe pas encore :
 
 - les actions des modules (supprimer un seul doublon, un gros fichier…).
   Leurs boutons sont visibles mais inactifs, et l'interface le dit ;
-- l'assistant élevé (`shinku-helper.exe`), dont il n'existe que le squelette :
-  c'est lui qui réglera les entrées de démarrage du PC (tous les comptes), qui
-  demandent un administrateur ;
+- la signature du code : Windows affiche « éditeur inconnu » à l'installation
+  et à chaque accord demandé pour l'assistant ;
+- la vérification de mise à jour et le journal de ce que Shinku a fait ;
 - l'analyse planifiée par l'agent : pour l'instant, il ne fait que le mode jeu ;
-- le module Confidentialité ;
 - la preuve que Windows respecte, à l'ouverture d'une session, ce que le module
   Démarrage écrit : elle ne se fait qu'à la main, sur un vrai Windows 11 (voir
   `docs/conception.md`).
@@ -65,7 +78,7 @@ Ce qui n'existe pas encore :
 | Dossier | Contenu |
 | --- | --- |
 | `crates/shinku-core` | Le cœur : règles, liste d'interdits, moteur d'analyse, mode jeu (`game/`), module Démarrage (`startup/`), réglages, et le « guichet » que la fenêtre appelle. Tout ce qui décide est ici, et se teste sans fenêtre. |
-| `crates/shinku-helper` | L'assistant élevé. Il n'accepte que des verbes fixes, jamais un chemin. Squelette. |
+| `crates/shinku-helper` | L'assistant élevé. Il n'accepte que des verbes fixes, jamais un chemin, et ne sait faire qu'une chose : couper ou remettre une entrée de démarrage du PC qui existe déjà, après une confirmation. |
 | `crates/shinku-agent` | L'agent du mode jeu : sans fenêtre, lancé par Shinku ou avec Windows. Il ne décide rien : il appelle le cœur toutes les deux secondes. |
 | `apps/shinku` | L'interface : TypeScript, lit-html, Vite. |
 | `apps/shinku/src-tauri` | La fenêtre : Tauri 2 sur WebView2. Elle affiche l'interface et transmet ses demandes au cœur. |
@@ -108,6 +121,7 @@ npm run check      # les types
 npm test           # les tests de l'interface, du contrat et du câblage
 npm run tauri dev  # Windows : la vraie fenêtre, rechargée à chaque changement
 npm run tauri build  # Windows : shinku.exe, shinku-agent.exe et l'installeur
+node scripts/licences-tiers.mjs  # fabrique LICENCES-TIERS.txt ; avec --verifier : seulement la garde des licences
 ```
 
 L'installeur est écrit dans `target/release/bundle/nsis/`. Son habillage

@@ -1,0 +1,425 @@
+Ce qui est fourni avec les programmes sans passer par Cargo ni par npm. Pour chaque
+composant : ce que c'est, d'où il vient, sa licence. Un texte de licence qui n'a pas pu
+être obtenu d'une source sûre n'est pas écrit de mémoire : la ligne « Licence » dit alors
+seulement de qui il s'agit et où le lire.
+
+A. Bibliothèque standard de Rust
+--------------------------------
+Liée dans shinku.exe, shinku-agent.exe et shinku-helper.exe (chaîne d'outils Rust 1.97.0,
+fixée par rust-toolchain.toml).
+Droits : The Rust Project Developers (voir https://thanks.rust-lang.org).
+Licence : Apache-2.0 OR MIT, sauf pour les parties nommées plus bas (dont compiler_builtins,
+lié dans tout programme Rust). Les textes de ces deux licences sont reproduits dans la
+section 4 (par exemple ceux du paquet « cfg-if »).
+
+Les parties de la bibliothèque standard qui ont leurs propres droits ou une autre licence,
+d'après la chaîne d'outils :
+  - library/core/src/unicode/unicode_data.rs (les tables Unicode) : licence Unicode-3.0,
+    droits : 1991-2024 Unicode, Inc. Le texte de la licence Unicode-3.0 est reproduit dans
+    la section 4 (par exemple celui du paquet « icu_collections »).
+  - library/backtrace : Apache-2.0 OR MIT, droits : 2014 Alex Crichton et The Rust Project
+    Developers.
+  - library/std/src/sync/mpmc : Apache-2.0 OR MIT, droits : 2019 The Crossbeam Project
+    Developers et The Rust Project Developers.
+  - library/std/src/sys/sync/mutex/fuchsia.rs : BSD-2-Clause AND (Apache-2.0 OR MIT),
+    droits : 2016 The Fuchsia Authors. Ce fichier n'est compilé que pour le système Fuchsia :
+    il n'est pas dans les programmes de Shinku, et son texte BSD-2-Clause n'est pas reproduit.
+  - library/compiler-builtins (paquet compiler_builtins 0.1.160, les fonctions de base que le
+    compilateur appelle ; la chaîne d'outils le range avec le reste de la bibliothèque, mais
+    son propre fichier Cargo.toml déclare une autre licence) :
+    MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0). Son module de
+    mathématiques vient du paquet libm, sous licence MIT. Les notices de ces deux paquets
+    sont recopiées plus bas. Le texte de la licence Apache-2.0 avec l'exception LLVM est
+    reproduit dans la section 4 (celui du paquet « blake3 »).
+
+Les paquets extérieurs que la bibliothèque standard lie pour Windows (x86_64-pc-windows-msvc) :
+  - cfg-if 1.0.4 : MIT OR Apache-2.0, Copyright (c) 2014 Alex Crichton ;
+  - hashbrown 0.17.1 : MIT OR Apache-2.0, Copyright (c) 2016 Amanieu d'Antras ;
+  - rustc-demangle 0.1.27 : MIT/Apache-2.0, Copyright (c) 2014 Alex Crichton.
+Leurs textes MIT et Apache-2.0 sont dans la section 4 (ceux des paquets « cfg-if » et
+« hashbrown »). La chaîne d'outils nomme 22 autres paquets extérieurs : d'après les fichiers
+Cargo.toml cités plus bas, aucun n'est une dépendance de la bibliothèque standard pour Windows
+(ils servent à d'autres systèmes, à sa fabrication, à ses essais ou aux autres bibliothèques
+de la chaîne d'outils).
+
+Notice de compiler_builtins (extraits de library/compiler-builtins/LICENSE.txt, recopiés
+tels quels ; les textes des licences MIT et Apache-2.0 qui s'y trouvent ne sont pas répétés) :
+
+The compiler-builtins crate is available for use under both the MIT license
+and the Apache-2.0 license with the LLVM exception (MIT AND Apache-2.0 WITH
+LLVM-exception).
+
+The libm crate is available for use under the MIT license.
+
+Portions of this software are derived from third-party works licensed under
+terms compatible with the above Apache-2.0 WITH LLVM-exception AND MIT
+license:
+
+* compiler-builtins is derived from LLVM's compiler-rt (https://llvm.org/).
+  Work derived from compiler-rt prior to 2019-01-19 is usable under the MIT
+  license, with the following copyright:
+
+      Copyright (c) 2009-2016 by the contributors listed in CREDITS.TXT
+
+  The relevant CREDITS.TXT is located at
+  https://github.com/llvm/llvm-project/blob/main/compiler-rt/CREDITS.TXT.
+
+* Work derived from compiler-rt after 2019-01-19 is usable under the
+  Apache-2.0 license with the LLVM exception.
+
+* The bundled `math` module is from the libm crate, usable under the MIT
+  license. For further details and copyrights, see see libm/LICENSE.txt at
+  https://github.com/rust-lang/compiler-builtins.
+
+Additionally, some source files may contain comments with specific copyrights
+or licenses.
+
+Notice de libm (extraits de library/compiler-builtins/libm/LICENSE.txt, recopiés tels quels,
+sans leurs lignes de tirets) :
+
+This Rust library contains the following copyrights:
+
+    Copyright (c) 2018 Jorge Aparicio
+
+Portions of this software are derived from third-party works licensed under
+terms compatible with the above MIT license:
+
+* musl libc https://www.musl-libc.org/. This library contains the following
+  copyright:
+
+      Copyright © 2005-2020 Rich Felker, et al.
+
+* The CORE-MATH project https://core-math.gitlabpages.inria.fr/. CORE-MATH
+  routines are available under the MIT license on a per-file basis.
+
+The musl libc COPYRIGHT file also includes the following notice relevant to
+math portions of the library:
+
+Much of the math library code (src/math/* and src/complex/*) is
+Copyright © 1993,2004 Sun Microsystems or
+Copyright © 2003-2011 David Schultz or
+Copyright © 2003-2009 Steven G. Kargl or
+Copyright © 2003-2009 Bruce D. Evans or
+Copyright © 2008 Stephen L. Moshier or
+Copyright © 2017-2018 Arm Limited
+and labelled as such in comments in the individual source files. All
+have been licensed under extremely permissive terms.
+
+Copyright notices are retained in src/* files where relevant.
+
+Origine de cette notice : le fichier COPYRIGHT-library.html livré avec la chaîne d'outils
+Rust 1.97.0 (dossier share/doc/rust) pour les droits et les licences des parties de la
+bibliothèque standard, et pour les lignes de droits des trois paquets extérieurs (elles y
+sont recopiées de leurs fichiers LICENSE-MIT) ; le dépôt https://github.com/rust-lang/rust à
+l'étiquette 1.97.0 (commit 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3) pour le reste : les
+fichiers Cargo.toml de library/std, library/alloc, library/panic_unwind, library/panic_abort,
+library/unwind, library/std_detect et library/compiler-builtins/compiler-builtins (quels
+paquets sont liés sous Windows, et la licence de compiler_builtins), et les fichiers
+LICENSE.txt de library/compiler-builtins et de library/compiler-builtins/libm.
+
+B. NSIS (installeur)
+--------------------
+Le programme d'installation et de désinstallation est produit par NSIS (Nullsoft Scriptable
+Install System), appelé par Tauri ; son amorce est copiée dans chaque installeur, avec le
+décodeur LZMA qui sert à décompresser les fichiers.
+Droits : NSIS Contributors, Nullsoft and Contributors, et les auteurs nommés dans le fichier
+de copyright de NSIS (https://sourceforge.net/projects/nsis).
+Licence : Zlib pour l'ensemble ; module de compression LZMA : Common Public License 1.0 avec
+l'exception spéciale reproduite plus bas. Les deux textes viennent du fichier de copyright du
+paquet Debian « nsis » 3.09 (blocs « License: Zlib » et « License: lzma-cpl-exception »),
+recopiés tels quels ; la version de NSIS que Tauri télécharge pour fabriquer l'installeur n'a
+pas pu être lue ici : on suppose la même licence.
+
+Licence Zlib :
+
+The zlib License
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must
+     not claim that you wrote the original software. If you use this
+     software in a product, an acknowledgment in the product
+     documentation would be appreciated but is not required.
+
+  2. Altered source versions must be plainly marked as such, and must
+     not be misrepresented as being the original software.
+
+  3. This notice may not be removed or altered from any source
+     distribution.
+
+Module de compression LZMA :
+
+Common Public License version 1.0
+
+THE ACCOMPANYING PROGRAM IS PROVIDED UNDER THE TERMS OF THIS COMMON PUBLIC LICENSE ("AGREEMENT"). ANY USE, REPRODUCTION OR DISTRIBUTION OF THE PROGRAM CONSTITUTES RECIPIENT'S ACCEPTANCE OF THIS AGREEMENT.
+
+1. DEFINITIONS
+
+"Contribution" means:
+
+     a) in the case of the initial Contributor, the initial code and documentation distributed under this Agreement, and
+     b) in the case of each subsequent Contributor:
+
+     i) changes to the Program, and
+
+     ii) additions to the Program;
+
+     where such changes and/or additions to the Program originate from and are distributed by that particular Contributor. A Contribution 'originates' from a Contributor if it was added to the Program by such Contributor itself or anyone acting on such Contributor's behalf. Contributions do not include additions to the Program which: (i) are separate modules of software distributed in conjunction with the Program under their own license agreement, and (ii) are not derivative works of the Program.
+
+"Contributor" means any person or entity that distributes the Program.
+
+"Licensed Patents " mean patent claims licensable by a Contributor which are necessarily infringed by the use or sale of its Contribution alone or when combined with the Program.
+
+"Program" means the Contributions distributed in accordance with this Agreement.
+
+"Recipient" means anyone who receives the Program under this Agreement, including all Contributors.
+
+2. GRANT OF RIGHTS
+
+     a) Subject to the terms of this Agreement, each Contributor hereby grants Recipient a non-exclusive, worldwide, royalty-free copyright license to reproduce, prepare derivative works of, publicly display, publicly perform, distribute and sublicense the Contribution of such Contributor, if any, and such derivative works, in source code and object code form.
+
+     b) Subject to the terms of this Agreement, each Contributor hereby grants Recipient a non-exclusive, worldwide, royalty-free patent license under Licensed Patents to make, use, sell, offer to sell, import and otherwise transfer the Contribution of such Contributor, if any, in source code and object code form. This patent license shall apply to the combination of the Contribution and the Program if, at the time the Contribution is added by the Contributor, such addition of the Contribution causes such combination to be covered by the Licensed Patents. The patent license shall not apply to any other combinations which include the Contribution. No hardware per se is licensed hereunder.
+
+     c) Recipient understands that although each Contributor grants the licenses to its Contributions set forth herein, no assurances are provided by any Contributor that the Program does not infringe the patent or other intellectual property rights of any other entity. Each Contributor disclaims any liability to Recipient for claims brought by any other entity based on infringement of intellectual property rights or otherwise. As a condition to exercising the rights and licenses granted hereunder, each Recipient hereby assumes sole responsibility to secure any other intellectual property rights needed, if any. For example, if a third party patent license is required to allow Recipient to distribute the Program, it is Recipient's responsibility to acquire that license before distributing the Program.
+
+     d) Each Contributor represents that to its knowledge it has sufficient copyright rights in its Contribution, if any, to grant the copyright license set forth in this Agreement.
+
+3. REQUIREMENTS
+
+A Contributor may choose to distribute the Program in object code form under its own license agreement, provided that:
+
+     a) it complies with the terms and conditions of this Agreement; and
+
+     b) its license agreement:
+
+     i) effectively disclaims on behalf of all Contributors all warranties and conditions, express and implied, including warranties or conditions of title and non-infringement, and implied warranties or conditions of merchantability and fitness for a particular purpose;
+
+     ii) effectively excludes on behalf of all Contributors all liability for damages, including direct, indirect, special, incidental and consequential damages, such as lost profits;
+
+     iii) states that any provisions which differ from this Agreement are offered by that Contributor alone and not by any other party; and
+
+     iv) states that source code for the Program is available from such Contributor, and informs licensees how to obtain it in a reasonable manner on or through a medium customarily used for software exchange.
+
+When the Program is made available in source code form:
+
+     a) it must be made available under this Agreement; and
+
+     b) a copy of this Agreement must be included with each copy of the Program.
+
+Contributors may not remove or alter any copyright notices contained within the Program.
+
+Each Contributor must identify itself as the originator of its Contribution, if any, in a manner that reasonably allows subsequent Recipients to identify the originator of the Contribution.
+
+4. COMMERCIAL DISTRIBUTION
+
+Commercial distributors of software may accept certain responsibilities with respect to end users, business partners and the like. While this license is intended to facilitate the commercial use of the Program, the Contributor who includes the Program in a commercial product offering should do so in a manner which does not create potential liability for other Contributors. Therefore, if a Contributor includes the Program in a commercial product offering, such Contributor ("Commercial Contributor") hereby agrees to defend and indemnify every other Contributor ("Indemnified Contributor") against any losses, damages and costs (collectively "Losses") arising from claims, lawsuits and other legal actions brought by a third party against the Indemnified Contributor to the extent caused by the acts or omissions of such Commercial Contributor in connection with its distribution of the Program in a commercial product offering. The obligations in this section do not apply to any claims or Losses relating to any actual or alleged intellectual property infringement. In order to qualify, an Indemnified Contributor must: a) promptly notify the Commercial Contributor in writing of such claim, and b) allow the Commercial Contributor to control,
+and cooperate with the Commercial Contributor in, the defense and any related settlement negotiations. The Indemnified Contributor may participate in any such claim at its own expense.
+
+For example, a Contributor might include the Program in a commercial product offering, Product X. That Contributor is then a Commercial Contributor. If that Commercial Contributor then makes performance claims, or offers warranties related to Product X, those performance claims and warranties are such Commercial Contributor's responsibility alone. Under this section, the Commercial Contributor would have to defend claims against the other Contributors related to those performance claims and warranties, and if a court requires any other Contributor to pay any damages as a result, the Commercial Contributor must pay those damages.
+
+5. NO WARRANTY
+
+EXCEPT AS EXPRESSLY SET FORTH IN THIS AGREEMENT, THE PROGRAM IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OR CONDITIONS OF TITLE, NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE. Each Recipient is solely responsible for determining the appropriateness of using and distributing the Program and assumes all risks associated with its exercise of rights under this Agreement, including but not limited to the risks and costs of program errors, compliance with applicable laws, damage to or loss of data, programs or equipment, and unavailability or interruption of operations.
+
+6. DISCLAIMER OF LIABILITY
+
+EXCEPT AS EXPRESSLY SET FORTH IN THIS AGREEMENT, NEITHER RECIPIENT NOR ANY CONTRIBUTORS SHALL HAVE ANY LIABILITY FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING WITHOUT LIMITATION LOST PROFITS), HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OR DISTRIBUTION OF THE PROGRAM OR THE EXERCISE OF ANY RIGHTS GRANTED HEREUNDER, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+7. GENERAL
+
+If any provision of this Agreement is invalid or unenforceable under applicable law, it shall not affect the validity or enforceability of the remainder of the terms of this Agreement, and without further action by the parties hereto, such provision shall be reformed to the minimum extent necessary to make such provision valid and enforceable.
+
+If Recipient institutes patent litigation against a Contributor with respect to a patent applicable to software (including a cross-claim or counterclaim in a lawsuit), then any patent licenses granted by that Contributor to such Recipient under this Agreement shall terminate as of the date such litigation is filed. In addition, if Recipient institutes patent litigation against any entity (including a cross-claim or counterclaim in a lawsuit) alleging that the Program itself (excluding combinations of the Program with other software or hardware) infringes such Recipient's patent(s), then such Recipient's rights granted under Section 2(b) shall terminate as of the date such litigation is filed.
+
+All Recipient's rights under this Agreement shall terminate if it fails to comply with any of the material terms or conditions of this Agreement and does not cure such failure in a reasonable period of time after becoming aware of such noncompliance. If all Recipient's rights under this Agreement terminate, Recipient agrees to cease use and distribution of the Program as soon as reasonably practicable. However, Recipient's obligations under this Agreement and any licenses granted by Recipient relating to the Program shall continue and survive.
+
+Everyone is permitted to copy and distribute copies of this Agreement, but in order to avoid inconsistency the Agreement is copyrighted and may only be modified in the following manner. The Agreement Steward reserves the right to publish new versions (including revisions) of this Agreement from time to time. No one other than the Agreement Steward has the right to modify this Agreement. IBM is the initial Agreement Steward. IBM may assign the responsibility to serve as the Agreement Steward to a suitable separate entity. Each new version of the Agreement will be given a distinguishing version number. The Program (including Contributions) may always be distributed subject to the version of the Agreement under which it was received. In addition, after a new version of the Agreement is published, Contributor may elect to distribute the Program (including its Contributions) under the new version. Except as expressly stated in Sections 2(a) and 2(b) above, Recipient receives no rights or licenses to the intellectual property of any Contributor under this Agreement, whether expressly, by implication, estoppel or otherwise. All rights in the Program not expressly granted under this Agreement are reserved.
+
+This Agreement is governed by the laws of the State of New York and the intellectual property laws of the United States of America. No party to this Agreement will bring a legal action under this Agreement more than one year after the cause of action arose. Each party waives its rights to a jury trial in any resulting litigation.
+
+Special exception for LZMA compression module
+
+Igor Pavlov and Amir Szekely, the authors of the LZMA compression module for NSIS, expressly permit you to statically or dynamically link your code (or bind by name) to the files from the LZMA compression module for NSIS without subjecting your linked code to the terms of the Common Public license version 1.0. Any modifications or additions to files from the LZMA compression module for NSIS, however, are subject to the terms of the Common Public License version 1.0.
+
+C. nsis_tauri_utils (greffon de l'installeur)
+---------------------------------------------
+Petit greffon NSIS de Tauri (lancement avec les droits ordinaires, comparaison de versions,
+remplacement de texte), copié dans l'installeur par Tauri. Version 0.5.3, telle que le Tauri
+de ce dépôt la télécharge (https://github.com/tauri-apps/nsis-tauri-utils, étiquette
+nsis_tauri_utils-v0.5.3, commit 13d9edd27b69310e108d6fbd49f90992f8a05390).
+Licence : MIT OR Apache-2.0 ; Shinku l'utilise sous les termes de la licence MIT, dont voici le
+fichier LICENSE_MIT de ce dépôt, à cette étiquette :
+
+MIT License
+
+Copyright (c) 2019 - 2022 Tauri Programme within The Commons Conservancy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+D. Chargeur WebView2LoaderStatic.lib du SDK WebView2 de Microsoft
+-----------------------------------------------------------------
+Lié dans shinku.exe par le paquet Rust webview2-com-sys (qui embarque ce fichier, x64/).
+Droits : Microsoft Corporation.
+Licence : celle du SDK WebView2. Les deux textes ci-dessous sont les fichiers LICENSE.txt et
+NOTICE.txt du paquet NuGet officiel Microsoft.Web.WebView2 1.0.3800.47 (la version du SDK que
+le dépôt de webview2-com-sys désigne au commit de la version utilisée), recopiés tels quels.
+
+LICENSE.txt :
+
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * The name of Microsoft Corporation, or the names of its contributors
+may not be used to endorse or promote products derived from this
+software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+NOTICE.txt :
+
+NOTICES AND INFORMATION
+Do Not Translate or Localize
+
+This software incorporates material from third parties. Microsoft makes certain
+open source code available at https://3rdpartysource.microsoft.com, or you may
+send a check or money order for US $5.00, including the product name, the open
+source component name, and version number, to:
+
+Source Code Compliance Team
+Microsoft Corporation
+One Microsoft Way
+Redmond, WA 98052
+USA
+
+Notwithstanding any other terms, you may reverse engineer this software to the
+extent required to debug changes to any libraries licensed under the GNU Lesser
+General Public License.
+
+----------------------------------------------------------------
+
+Antlr3.Runtime 3.5.2-rc1 - BSD 3-Clause
+
+[The "BSD license"]
+Copyright (c) 2011 The ANTLR Project
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ 3. Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---------------------------------------------------------
+
+---------------------------------------------------------
+
+StringTemplate4 4.0.9-rc1 - BSD 3-Clause
+
+[The "BSD license"]
+Copyright (c) 2011 The ANTLR Project
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ 3. Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---------------------------------------------------------
+
+E. Amorce d'installation de WebView2 (MicrosoftEdgeWebview2Setup.exe)
+---------------------------------------------------------------------
+Embarquée dans l'installeur (réglage « embedBootstrapper » de Tauri) : elle ne sert que si
+WebView2 manque sur le PC.
+Droits : Microsoft Corporation.
+Licence : voir https://developer.microsoft.com/en-us/microsoft-edge/webview2/ (page officielle de
+WebView2). Le texte de la licence de l'amorce n'a pas pu être obtenu d'une source sûre : il
+n'est pas reproduit ici.
+
+F. Bibliothèque d'exécution Visual C++ (vcruntime)
+--------------------------------------------------
+Liée statiquement dans les trois programmes : dans shinku-agent.exe et shinku-helper.exe par le
+paquet Rust static_vcruntime (voir leur build.rs), dans shinku.exe par tauri-build (qui demande
+cette édition statique : voir le journal des modifications de l'outil en ligne de commande de
+Tauri). La bibliothèque C universelle (api-ms-win-crt-*) n'est pas liée : elle fait partie de
+Windows.
+Droits : Microsoft Corporation.
+Licence : celle de Microsoft Visual Studio, dont ces bibliothèques sont du « code distribuable ».
+Le texte de cette licence n'a pas pu être obtenu d'une source sûre : il n'est pas reproduit ici.

@@ -130,12 +130,16 @@
 ; eleve du Demarrage (shinku-helper.exe) est dans helper.nsh, sous forme de
 ; macros ShinkuHelper* ; ce qui concerne "Supprimer aussi mes reglages"
 ; (shinku.exe --oublier, lance avec les droits ordinaires) est dans oublier.nsh,
-; sous forme de macros ShinkuOublier* ; chaque hook les appelle, puis fait ce qui
-; est propre a l'habillage. L'agent passe toujours en premier (sauf devant la
+; sous forme de macros ShinkuOublier* ; la liste des licences des composants
+; tiers (LICENCES-TIERS.txt, fabriquee par scripts/licences-tiers.mjs) est dans
+; licences.nsh, sous forme de macros ShinkuLicences* (copiee apres l'installation,
+; supprimee avant la desinstallation, apres l'agent et l'assistant) ; chaque hook
+; les appelle, puis fait ce qui est propre a l'habillage. L'agent passe toujours en premier (sauf devant la
 ; fermeture de la fenetre, a la desinstallation) : il lit encore ses fichiers,
 ; que la suite peut supprimer.
 !include "${SHINKU_INSTALLEUR}\agent.nsh"
 !include "${SHINKU_INSTALLEUR}\helper.nsh"
+!include "${SHINKU_INSTALLEUR}\licences.nsh"
 !include "${SHINKU_INSTALLEUR}\oublier.nsh"
 
 ; Avant toute copie : l'ancien agent, s'il tourne, verrouille son fichier.
@@ -155,6 +159,7 @@
 !macro NSIS_HOOK_POSTINSTALL
   !insertmacro ShinkuAgentPostInstall
   !insertmacro ShinkuHelperPostInstall
+  !insertmacro ShinkuLicencesPostInstall
   SetAutoClose true
 !macroend
 
@@ -178,6 +183,7 @@
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   !insertmacro ShinkuAgentPreUninstall
   !insertmacro ShinkuHelperPreUninstall
+  !insertmacro ShinkuLicencesPreUninstall
   !insertmacro ShinkuOublierPreUninstall
 !macroend
 

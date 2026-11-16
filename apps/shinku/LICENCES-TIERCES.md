@@ -31,5 +31,8 @@ cp node_modules/@tauri-apps/api/LICENSE-MIT public/licences/tauri.txt
 ```
 
 Les dépendances Rust (Tauri, BLAKE3, serde et les autres) ont leurs propres
-licences, toutes permissives. Leur liste complète sera produite
-automatiquement avant la première version publique.
+licences. Leur liste complète, avec le texte de chaque licence, celui des
+composants ci-dessus et celui de ce qui vient avec l'installeur, est fabriquée
+par `scripts/licences-tiers.mjs` : c'est le fichier `LICENCES-TIERS.txt` que
+l'installeur dépose à côté de `shinku.exe`. Voir `docs/conception.md`, section
+« Licences des dépendances ».

@@ -621,9 +621,11 @@ du PC ne l'est pas (voir « Limites connues »).
   reprise sur place tourne alors en même temps que l'agent, et l'agent continue
   ensuite de tourner. Fenêtre de quelques centaines de millisecondes.
 - **Une désinstallation élevée par un autre compte** que celui de la personne
-  (un compte standard élevé avec les identifiants d'un administrateur) vise le
-  profil de l'administrateur : `--retirer` ne trouve pas le `game.json` de la
-  personne et ne remet rien. La valeur `Run` qui resterait pointe sur un
+  (un compte standard élevé avec les identifiants d'un administrateur), quand
+  aucun agent de la personne ne répond à l'ordre, vise le profil de
+  l'administrateur : `--retirer` ne trouve pas le `game.json` de la personne et
+  ne remet rien (si son agent tourne, il reçoit l'ordre : voir « Avant une version
+  publique »). La valeur `Run` qui resterait pointe sur un
   programme absent, donc inerte ; le journal resté est repris au prochain
   démarrage de l'agent si Shinku est réinstallé.
 - **La valeur `Run` des autres comptes du PC reste** après la désinstallation :
@@ -1099,6 +1101,22 @@ ne le prouvent pas (ni droits, ni élévation, ni partage de fichiers). L'essai
 `SHINKU_ESSAI_ASSISTANT` (nom inconnu, code 4, jamais de boîte) se lance à la
 main sur l'installé.
 
+**Vu sur le vrai Windows de l'intégration continue** (Windows 11 build 26100,
+passage du 16 novembre 2026, `essai-assistant.ps1` et l'essai du lanceur, verts au
+premier passage) : le vrai lanceur démarre l'assistant installé, qui répond 4 pour un
+nom inconnu ; pendant le lancement, le fichier gardé ouvert refuse une écriture et une
+suppression (erreur 32) ; un dossier créé sous `Program Files` est accepté avec ses
+droits de départ et refusé (code 6) dès qu'« Utilisateurs » peut y écrire ; OK écrit
+les douze octets attendus (`03 00 00 00` puis la date) et rien d'autre dans `HKLM`,
+Annuler n'écrit rien (code 3), « déjà dans cet état » rend 9 sans boîte, l'échéance
+tombe à 120,0 s (code 3) ; un programme d'intégrité moyenne ne peut ni cliquer ni
+fermer la boîte (erreur 5) ; l'assistant publié porte `requireAdministrator` et
+`DependentLoadFlags = 0x0800`. La page, lancée avec un jeton filtré, lit l'accès
+`password` et montre l'interrupteur, sans clic. **Restent pour un vrai PC** : la
+fenêtre d'accord de Windows elle-même (la machine d'essai est déjà élevée, personne
+n'y répond), ce qu'elle écrit pour un assistant non signé, et l'effet du réglage à
+l'ouverture de session.
+
 ## Désinstallation
 
 Le module liste les apps installées, lance le **désinstalleur de l'éditeur**
@@ -1404,8 +1422,9 @@ sont inchangés.
 
 **Pourquoi base d'abord.** Si le marquage était coupé net (arrêt brutal), Windows
 supprimerait ce qui est déjà marqué. Une annexe (`-journal`, `-wal`) orpheline à côté d'une
-base absente est écartée par SQLite quand le navigateur recrée la base **[à vérifier
-sur le vrai Windows : preuve 8 du test]** ; une base qui reste sans son journal chaud
+base absente est écartée par SQLite quand le navigateur recrée la base **[non prouvé : sur
+le vrai Windows, le passage normal ne laisse aucune annexe (preuves 1 et 8 du test) et
+Chrome relancé recrée `History` ; la coupure elle-même n'a pas été fabriquée]** ; une base qui reste sans son journal chaud
 est ce qui l'abîme. Avec cet ordre, une coupure ne laisse que des annexes sans base.
 
 **Navigateur ouvert** : un processus du nom de l'exécutable (toutes les sessions)
@@ -1471,7 +1490,8 @@ dommage (l'index part d'abord) et sans bilan affiché.
   Sans danger pour le reste du profil.
 - `lockfile` est ouvert avec l'accès en écriture, **jamais écrit ni créé** : c'est la
   demande d'écriture qui entre en conflit de partage avec un navigateur ouvert
-  **[à vérifier sur le vrai Windows]**.
+  (vu sur le vrai Windows, preuves 2 et 8 : l'ouverture est refusée pour partage face
+  à un `lockfile` tenu comme le fait Chromium, et face au vrai Chrome ouvert).
 - Si le retrait d'une demande de suppression échoue après l'échec du marquage d'un autre fichier,
   l'erreur est avalée (`let _ =` dans `fs/windows.rs`, code partagé avec le grand vide, non
   touché ici) : le fichier déjà marqué part, et le lot est à moitié effacé. Très improbable
@@ -1489,15 +1509,28 @@ dommage (l'index part d'abord) et sans bilan affiché.
   restauration. Les copies de l'historique que Windows (VSS) ou un outil de
   récupération gardent, la synchronisation du navigateur, et la réimportation
   d'Edge depuis Chrome ne sont pas touchées.
-- **[à vérifier sur le vrai Windows]** : le mode de partage de `lockfile` ; ce que
-  fait `SHAddToRecentDocs(NULL)` des épinglés et de « Recommandé » ; si
-  `ClearHistory` exige la fenêtre au premier plan ; ce que fait l'Explorateur de
-  `TypedPaths` à la fermeture d'une fenêtre ; les liens physiques NTFS et les
-  verrous réels ; si `SHAddToRecentDocs` (COM en STA, sur un fil de travail sans boucle de
-  messages) et `ClearHistory` / `OpenClipboard` (avec la fenêtre d'un autre fil) marchent depuis
-  la commande `async` ; si l'Explorateur retire les raccourcis `.lnk` après l'appel (d'où
-  les relectures de `recent`) ; si SQLite écarte bien une annexe orpheline à côté d'une
-  base recréée (preuve 8).
+- **Vu sur le vrai Windows** (machine de GitHub, Windows 11 build 26100, passage du
+  16 novembre 2026, les huit preuves de `essai-confidentialite.ps1`, 13 scénarios) :
+  `lockfile` tenu en écriture refuse notre ouverture, avec le partage de Chromium comme
+  sans aucun partage, et avec le vrai Chrome ouvert ; un fichier tenu ouvert, un lien
+  physique NTFS (deux noms), une jonction à la place du profil et un lien de registre
+  ne laissent rien partir, ni d'un côté ni de l'autre ; un profil supprimé puis recréé
+  est reconnu comme un autre (identifiant de fichier différent) ; `SHAddToRecentDocs(NULL)`
+  marche depuis la commande `async` (fil de travail sans boucle de messages), le récent
+  posé a disparu dès la première lecture et n'est pas revenu deux secondes plus tard,
+  et **le dossier épinglé à l'Accès rapide est resté** : `recent` reste une ligne et ne
+  devient pas un bouton ; le presse-papiers est vide après l'effacement lancé depuis la
+  page ; une fenêtre de l'Explorateur fermée après l'effacement ne réécrit rien dans
+  `RunMRU`, `TypedPaths` ni `WordWheelQuery` ; le vrai Chrome, effacé puis relancé,
+  démarre et recrée `History`, et `Login Data`, `Network\Cookies`, `Web Data` et
+  `Local State` gardent la même empreinte SHA-256.
+- **Reste à vérifier** : ce que fait `SHAddToRecentDocs(NULL)` de « Recommandé » ;
+  `ClearHistory` quand l'historique du presse-papiers est activé (il était coupé sur la
+  machine d'essai : `IsHistoryEnabled()` rend `False`, et `ClearHistory()` appelé par le
+  script rend `True`, ce qui ne dit rien de l'appel fait par Shinku avec un historique
+  plein) ; l'annexe SQLite orpheline après une coupure (voir « Pourquoi base d'abord ») ;
+  un vrai profil de tous les jours, avec la synchronisation active : c'est l'essai que
+  seule la personne peut faire sur son PC.
 - Sept pages des réglages de Windows sont ouvertes par Shinku (liste fermée,
   `WindowsPage`), dont `ms-settings:privacy-activityhistory`,
   `ms-settings:search-permissions` et `ms-settings:privacy-feedback`.
@@ -1795,8 +1828,9 @@ dossiers connus et les suppressions sont ceux du reste du cœur).
   finissent de sortir : le désinstalleur ne les ferme pas, ils sortent d'eux-mêmes
   après la fenêtre) est réessayé : toute la suite des suppressions est reprise, de
   pause de 250 ms en pause, pendant **dix secondes au plus en tout**, une seule
-  horloge pour l'ensemble et non par fichier ; dix secondes peuvent ne pas suffire,
-  à vérifier sur le vrai Windows. Tout cela tient dans une **échéance totale de
+  horloge pour l'ensemble et non par fichier ; sur le vrai Windows, fenêtre de Shinku
+  ouverte au départ, elles ont suffi (rien n'est resté, rien n'est revenu cinq secondes
+  plus tard), sur une machine rapide et un cache presque vide. Tout cela tient dans une **échéance totale de
   vingt secondes** (`TOTAL_DEADLINE`), donnée par l'horloge de l'hôte et regardée
   entre deux gestes et, dans une arborescence, **entre deux entrées** : à
   l'échéance, on s'arrête, ce qui reste est compté comme restant (code 1). Un
@@ -1855,8 +1889,8 @@ conception fixe, dans `NSIS_HOOK_PREUNINSTALL`, dans cet ordre :
    `shinku.exe` sous lui, puis affiche le message. Si le processus tourne encore
    au bout du délai, il est **arrêté** par ce même Gestionnaire. Portée : le
    Gestionnaire arrête **tout processus qui utilise ce fichier**, ce qui peut
-   inclure le Shinku ouvert par un autre compte du PC s'il le voit (à vérifier sur
-   le vrai Windows) ; de même il peut répondre « en marche » pour un tel Shinku
+   inclure le Shinku ouvert par un autre compte du PC s'il le voit (non essayé : il
+   faut deux comptes) ; de même il peut répondre « en marche » pour un tel Shinku
    sans que `--oublier` ait tourné. C'est la même portée que la fermeture de la
    fenêtre par le modèle de Tauri, juste avant. S'il n'a jamais été vu, ou s'il a
    dû être arrêté :
@@ -1953,7 +1987,7 @@ repris.
   impriment « SAUTÉ » sur la sortie d'erreur, mais **comptent « ok » dans le
   bilan de cargo** : un bilan vert ne les distingue pas des réussis. Les mêmes
   tournent sous Linux avec des liens symboliques.
-- Vrai Windows : voir « À vérifier sur le vrai Windows ».
+- Vrai Windows : voir « Sur le vrai Windows », plus bas.
 
 **Limites, écrites ici telles quelles.**
 
@@ -1962,12 +1996,15 @@ repris.
   dit à la personne.
 - **« Mes réglages » sont ceux de la personne devant le bureau.** Les réglages des
   autres comptes du PC restent.
-- **L'agent a le même défaut de cible** : `--retirer` est lancé par le
-  désinstalleur élevé. Avec un autre compte d'élévation, il remet en place et
-  retire la valeur de démarrage du mauvais compte. Non traité ici (cela change un
-  passage prouvé sur le vrai Windows, utilisé aussi à l'installation) ; la
-  solution est le même lancement par `RunAsUser`. À faire avant la sortie
-  publique, une fois ce lot prouvé.
+- **L'agent retiré dans le mauvais compte : une limite connue, non corrigée.**
+  `--retirer` est lancé par le désinstalleur élevé. Avec un agent en marche, c'est
+  l'agent de la personne qui reçoit l'ordre (fenêtre cachée du même bureau, mutex
+  de la session) : il remet tout en place et efface sa valeur `Run` dans le bon
+  compte, même si l'élévation s'est faite avec un autre compte. Sans agent qui
+  réponde **et** avec une élévation par un autre compte, le programme élevé fait
+  la reprise et efface la valeur `Run` dans le profil du compte élevé : le
+  journal de la personne n'est pas repris, et sa valeur `Run` reste, pointée vers
+  un fichier supprimé (Windows l'ignore). Voir « Avant une version publique ».
 - **Le modèle de Tauri touche encore le profil du compte qui a élevé**, hors de la
   case : il retire les raccourcis, l'épinglage et la valeur `Run` de `HKCU` (des
   appels ciblés, sans récursion). Même défaut de cible que l'agent quand
@@ -1995,33 +2032,48 @@ repris.
   ReFS ; sans identifiant, rien n'est supprimé, voir plus haut). Le processus
   n'est pas élevé : il n'a de toute façon que les droits de la personne.
 
-**À vérifier sur le vrai Windows** (rien de cela n'a été prouvé ici) :
+**Sur le vrai Windows** (machine de GitHub, Windows 11 build 26100, passage du
+16 novembre 2026, les trois étapes de `essai-installeur.ps1`, toutes vertes au premier
+passage). Ce qui est vu :
 
-- `RunAsUser` transmet-il l'argument `--oublier` (le modèle l'utilise ainsi pour
-  `/ARGS`) ? Preuve : `essai-installeur.ps1`, étape `desinstaller`, qui coche
-  la case dans la vraie page et compte les fichiers qui disparaissent.
-- Le Gestionnaire de redémarrage voit-il `shinku.exe` en marche pendant que le
-  processus tourne (dix secondes), puis fini ? Preuve : la même étape (et le
-  message d'échec, qui ne doit pas s'afficher) ; l'étape `oublier` mesure en plus
-  la durée de vie du processus (au moins une seconde).
-- Dix secondes de réessai suffisent-elles à WebView2 pour sortir et libérer son
-  cache quand la fenêtre était ouverte ? Preuve : l'étape `desinstaller` lancée
-  fenêtre ouverte au départ (aucun fichier ne doit revenir).
-- Une vraie jonction NTFS à la place d'un des deux dossiers `fr.shinku.app` :
-  témoin derrière intact, jonction laissée. Preuve : l'étape
-  `desinstaller-jonction`. Sous Wine, c'est sauté.
-- Le code 2 quand `--oublier` est élevé face à un bureau qui ne l'est pas, et le
-  code 0 quand tout le PC tourne avec tous les droits. Preuve : l'étape `oublier`,
-  si le runner le permet ; sinon c'est noté. La lecture réelle de l'élévation (et
-  le cas « inconnu » qui refuse) ne s'essaie pas ailleurs que sur Windows.
-- Que fait `RunAsUser` quand le bureau est à un autre compte que le
-  désinstalleur, sur le runner de GitHub (contrôle de compte coupé, pas
-  forcément d'Explorateur), et avec la protection administrateur de Windows 11 ?
-  Les deux cas à deux comptes ne s'essaient pas en intégration continue : ils
-  restent une limite dite.
-- Un fichier occupé réel, tenu par un vrai WebView2 (Wine a essayé un verrou sans
-  partage, pas un vrai moteur web), et la durée réelle d'une passe sur un vrai
-  cache, sous Defender.
+- `RunAsUser` transmet l'argument : pendant la désinstallation, le script a vu
+  `"C:\Program Files\Shinku\shinku.exe" --oublier`, et les fichiers sont partis.
+- Le Gestionnaire de redémarrage voit ce processus en marche puis fini : le message
+  d'échec ne s'est pas affiché, et la désinstallation n'a pas attendu son délai.
+- `--oublier` lancé à la main avec un jeton filtré (les droits ordinaires) : code 0,
+  1,01 s de vie, les 11 témoins partis, les deux dossiers `fr.shinku.app` partis.
+- Fenêtre de Shinku ouverte au départ, case cochée dans la vraie page : la question
+  « Shinku est ouvert » est posée une seule fois ; `%APPDATA%\Shinku`,
+  `%LOCALAPPDATA%\Shinku` et les deux `fr.shinku.app` ont disparu avec les 9 fichiers
+  de réglages et de journaux ; rien n'est revenu cinq secondes plus tard ; le dossier
+  d'installation et le raccourci du menu Démarrer ont disparu. Le réessai de dix
+  secondes a donc suffi à un vrai WebView2 qui sort.
+- Une vraie jonction NTFS à la place de `%LOCALAPPDATA%\fr.shinku.app` : les six
+  éléments derrière elle sont intacts, la jonction est laissée en place, et le reste
+  (réglages, `%APPDATA%\fr.shinku.app`) est parti.
+- Sur un vrai NTFS, les essais de liens de `forget_fs` (21 essais) et `forget_run` (6)
+  passent ; un bilan vert de cargo cache leur sortie, donc une éventuelle ligne
+  « SAUTÉ » ne s'y verrait pas.
+
+Ce qui **n'est pas** vu, et pourquoi :
+
+- **Le lancement « avec les droits ordinaires » par `RunAsUser` n'est pas prouvé.** Sur
+  la machine de GitHub tout est élevé, l'Explorateur de la session aussi : `RunAsUser`
+  y a donc lancé `--oublier` avec un jeton élevé, face à un bureau élevé, ce que
+  `--oublier` accepte (tout le PC tourne avec tous les droits) ; c'est déduit du jeton
+  de l'Explorateur, que le script imprime, pas lu sur le processus lui-même. Ce que
+  l'essai prouve est le passage de l'argument, l'attente et le résultat, pas la baisse
+  des droits. Elle ne se verra que sur le PC de quelqu'un : désinstaller avec la case,
+  sans message d'échec et sans reste.
+- **Le code 2** (`--oublier` élevé face à un bureau qui ne l'est pas) : même raison,
+  l'étape l'écrit en `NOTE`. La décision elle-même est tenue par les essais du cœur,
+  avec une élévation fabriquée.
+- Le `RMDir /r` de NSIS suit-il une jonction ? Non mesuré, et plus nécessaire : le
+  désinstalleur ne le joue plus dans un profil (tenu par `installer.test.ts`).
+- Les deux cas à deux comptes (compte ordinaire et mot de passe d'un administrateur ;
+  protection administrateur de Windows 11) : jamais essayables en intégration continue,
+  ils restent une limite dite.
+- La durée réelle d'une passe sur un gros cache, sous Defender, sur un disque lent.
 - Un volume FAT ou exFAT (sans identifiant), des dossiers redirigés sur un
   partage réseau, un fichier « en ligne uniquement », un profil déplacé.
 - « Rien d'écrit sur le disque » : un arrêt brutal (panique) peut faire écrire un
@@ -2218,20 +2270,191 @@ d'utilisateur (`apps/shinku/scripts/lancer-en-utilisateur.ps1`) : ce sont les
 droits qu'il a sur le PC de quelqu'un, et WebView2 n'écoute cette variable
 d'environnement que dans un programme sans droits d'administrateur.
 
+## Licences des dépendances
+
+Shinku embarque des composants écrits par d'autres : des paquets Rust (MIT,
+Apache-2.0, BSD, Unicode-3.0, Zlib, MPL-2.0…), `lit-html`, `@tauri-apps/api`,
+deux polices sous licence OFL et quelques composants de l'installeur. Presque
+toutes ces licences demandent que leur texte accompagne chaque copie distribuée.
+L'installeur dépose donc `LICENCES-TIERS.txt` à côté de `shinku.exe`.
+
+**Ce que fait `apps/shinku/scripts/licences-tiers.mjs`** (Node 22, sans
+dépendance). Il fabrique le fichier, par défaut dans
+`apps/shinku/src-tauri/licences/LICENCES-TIERS.txt` (ignoré par git) :
+
+- *Les paquets Rust* : ceux que les trois programmes lient vraiment, c'est-à-dire
+  l'union de `cargo tree --locked -e normal,no-proc-macro --target
+  x86_64-pc-windows-msvc --prefix none` lancé comme la fabrication compile, une
+  fois pour la fenêtre (`-p shinku`, ce que `tauri build` compile) et une fois
+  pour l'agent et l'assistant (`-p shinku-agent -p shinku-helper`, ce que
+  `beforeBuildCommand` compile). Les outils qui servent seulement à fabriquer les
+  programmes (dépendances de construction) et les macros procédurales ne sont
+  pas dans les programmes : ils ne sont pas listés. Ce choix remplace
+  `-e normal,build`, dont le résultat dépendait de la machine : `cargo tree`
+  résout les sous-arbres de construction et de macros pour la machine qui le
+  lance, si bien que le fichier fabriqué sous Windows n'était pas celui que la
+  garde vérifiait sous Linux (une dépendance de construction propre à Windows, sans
+  texte, aurait passé la garde sous Linux et cassé l'installeur). Avec
+  `normal,no-proc-macro` et la cible Windows, la liste se calcule pour cette cible
+  et ne dépend plus de la machine qui la calcule. **Vu le 16 novembre 2026** dans
+  les journaux de la CI (commit `1e7f43d`) : la garde sous Linux et la fabrication
+  sous Windows écrivent la même empreinte, pour 138 paquets Rust (voir plus bas).
+  Les paquets du dépôt
+  (sans `source`) sont écartés ; le dossier, l'expression de licence et l'adresse
+  du dépôt de chacun viennent de `cargo metadata --format-version 1 --locked`.
+  `--hors-ligne` (ou `SHINKU_CARGO_HORS_LIGNE=1`) ajoute `--offline` aux appels de
+  cargo.
+- *Les paquets de la page* : les `dependencies` de `package-lock.json` (donc leurs
+  dépendances transitives) et les deux polices, nommées dans `PAGE_DEV_PACKAGES`
+  parce qu'elles sont en `devDependencies` mais que leur contenu part dans la page.
+  Un essai échoue si `src` importe (code ou CSS) un paquet qui n'est dans aucune
+  des deux listes.
+- *Les textes* : les fichiers `LICENSE*`, `LICENCE*`, `COPYING*`, `NOTICE*` et
+  `UNLICENSE*` de la racine du paquet (casse ignorée, liens non suivis, 256 Kio au
+  plus, non vides une fois normalisés). Un `NOTICE*` est toujours recopié (Apache-2.0
+  le demande) mais ne compte pas comme texte de licence. Les textes identiques
+  (fins de ligne normalisées) ne sont écrits qu'une fois ; chaque paquet renvoie
+  aux siens par un numéro.
+- *La section fixe* : `src-tauri/licences/section-fixe.txt`, écrite à la main,
+  recopiée en tête : la bibliothèque standard de Rust, NSIS, le greffon
+  `nsis_tauri_utils`, le chargeur du SDK WebView2, l'amorce de WebView2 et la
+  bibliothèque d'exécution Visual C++. Les textes qu'on n'a pas pu tirer d'une
+  source sûre ne sont pas écrits : la section nomme le composant, d'où il vient,
+  et renvoie à l'adresse officielle de sa licence.
+- *MPL-2.0* : chaque paquet sous MPL-2.0 porte la phrase qui dit où obtenir le
+  code source de sa version (adresse du dépôt et version).
+- La sortie est triée, sans date ni chemin de la machine : deux passages sur la
+  même machine donnent le même fichier, octet pour octet (essayé sous Linux).
+  Le script écrit à la fin sur la sortie d'erreur une ligne
+  `licences-tiers : sha256 <empreinte>` : celle du contenu fabriqué, avec ou sans
+  `--verifier`. L'étape « Licences des dépendances » du travail « Cœur et
+  interface » de la CI lance `--verifier` (après `npm ci`, qui apporte
+  `node_modules`) pour écrire cette ligne dans le journal ; `beforeBuildCommand`
+  l'écrit dans celui du travail Windows. Les deux lignes doivent être égales :
+  elles l'étaient le 16 novembre 2026. Rien ne les compare tout seul : c'est à relire
+  dans les journaux quand le script ou la fabrication change.
+
+**La garde** : `node scripts/licences-tiers.mjs --verifier` n'écrit rien et sort
+en erreur, en nommant chaque paquet fautif, si une expression de licence n'est pas
+satisfaite par la liste permise (`ALLOWED_LICENSES`, dans le script : MIT, MIT-0,
+Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib,
+0BSD, Unlicense, CC0-1.0, Unicode-3.0, Unicode-DFS-2016, BSL-1.0, MPL-2.0,
+OFL-1.1 ; `OR` et l'ancien `/` : une suffit ; `AND` : toutes ; `WITH` fait partie
+du nom), si une expression est illisible ou absente, si un paquet n'a aucun texte
+de licence (un `NOTICE` n'en est pas un), ou si un fichier au nom de licence est
+écarté sans que rien le dise : vide après normalisation, de plus de 256 Kio, lien
+ou autre chose qu'un fichier ordinaire (l'erreur nomme le paquet et le fichier ; seul
+un dossier au nom de licence, comme `LICENSES/`, reste ignoré, et seulement quand
+le paquet a par ailleurs un texte et que son expression n'a aucun `AND` : avec un
+`AND`, un des textes demandés peut être dans ce dossier, qui n'est pas lu, et
+l'erreur nomme le paquet et le dossier). Les compléments passent par les mêmes règles.
+Fabriquer le fichier lance la même garde et n'écrit rien si elle
+échoue. Un essai de `npm test` la lance sur le vrai dépôt ; il échoue (il ne saute
+pas) si `cargo` manque. En CI, `cargo metadata` donne le dossier de chaque paquet :
+cela suppose que cargo ait téléchargé les sources (non vérifié ici, hors ligne).
+
+**Les compléments à la main.** Un paquet dont le dossier ne contient aucun texte
+reçoit un dossier `src-tauri/licences/complements/<nom>@<version>/` (versionné ;
+le nom d'un paquet à portée, comme `@x/y`, n'est pas géré : les paquets Rust n'en
+ont pas et la page n'a pas besoin de complément) :
+le fichier de licence, pris dans le dépôt d'origine (à l'étiquette ou au commit de
+la version utilisée) ou, à défaut, dans une autre source sûre, jamais écrit de
+mémoire, et un `SOURCE.txt` qui dit d'où il vient. Un complément s'ajoute aux textes du paquet **Rust** de ce nom **et de cette version**
+seulement (un paquet de la page de même nom et de même version ne le reçoit pas ; le
+complément est alors orphelin, donc une erreur), et sa provenance (`SOURCE.txt`) paraît sous le paquet dans le fichier
+fabriqué. Un complément qui ne va à aucun paquet du graphe est une erreur : une
+montée de version oblige donc à revérifier le texte. Un `SOURCE.txt` vide est une
+erreur, de même que deux dossiers de compléments dont les noms ne diffèrent que par la
+casse (ils se heurteraient sous Windows). Un complément pour un paquet qui
+a déjà ses propres textes de licence (hors `NOTICE`) est aussi une erreur
+(« inutile, à supprimer »). Aujourd'hui : `alloc-stdlib@0.3.0`,
+`webview2-com@0.39.1` et `webview2-com-sys@0.39.1`. Les compléments de `selectors` et
+de `webview2-com-macros` ont été supprimés : ces deux paquets ne sont pas liés
+dans les programmes (ils n'apparaissent plus dans la liste).
+
+**Ajouter une dépendance.** Rien à faire si sa licence est dans la liste et si son
+dossier contient son texte : le fichier la reprend à la prochaine fabrication.
+Sinon, `npm test` (ou `--verifier`) échoue en la nommant : soit on ajoute un
+complément (texte pris d'une source sûre, avec son `SOURCE.txt`), soit une
+personne décide d'accepter la licence et l'ajoute à `ALLOWED_LICENSES` (avec
+son essai). Une dépendance de la page qui n'est pas dans `dependencies` mais dont
+le contenu part dans la page va dans `PAGE_DEV_PACKAGES`.
+
+**Dans l'installeur.** `beforeBuildCommand` lance le script après les compilations.
+`installeur/licences.nsh` (sur le modèle de `helper.nsh`) copie le fichier après
+l'installation et le supprime avant la désinstallation, après l'agent et
+l'assistant ; ce n'est pas une ressource de Tauri (un fichier manquant casserait
+toute compilation Windows, y compris `cargo build` et `clippy` ; seul `makensis`
+l'exige). L'essai de l'installeur sur le vrai Windows vérifie que le fichier est
+posé, non vide, et nomme `serde` ; l'aller-retour silencieux, qu'il est posé puis
+retiré avec le dossier.
+
+**Limites, écrites telles quelles.**
+
+- **La liste est celle des paquets liés, pour la cible Windows.** Un paquet qui
+  ne serait lié que pour une autre cible, ou qui ne sert qu'à fabriquer les
+  programmes, n'y est pas, et la garde ne le voit pas : c'est voulu (il n'est pas
+  distribué), mais si la fabrication change (un autre `--target`, une dépendance
+  de construction qui laisse du code dans un programme), la liste est à revoir.
+  Un outil de construction peut aussi laisser un fichier dans un programme sans
+  laisser de code : `tauri-build` (non listé) a un manifeste Windows par défaut,
+  `windows-app-manifest.xml`, qu'il incorpore à `shinku.exe` quand on ne lui en donne
+  pas (lu dans `tauri-build` 2.7.4 : `WindowsAttributes::new`, puis `set_manifest`).
+  Ici `build.rs` lui donne le manifeste de Shinku (`windows-manifest.xml`), qui le
+  remplace : ce fichier-là n'est donc pas dans `shinku.exe`, et nous n'avons trouvé
+  aucune autre trace d'un outil de construction dans un programme. Si `build.rs`
+  cessait de fournir le sien, le manifeste de `tauri-build` (une simple dépendance
+  aux contrôles communs de Windows, de peu de contenu) serait à nommer.
+- **La section fixe est écrite à la main** et ne vieillit pas toute seule. Sa
+  section A nomme ce que la bibliothèque standard de Rust lie sous Windows (tables
+  Unicode, `compiler_builtins` et `libm`, `cfg-if`, `hashbrown`, `rustc-demangle`),
+  d'après la chaîne d'outils et le dépôt `rust-lang/rust` à l'étiquette de la
+  version ; elle est à relire à chaque changement de `rust-toolchain.toml` (un essai
+  vérifie que la version nommée dans la section est celle du fichier). Le
+  texte du SDK WebView2 (licence et notices) vient du paquet NuGet officiel
+  `Microsoft.Web.WebView2` 1.0.3800.47, la version que le dépôt de
+  `webview2-com-sys` désigne ; à reprendre quand ce paquet change de SDK. Les
+  textes de l'amorce de WebView2 et de la bibliothèque d'exécution Visual C++ n'y
+  sont pas (ce sont des composants que Microsoft laisse redistribuer sous ses
+  propres conditions ; leur texte n'a pas pu être obtenu d'une source sûre). Le
+  texte de NSIS vient du paquet Debian 3.09, pas de la version que Tauri
+  télécharge.
+- **La garde lit ce que les paquets déclarent** (leur expression de licence et
+  leurs fichiers) ; elle ne lit pas leur code, et elle ne vérifie pas qu'un texte
+  fourni est bien celui de la licence déclarée.
+- **Les textes de licence reproduisent leurs notices de droits d'auteur
+  telles quelles**, noms de personnes compris : ils sont la licence.
+- Les licences ne sont pas encore montrées dans la fenêtre (page « À propos »,
+  plus tard), et le choix de la licence de Shinku reste à la personne.
+
 ## Avant une version publique
 
 - **Signature du code.** L'installeur et les exécutables ne sont pas signés.
   Voir la décision prise sur le certificat individuel.
-- **L'agent `--retirer` lancé par le désinstalleur élevé vise le mauvais compte
-  quand l'élévation s'est faite avec un autre compte** (point ouvert). Il remet
-  en place et retire la valeur de démarrage du compte élevé, pas de la personne
-  devant le bureau. La solution est le même lancement par `RunAsUser` que pour
-  `--oublier` ; elle change un passage prouvé sur le vrai Windows, utilisé aussi
-  à l'installation, et attend que `--oublier` y ait été prouvé.
-- **Preuve de `--oublier` sur le vrai Windows.** Le lot est construit et essayé
-  sous Linux et Wine ; il n'est fini qu'après l'essai de l'installeur sur un vrai
-  Windows (voir « À vérifier sur le vrai Windows », dans « Effacer les réglages à
-  la désinstallation »).
+- **L'agent `--retirer` dans le mauvais compte : une limite, écrite telle quelle
+  (non corrigée dans ce lot).** Les faits : avec un agent en marche, c'est
+  l'agent de la personne qui reçoit l'ordre (fenêtre cachée du même bureau, mutex
+  de la session) et il remet tout en place et efface sa valeur `Run` dans le bon
+  compte, même si l'élévation s'est faite avec un autre compte. Sans agent qui
+  réponde **et** avec une élévation par un autre compte, le programme élevé fait
+  la reprise et efface la valeur `Run` dans le profil du compte élevé : le
+  journal de la personne n'est pas repris, et sa valeur `HKCU\…\Run\Shinku`
+  reste, pointée vers un fichier supprimé (Windows l'ignore). Le seul dommage
+  durable est ce journal non repris ; il l'est au prochain démarrage de l'agent si
+  Shinku est réinstallé. Pourquoi ce n'est pas corrigé : le gain demande trois
+  conditions à la fois (deux comptes, aucun agent en marche, une élévation par
+  l'autre compte) ; la correction ajoute une seconde attente sans poignée ni code,
+  un risque de boîte d'erreur de l'Explorateur si le lancement arrive après la
+  suppression du fichier, et surtout elle ne peut pas être essayée : la machine de
+  GitHub n'a qu'un compte, tout élevé. La forme minimale retenue pour plus tard,
+  avec la signature : `RunAsUser`, une seconde de vie minimale pour l'ordre
+  `--retirer` (comme `--oublier`), une attente recopiée et non partagée avec
+  `oublier.nsh`, et un essai à deux comptes fait à la main.
+- **`--oublier` sur le PC de quelqu'un.** Les trois étapes de l'installeur sont
+  vertes sur le vrai Windows de l'intégration continue, mais tout y est élevé : la
+  baisse des droits par `RunAsUser` et le refus (code 2) ne s'y voient pas (voir
+  « Sur le vrai Windows », dans « Effacer les réglages à la désinstallation »).
+  Reste l'essai à la main : désinstaller avec la case sur un PC ordinaire.
 - **Variables et stratégies de WebView2 : risque accepté.** `shinku.exe` laisse
   WebView2 lire sept variables `WEBVIEW2_*` (dont
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`) et les stratégies de
@@ -2257,9 +2480,13 @@ d'environnement que dans un programme sans droits d'administrateur.
   qu'il n'est pas signé, détourner une de ses bibliothèques n'apporte rien à un
   attaquant (il peut présenter son propre programme sous le même nom), et
   `/DEPENDENTLOADFLAG:0x800` tient déjà les imports statiques à `System32`. Le
-  gain réel sur le binaire publié (MSVC, release, LTO) n'est pas mesuré : quand
-  la CI rouvrira, relever la table d'imports de `shinku-helper.exe` que
-  `essai-assistant.ps1` imprime déjà « pour information », et la noter ici. Les
+  gain réel sur le binaire publié (MSVC, release, LTO) est faible, d'après la
+  table d'imports de `shinku-helper.exe` relevée sur le vrai Windows le
+  16 novembre 2026 (374 784 octets) : `kernel32`, `advapi32`, `shell32`, `combase`,
+  `oleaut32`, `user32`, `ntdll`, `api-ms-win-core-synch-l1-2-0` et six
+  `api-ms-win-crt-*`. Ni `powrprof`, ni `wtsapi32`, ni `dwmapi` : l'éditeur de
+  liens a déjà écarté le code du mode jeu et de l'agent. Un crate dédié retirerait
+  surtout du code source à relire, pas des bibliothèques chargées. Les
   quatre faits gardés pour ce jour-là : (1) `State`, `Scope` et `Origin` dérivent
   `Serialize` et partent avec `Place` : il faut `#[serde(remote)]` dans le cœur
   (la règle de l'orphelin interdit le reste), pas de fonctionnalité `serde`
@@ -2278,15 +2505,26 @@ d'environnement que dans un programme sans droits d'administrateur.
   avant de fabriquer l'installeur. Un agent non signé, qui change la
   priorité d'autres programmes, est exactement ce qu'un antivirus regarde de
   près.
-- **Helper et agent.** Leur bibliothèque d'exécution C++ est liée statiquement
-  (`build.rs`), comme celle de `shinku.exe` ; à vérifier sur un PC sans
-  Visual C++ installé.
+- **Helper et agent.** Leur bibliothèque d'exécution Visual C++ est liée
+  statiquement (`build.rs`), comme celle de `shinku.exe`. Vu dans la table d'imports
+  de l'assistant publié : aucun `VCRUNTIME140.dll`, seulement les `api-ms-win-crt-*`
+  de la bibliothèque C universelle, qui fait partie de Windows 10 et 11. L'essai
+  sur un PC sans Visual C++ installé reste à faire pour le dire prouvé.
 - **ARM64.** Le code ne dépend pas de l'architecture, mais seul l'installeur
   x64 est fabriqué et testé.
-- **Intégration continue.** Désigner les actions GitHub par l'empreinte de
-  leur commit plutôt que par leur numéro de version.
-- **Licences.** Choisir la licence de Shinku, et produire la liste complète
-  des licences des dépendances Rust.
+- **Intégration continue.** Les actions GitHub sont désignées par l'empreinte de
+  leur commit (`propriétaire/dépôt@<40 hexadécimaux> # vX.Y.Z`, la dernière
+  version de la même version majeure le 16 novembre 2026) ; un essai de
+  `npm test` refuse toute autre forme. **Limite** : rien ne vérifie que le
+  commentaire dit la bonne version de l'empreinte, et les empreintes vieillissent
+  (pas de Dependabot tant que la personne ne l'a pas demandé : il ouvre des
+  demandes de fusion à son nom) : les relever de nouveau à la main de temps en
+  temps. L'artefact `shinku-installeur-x64` porte aussi `SHA256SUMS.txt` et
+  `LICENCES-TIERS.txt`.
+- **Licences.** La liste des licences des dépendances est fabriquée et vérifiée
+  (voir « Licences des dépendances »). Reste : choisir la licence de Shinku
+  (à la personne) et décider de ce que disent les licences de Microsoft de la
+  section fixe.
 - **Icône.** L'icône actuelle reprend le signe de l'interface
   (`scripts/icone.mjs`). Le logo définitif reste à choisir dans le canevas.
 - **Identifiant.** `fr.shinku.app` nomme le dossier du cache de WebView2 : le
