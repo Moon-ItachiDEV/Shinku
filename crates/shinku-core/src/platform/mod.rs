@@ -345,6 +345,21 @@ pub fn runs_elevated() -> bool {
     elevated_launch(imp::own_rights(), imp::desktop_rights)
 }
 
+/// Comme [`runs_elevated`], mais qui **refuse dans le doute** : vrai aussi quand
+/// Windows ne dit pas les droits de ce processus (le jeton ne se lit pas). Pour
+/// qui efface dans un profil (`--oublier`) : un processus peut être élevé sous
+/// un autre compte sans qu'on le sache, et se tromper viserait les réglages de
+/// cet autre compte. La fenêtre, elle, garde le choix de ne bloquer personne.
+pub fn elevated_or_unknown() -> bool {
+    elevated_or_unknown_with(imp::own_rights_known(), imp::desktop_rights)
+}
+
+/// La décision de [`elevated_or_unknown`] : l'inconnu refuse, le connu passe par
+/// [`elevated_launch`], la décision de la fenêtre.
+fn elevated_or_unknown_with(own: Option<Rights>, desktop: impl FnOnce() -> Desktop) -> bool {
+    own.is_none_or(|own| elevated_launch(own, desktop))
+}
+
 /// Les droits d'un processus, tels que Windows les décrit dans son jeton.
 // Hors de Windows, un processus est toujours ordinaire : seuls les tests
 // fabriquent les autres cas.
@@ -683,6 +698,29 @@ mod tests {
         assert!(!with(Desktop::Running(Rights::Unrestricted)), "tout le PC a tous les droits");
         assert!(!with(Desktop::Running(Rights::Elevated)), "bureau lui-même élevé");
         assert!(!with(Desktop::Absent), "pas de bureau : rien à comparer");
+    }
+
+    #[test]
+    fn unknown_rights_refuse_and_known_rights_follow_the_window_decision() {
+        let never = || -> Desktop { panic!("le bureau n'a pas à être consulté") };
+        // Inconnu : on refuse, sans même regarder le bureau.
+        assert!(elevated_or_unknown_with(None, never));
+        // Connu : exactement la décision de la fenêtre.
+        assert!(!elevated_or_unknown_with(Some(Rights::Standard), never));
+        assert!(elevated_or_unknown_with(Some(Rights::Elevated), never));
+        for desktop in [
+            Desktop::Running(Rights::Standard),
+            Desktop::Running(Rights::Elevated),
+            Desktop::Running(Rights::Unrestricted),
+            Desktop::Unreachable,
+            Desktop::Absent,
+        ] {
+            assert_eq!(
+                elevated_or_unknown_with(Some(Rights::Unrestricted), || desktop),
+                elevated_launch(Rights::Unrestricted, || desktop),
+                "{desktop:?}"
+            );
+        }
     }
 
     #[test]

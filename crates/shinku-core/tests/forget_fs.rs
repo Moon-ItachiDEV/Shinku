@@ -24,6 +24,10 @@ fn file(dir: &Path, name: &str) -> Removed {
     remove_plain_file(dir, name.as_ref())
 }
 
+fn never() -> bool {
+    false
+}
+
 fn skipped(why: &str) {
     eprintln!("SAUTÉ : {why}");
 }
@@ -126,6 +130,20 @@ fn an_empty_folder_goes_and_a_full_one_stays() {
 }
 
 #[test]
+fn an_empty_folder_behind_a_link_in_its_chain_is_never_removed() {
+    let (_temp, root) = workspace();
+    let real = root.join("vrai");
+    fs::create_dir_all(real.join("sous").join("vide")).unwrap();
+    if !link_dir(&real, &root.join("Lien")) {
+        return skipped("liens de dossier indisponibles");
+    }
+    // Le dernier composant est un vrai dossier vide ; c'est le milieu qui est un lien.
+    let behind = root.join("Lien").join("sous").join("vide");
+    assert_eq!(remove_empty_dir(&behind), Removed::Kept);
+    assert!(real.join("sous").join("vide").exists());
+}
+
+#[test]
 fn a_link_in_place_of_the_folder_is_kept_with_its_target() {
     let (_temp, root) = workspace();
     let real = root.join("vrai");
@@ -158,7 +176,7 @@ fn a_whole_tree_goes_with_its_root() {
     let tree = root.join("fr.shinku.app");
     build_cache(&tree);
     write(&root.join("voisin.txt"), b"a moi");
-    let report = remove_tree(&tree, limits());
+    let report = remove_tree(&tree, limits(), &never);
     assert!(report.is_clean(), "{report:?}");
     // 4 fichiers, 6 dossiers (EBWebView, Default, Cache, vide, encore, la racine).
     assert_eq!(report.removed, 4 + 6);
@@ -169,7 +187,7 @@ fn a_whole_tree_goes_with_its_root() {
 #[test]
 fn a_missing_root_is_nothing_to_do() {
     let (_temp, root) = workspace();
-    let report = remove_tree(&root.join("fr.shinku.app"), limits());
+    let report = remove_tree(&root.join("fr.shinku.app"), limits(), &never);
     assert_eq!(report, TreeReport::default());
     assert!(report.is_clean());
 }
@@ -183,7 +201,7 @@ fn a_root_that_is_a_link_is_left_and_nothing_behind_it_is_touched() {
     if !link_dir(&behind, &root.join("fr.shinku.app")) {
         return skipped("liens de dossier indisponibles");
     }
-    let report = remove_tree(&root.join("fr.shinku.app"), limits());
+    let report = remove_tree(&root.join("fr.shinku.app"), limits(), &never);
     assert_eq!(report.removed, 0);
     assert_eq!(report.kept, 1, "{report:?}");
     assert!(!report.is_clean());
@@ -193,10 +211,26 @@ fn a_root_that_is_a_link_is_left_and_nothing_behind_it_is_touched() {
 }
 
 #[test]
+fn a_tree_behind_a_link_in_the_chain_above_its_root_is_refused_whole() {
+    let (_temp, root) = workspace();
+    let real = root.join("profil-vrai");
+    write(&real.join("fr.shinku.app").join("EBWebView").join("cache.bin"), b"x");
+    if !link_dir(&real, &root.join("profil")) {
+        return skipped("liens de dossier indisponibles");
+    }
+    let tree = root.join("profil").join("fr.shinku.app");
+    let report = remove_tree(&tree, limits(), &never);
+    assert_eq!((report.removed, report.kept), (0, 1), "{report:?}");
+    assert!(real.join("fr.shinku.app").join("EBWebView").join("cache.bin").exists());
+    // Et le chemin au-dessus qui n'existe pas : rien à faire, pas un refus.
+    assert!(remove_tree(&root.join("absent").join("fr.shinku.app"), limits(), &never).is_clean());
+}
+
+#[test]
 fn a_root_that_is_a_file_is_left() {
     let (_temp, root) = workspace();
     write(&root.join("fr.shinku.app"), b"un fichier");
-    let report = remove_tree(&root.join("fr.shinku.app"), limits());
+    let report = remove_tree(&root.join("fr.shinku.app"), limits(), &never);
     assert_eq!((report.removed, report.kept), (0, 1));
     assert!(root.join("fr.shinku.app").exists());
 }
@@ -212,7 +246,7 @@ fn a_link_lower_down_is_never_crossed_and_stays_in_place() {
     if !link_dir(&behind, &tree.join("EBWebView").join("Default").join("piege")) {
         return skipped("liens de dossier indisponibles");
     }
-    let report = remove_tree(&tree, limits());
+    let report = remove_tree(&tree, limits(), &never);
     assert_eq!(report.kept, 1, "le lien est laissé, et compté : {report:?}");
     assert_eq!(report.busy, 0);
     assert!(!report.is_clean(), "« en partie »");
@@ -237,7 +271,7 @@ fn a_file_link_lower_down_is_left_and_its_target_untouched() {
     if !link_file(&root.join("cible.txt"), &tree.join("lien.txt")) {
         return skipped("liens de fichier indisponibles");
     }
-    let report = remove_tree(&tree, limits());
+    let report = remove_tree(&tree, limits(), &never);
     assert_eq!(report.kept, 1, "{report:?}");
     assert_eq!(fs::read(root.join("cible.txt")).unwrap(), b"precieux");
     assert!(fs::symlink_metadata(tree.join("lien.txt")).is_ok());
@@ -254,7 +288,7 @@ fn a_file_with_two_names_goes_as_one_name_and_the_other_stays_whole() {
     {
         return skipped("liens physiques indisponibles");
     }
-    let report = remove_tree(&tree, limits());
+    let report = remove_tree(&tree, limits(), &never);
     assert!(report.is_clean(), "un fichier à plusieurs noms part comme un nom : {report:?}");
     assert!(!tree.exists());
     assert_eq!(fs::read(root.join("memes-donnees.bin")).unwrap(), b"donnees partagees");
@@ -273,7 +307,7 @@ fn the_depth_is_bounded() {
 
     // Largement assez de profondeur : tout part.
     let ample = TreeLimits { max_depth: 20, max_entries: 1000 };
-    assert!(remove_tree(&tree, ample).is_clean());
+    assert!(remove_tree(&tree, ample, &never).is_clean());
     assert!(!tree.exists());
 
     // Trop peu : le fond est laissé, et dit.
@@ -284,7 +318,7 @@ fn the_depth_is_bounded() {
     write(&deep.join("profond.bin"), b"x");
     write(&tree.join("n0").join("haut.bin"), b"x");
     let short = TreeLimits { max_depth: 4, max_entries: 1000 };
-    let report = remove_tree(&tree, short);
+    let report = remove_tree(&tree, short, &never);
     assert!(report.kept >= 1, "{report:?}");
     assert!(!report.is_clean());
     assert!(deep.join("profond.bin").exists(), "au-delà de la borne : jamais atteint");
@@ -299,12 +333,12 @@ fn the_number_of_entries_is_bounded() {
         write(&tree.join(format!("f{index:02}.bin")), b"x");
     }
     let small = TreeLimits { max_depth: 10, max_entries: 20 };
-    let report = remove_tree(&tree, small);
+    let report = remove_tree(&tree, small, &never);
     assert!(!report.is_clean());
     assert_eq!(report.removed, 20, "on s'arrête à la borne : {report:?}");
     assert_eq!(fs::read_dir(&tree).unwrap().count(), 30);
     // Avec de quoi finir, le reste part : la borne n'est pas un état.
-    assert!(remove_tree(&tree, TreeLimits { max_depth: 10, max_entries: 1000 }).is_clean());
+    assert!(remove_tree(&tree, TreeLimits { max_depth: 10, max_entries: 1000 }, &never).is_clean());
     assert!(!tree.exists());
 }
 
@@ -340,12 +374,12 @@ mod busy {
         let tree = root.join("fr.shinku.app");
         build_cache(&tree);
         let held = hold(&tree.join("EBWebView").join("Default").join("Cache").join("data_0"));
-        let report = remove_tree(&tree, limits());
+        let report = remove_tree(&tree, limits(), &never);
         assert_eq!(report.busy, 1, "{report:?}");
         assert_eq!(report.kept, 0);
         assert!(!report.is_clean());
         drop(held);
-        assert!(remove_tree(&tree, limits()).is_clean());
+        assert!(remove_tree(&tree, limits(), &never).is_clean());
         assert!(!tree.exists());
     }
 }

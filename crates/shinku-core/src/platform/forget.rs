@@ -1,7 +1,8 @@
 //! La vraie machine de `shinku.exe --oublier`.
 //!
 //! Aucun appel de Windows ici : l'élévation est la décision de
-//! [`runs_elevated`], les dossiers viennent de [`system`], les suppressions de
+//! [`elevated_or_unknown`] (celle de la fenêtre, qui refuse en plus quand les
+//! droits ne se lisent pas), les dossiers viennent de [`system`], les suppressions de
 //! [`crate::fs`] et le temps de la bibliothèque standard. Le code `unsafe`, il y
 //! en a, est dans ces modules-là.
 
@@ -9,7 +10,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::{Environment, KnownFolder, runs_elevated, system};
+use super::{Environment, KnownFolder, elevated_or_unknown, system};
 use crate::forget::ForgetHost;
 use crate::fs::{self, Removed, TreeLimits, TreeReport};
 
@@ -34,7 +35,7 @@ impl Default for SystemForget {
 
 impl ForgetHost for SystemForget {
     fn elevated(&self) -> bool {
-        runs_elevated()
+        elevated_or_unknown()
     }
 
     fn folder(&self, folder: KnownFolder) -> Option<PathBuf> {
@@ -57,7 +58,7 @@ impl ForgetHost for SystemForget {
         fs::remove_empty_dir(dir)
     }
 
-    fn remove_tree(&self, root: &Path) -> TreeReport {
-        fs::remove_tree(root, TreeLimits::default())
+    fn remove_tree(&self, root: &Path, deadline: Duration) -> TreeReport {
+        fs::remove_tree(root, TreeLimits::default(), &|| self.elapsed() >= deadline)
     }
 }

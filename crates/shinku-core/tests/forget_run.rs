@@ -54,8 +54,8 @@ impl ForgetHost for Host<'_> {
     fn remove_empty_dir(&self, dir: &Path) -> Removed {
         core_fs::remove_empty_dir(dir)
     }
-    fn remove_tree(&self, root: &Path) -> TreeReport {
-        core_fs::remove_tree(root, TreeLimits::default())
+    fn remove_tree(&self, root: &Path, deadline: Duration) -> TreeReport {
+        core_fs::remove_tree(root, TreeLimits::default(), &|| self.elapsed() >= deadline)
     }
 }
 

@@ -394,28 +394,40 @@ fn token_number(token: &OwnedHandle, class: TOKEN_INFORMATION_CLASS) -> Option<u
     (written as usize == size_of::<u32>()).then_some(value)
 }
 
-/// Les droits que porte un jeton.
-fn rights_of(token: &OwnedHandle) -> Rights {
+/// Les droits que porte un jeton, ou `None` si Windows ne dit pas s'il est
+/// élevé (ni le type d'élévation, ni l'indicateur).
+fn rights_known(token: &OwnedHandle) -> Option<Rights> {
     let kind = token_number(token, TokenElevationType);
     if kind == Some(TokenElevationTypeFull.0 as u32) {
-        return Rights::Elevated;
+        return Some(Rights::Elevated);
     }
     if kind == Some(TokenElevationTypeLimited.0 as u32) {
-        return Rights::Standard;
+        return Some(Rights::Standard);
     }
-    // Pas de paire de jetons : seul l'indicateur d'élévation renseigne. Sans
-    // réponse de Windows, on ne bloque personne.
-    match token_number(token, TokenElevation) {
-        Some(0) | None => Rights::Standard,
-        Some(_) => Rights::Unrestricted,
+    // Pas de paire de jetons : seul l'indicateur d'élévation renseigne.
+    match token_number(token, TokenElevation)? {
+        0 => Some(Rights::Standard),
+        _ => Some(Rights::Unrestricted),
     }
 }
 
+/// Les droits que porte un jeton. Sans réponse de Windows, on ne bloque
+/// personne : c'est le choix de la fenêtre (voir [`rights_known`] pour qui veut
+/// distinguer l'inconnu).
+fn rights_of(token: &OwnedHandle) -> Rights {
+    rights_known(token).unwrap_or(Rights::Standard)
+}
+
 pub(super) fn own_rights() -> Rights {
+    own_rights_known().unwrap_or(Rights::Standard)
+}
+
+/// Les droits de ce processus, ou `None` si Windows ne les a pas dits.
+pub(super) fn own_rights_known() -> Option<Rights> {
     // SAFETY: `GetCurrentProcess` rend un pseudo-handle toujours valide, qui
     // ne se ferme pas.
     let process = unsafe { GetCurrentProcess() };
-    token_of(process).map_or(Rights::Standard, |token| rights_of(&token))
+    token_of(process).and_then(|token| rights_known(&token))
 }
 
 pub(super) fn desktop_rights() -> Desktop {
@@ -460,6 +472,7 @@ mod tests {
         // seulement que les deux lectures aboutissent, et deux fois de suite
         // à la même réponse.
         assert_eq!(own_rights(), own_rights());
+        assert_eq!(own_rights_known(), own_rights_known());
         assert_eq!(desktop_rights(), desktop_rights());
     }
 

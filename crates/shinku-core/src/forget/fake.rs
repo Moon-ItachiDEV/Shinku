@@ -23,6 +23,11 @@ pub struct FakeHost {
     pub file_default: Removed,
     pub dir_default: Removed,
     pub tree_default: TreeReport,
+    /// Une arborescence de cette taille, dont chaque entrée coûte ce temps :
+    /// la fausse suppression s'arrête à l'échéance, comme la vraie.
+    pub tree_walk: Option<(u32, Duration)>,
+    /// Les échéances reçues par `remove_tree`.
+    pub deadlines: RefCell<Vec<Duration>>,
     clock: Cell<Duration>,
     slept: RefCell<Vec<Duration>>,
     log: RefCell<Vec<String>>,
@@ -44,6 +49,8 @@ impl FakeHost {
             file_default: Removed::Missing,
             dir_default: Removed::Missing,
             tree_default: TreeReport::default(),
+            tree_walk: None,
+            deadlines: RefCell::new(Vec::new()),
             clock: Cell::new(Duration::ZERO),
             slept: RefCell::new(Vec::new()),
             log: RefCell::new(Vec::new()),
@@ -140,9 +147,18 @@ impl ForgetHost for FakeHost {
         next(&self.dirs, &path, self.dir_default)
     }
 
-    fn remove_tree(&self, root: &Path) -> TreeReport {
+    fn remove_tree(&self, root: &Path, deadline: Duration) -> TreeReport {
         let path = shown(root);
         self.note(format!("tree {path}"));
+        self.deadlines.borrow_mut().push(deadline);
+        if let Some((entries, cost)) = self.tree_walk {
+            for _ in 0..entries {
+                if self.clock.get() >= deadline {
+                    return TreeReport { removed: 0, busy: 0, kept: 1 };
+                }
+                self.clock.set(self.clock.get() + cost);
+            }
+        }
         next(&self.trees, &path, self.tree_default)
     }
 }

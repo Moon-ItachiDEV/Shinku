@@ -110,6 +110,38 @@ fn the_closed_list_covers_what_the_old_installer_macro_deleted() {
 
 // --- La garde contre un nouveau fichier de réglages ---
 
+/// Retire d'un source ce qui n'est pas livré : les modules d'essais écrits tout
+/// en haut d'un fichier (`#[cfg(test)]` suivi de `mod x;` ou de `mod x { … }`
+/// fermé par une accolade en colonne 0) et les éléments isolés qu'une ligne
+/// `#[cfg(test)]` précède. Le reste du fichier est gardé : le marqueur n'arrête
+/// plus la lecture, et une écriture ajoutée **après** lui est vue.
+fn shipped_part(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index] != "#[cfg(test)]" {
+            kept.push(lines[index]);
+            index += 1;
+            continue;
+        }
+        // On saute l'attribut, ceux qui le suivent, puis l'élément qu'il porte.
+        index += 1;
+        while lines.get(index).is_some_and(|line| line.starts_with("#[")) {
+            index += 1;
+        }
+        let Some(first) = lines.get(index) else { break };
+        index += 1;
+        if first.trim_end().ends_with('{') {
+            while index < lines.len() && lines[index] != "}" {
+                index += 1;
+            }
+            index += 1;
+        }
+    }
+    kept.join("\n")
+}
+
 /// Les fichiers de code du dépôt qui peuvent écrire un fichier de Shinku, hors
 /// essais : le cœur, l'assistant, l'agent et la fenêtre.
 fn production_sources() -> Vec<(String, String)> {
@@ -136,84 +168,185 @@ fn production_sources() -> Vec<(String, String)> {
     ] {
         walk(&root, &mut files);
     }
-    let mut sources = Vec::new();
+    let mut texts = Vec::new();
     for path in files {
-        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-        // Les fichiers d'essais, et ce module (qui cite ces mots pour les chercher).
-        if matches!(name, "tests.rs" | "testing.rs" | "fake.rs") {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        texts.push((path, text));
+    }
+    // Les fichiers que le code déclare `#[cfg(test)] mod x;` ne sont pas livrés.
+    let mut test_modules = Vec::new();
+    for (_, text) in &texts {
+        let lines: Vec<&str> = text.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            if *line != "#[cfg(test)]" {
+                continue;
+            }
+            let mut name = None;
+            for next in &lines[at + 1..] {
+                if let Some(path) = next.strip_prefix("#[path = \"") {
+                    let file = path.trim_end_matches("\"]");
+                    name = Some(file.trim_end_matches(".rs").to_owned());
+                } else if next.starts_with("#[") {
+                } else {
+                    if let Some(module) =
+                        next.strip_prefix("mod ").and_then(|m| m.strip_suffix(';'))
+                    {
+                        test_modules.push(name.unwrap_or_else(|| module.to_owned()));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    let mut sources = Vec::new();
+    for (path, text) in texts {
+        let stem = path.file_stem().and_then(|name| name.to_str()).unwrap_or_default();
+        if test_modules.iter().any(|name| name == stem) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        // On ne regarde que le code livré : ce qui précède le module d'essais.
-        let shipped = text.split("\n#[cfg(test)]").next().unwrap_or_default().to_owned();
         let relative = path
             .strip_prefix(&workspace)
             .map_or_else(|_| path.display().to_string(), |p| p.display().to_string())
             .replace('\\', "/");
-        sources.push((relative, shipped));
+        sources.push((relative, shipped_part(&text)));
     }
     sources.sort();
     sources
 }
 
-fn files_with(token: &str) -> Vec<String> {
+/// Combien de fois `token` apparaît, par fichier (les fichiers sans occurrence
+/// ne sont pas listés).
+fn count_of(token: &str) -> Vec<(String, usize)> {
     production_sources()
         .into_iter()
-        .filter(|(_, text)| text.contains(token))
-        .map(|(path, _)| path)
+        .filter_map(|(path, text)| {
+            let count = text.matches(token).count();
+            (count > 0).then_some((path, count))
+        })
         .collect()
 }
 
-/// Ce que cet essai sait attraper : un nouveau module qui écrit son fichier par
-/// `write_replacing` (la seule façon dont Shinku écrit ses fichiers), ou qui
-/// l'écrit par `File::create`, `fs::write`, `create(true)`… sans passer par elle.
-/// Il force alors à relire la liste fermée.
+fn counts(expected: &[(&str, usize)]) -> Vec<(String, usize)> {
+    expected.iter().map(|(path, count)| ((*path).to_owned(), *count)).collect()
+}
+
+/// Les noms de fichiers que le code livré écrit entre guillemets avec une
+/// extension de fichier de réglages ou de sauvegarde.
+fn file_name_literals() -> Vec<(String, String)> {
+    const EXTENSIONS: [&str; 8] = ["json", "tmp", "bak", "old", "log", "ini", "toml", "dat"];
+    let mut found = Vec::new();
+    for (path, text) in production_sources() {
+        for literal in text.split('"').skip(1).step_by(2) {
+            let Some((stem, extension)) = literal.rsplit_once('.') else { continue };
+            let plain = !stem.is_empty()
+                && literal.chars().all(|c| c.is_alphanumeric() || "._-".contains(c));
+            if plain && EXTENSIONS.contains(&extension) {
+                found.push((path.clone(), literal.to_owned()));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+#[test]
+fn the_shipped_part_keeps_what_follows_a_test_module_at_the_top() {
+    let text = "use a;\n\n#[cfg(test)]\nmod fake;\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n\n\
+                fn shipped() { write(1); }\n#[cfg(test)]\nuse b;\n";
+    let kept = shipped_part(text);
+    assert!(kept.contains("fn shipped()"), "{kept}");
+    assert!(kept.contains("use a;"));
+    assert!(!kept.contains("mod fake"));
+    assert!(!kept.contains("fn t()"));
+    assert!(!kept.contains("use b;"));
+}
+
+/// Ce que cet essai sait attraper : un nouveau fichier écrit par `write_replacing`
+/// (la seule façon dont Shinku écrit ses fichiers), par un appel de plus dans un
+/// des quatre magasins, ou par `File::create`, `fs::write`, `.create(true)`,
+/// `.append(true)` ou `fs::rename` ailleurs que là où ils sont aujourd'hui ; et
+/// un nom de fichier nouveau (`.json`, `.tmp`, `.bak`, `.log`…) écrit entre
+/// guillemets dans le code livré. Les comptes sont **par fichier** : rien n'est
+/// exempté en entier, et le code qui suit un module d'essais est lu.
 ///
-/// Ce qu'il ne sait pas attraper : une écriture d'un autre genre (une API de
-/// Windows, un autre crate, un fichier écrit par WebView2 ou par Tauri lui-même,
-/// un chemin qui n'est pas sous les deux dossiers `Shinku`). Pour ceux-là, la
-/// liste reste ce que les constructeurs y mettent.
+/// Ce qu'il ne sait pas attraper : une écriture d'une autre sorte (une API de
+/// Windows, `OpenOptions` composé d'une autre façon, un autre crate), un nom de
+/// fichier construit au lieu d'être écrit en entier, un fichier écrit par
+/// WebView2 ou par Tauri lui-même, un élément `#[cfg(test)]` écrit en retrait.
+/// Pour ceux-là, la liste reste ce que les constructeurs y mettent.
 #[test]
 fn a_module_that_writes_a_new_file_must_be_in_the_closed_list() {
-    let stores = [
+    const STORES: [&str; 4] = [
         "crates/shinku-core/src/clean/journal.rs",
         "crates/shinku-core/src/game/store.rs",
         "crates/shinku-core/src/settings.rs",
         "crates/shinku-core/src/startup/store.rs",
     ];
-    // `write_replacing(` : sa définition (settings.rs) et ses quatre appelants.
+    let msg = "écriture nouvelle : si elle touche un réglage ou un journal de Shinku, ajoute \
+               son nom à forget::list (et à la conception)";
+    // Chaque magasin appelle `write_replacing` une seule fois (settings.rs la définit
+    // en plus : deux occurrences).
     assert_eq!(
-        files_with("write_replacing("),
-        stores,
-        "un module écrit un fichier par write_replacing sans que forget::list le sache : \
-         ajoute-le à la liste fermée (et au désinstalleur de la conception)"
+        count_of("write_replacing("),
+        counts(&[(STORES[0], 1), (STORES[1], 1), (STORES[2], 2), (STORES[3], 1),]),
+        "{msg}"
     );
-    // Les autres façons d'écrire : seule `write_replacing` (settings.rs) écrit les
-    // réglages ; platform/mod.rs a la corbeille factice des essais.
-    for token in [
-        "File::create(",
-        "File::create_new(",
-        "fs::write(",
-        ".create(true)",
-        ".create_new(true)",
-        ".append(true)",
-    ] {
-        let found = files_with(token);
-        assert!(
-            found.iter().all(|path| path == "crates/shinku-core/src/settings.rs"),
-            "{token} apparaît ailleurs que dans settings.rs : {found:?}. Si ce fichier est \
-             un réglage ou un journal de Shinku, il doit être dans forget::list."
-        );
+    // Et chaque magasin ne définit qu'un nom de fichier.
+    for store in [STORES[0], STORES[1], STORES[3]] {
+        let names: Vec<_> =
+            file_name_literals().into_iter().filter(|(path, _)| path == store).collect();
+        assert_eq!(names.len(), 1, "{store} : {names:?}. {msg}");
+    }
+    // Les autres façons d'écrire.
+    assert_eq!(
+        count_of("File::create("),
+        counts(&[("crates/shinku-core/src/settings.rs", 1)]),
+        "{msg}"
+    );
+    for token in
+        ["File::create_new(", "fs::write(", ".create(true)", ".create_new(true)", ".append(true)"]
+    {
+        assert_eq!(count_of(token), counts(&[]), "{token} : {msg}");
     }
     assert_eq!(
-        files_with("fs::rename("),
-        ["crates/shinku-core/src/platform/mod.rs", "crates/shinku-core/src/settings.rs"],
-        "un nouveau fichier posé par fs::rename doit être dans forget::list"
+        count_of("fs::rename("),
+        counts(&[
+            ("crates/shinku-core/src/platform/mod.rs", 1),
+            ("crates/shinku-core/src/settings.rs", 2),
+        ]),
+        "un nouveau fichier posé par fs::rename : {msg}"
     );
-    // Chaque nom de la liste est bien celui d'un module qui l'écrit.
+    // Les noms de fichiers écrits en entier : exactement ceux de la liste, plus
+    // ce que le code livré lit ou nomme pour d'autres raisons (épinglé ici).
+    let names: Vec<(String, String)> = file_name_literals();
+    let pinned: Vec<(&str, &str)> = EXPECTED_FILE_NAMES.to_vec();
+    let found: Vec<(&str, &str)> =
+        names.iter().map(|(path, name)| (path.as_str(), name.as_str())).collect();
+    assert_eq!(found, pinned, "un nom de fichier nouveau dans le code livré : {msg}");
+    // La liste elle-même.
     let [roaming, local] = list::closed_list();
-    assert_eq!(names(&roaming.files).len() + names(&local.files).len(), 9);
+    assert_eq!(names_of(&roaming.files).len() + names_of(&local.files).len(), 9);
 }
+
+fn names_of(files: &[OsString]) -> Vec<&str> {
+    names(files)
+}
+
+/// Les noms de fichiers que le code livré écrit en entier : les cinq de Shinku
+/// (dans les magasins) et ce que d'autres modules lisent ou nomment.
+const EXPECTED_FILE_NAMES: &[(&str, &str)] = &[
+    ("crates/shinku-core/src/clean/journal.rs", "journal.json"),
+    ("crates/shinku-core/src/game/store.rs", "game.json"),
+    // Des noms que Shinku lit ou refuse de nettoyer, qu'il n'écrit pas.
+    ("crates/shinku-core/src/guard.rs", "DumpStack.log.tmp"),
+    ("crates/shinku-core/src/guard.rs", "Windows.old"),
+    ("crates/shinku-core/src/platform/windows/helper_host.rs", "desktop.ini"),
+    ("crates/shinku-core/src/platform/windows/startup.rs", "desktop.ini"),
+    ("crates/shinku-core/src/settings.rs", "settings.illisible.json"),
+    ("crates/shinku-core/src/settings.rs", "settings.json"),
+    ("crates/shinku-core/src/startup/store.rs", "startup.json"),
+];
 
 // --- Le nom de Tauri : une seule source ---
 
@@ -265,12 +398,21 @@ fn files_first_then_the_empty_folders_then_the_two_trees() {
 }
 
 #[test]
-fn an_unknown_folder_is_skipped_not_guessed() {
+fn an_unknown_folder_is_not_guessed_and_is_not_a_success() {
     let mut host = full_pc();
     host.folders.retain(|(folder, _)| *folder == KnownFolder::RoamingAppData);
-    assert_eq!(run(&host), Outcome::Done);
+    // Rien n'a été regardé du côté de %LOCALAPPDATA% : on ne dit pas « parti ».
+    assert_eq!(run(&host), Outcome::Left);
     assert!(host.removals().iter().all(|line| !line.contains(LOCAL)), "{:?}", host.removals());
     assert!(host.removals().iter().any(|line| line.contains(ROAMING)));
+}
+
+#[test]
+fn no_known_folder_at_all_is_code_one_and_nothing_is_touched() {
+    let mut host = full_pc();
+    host.folders.clear();
+    assert_eq!(run(&host), Outcome::Left);
+    assert!(host.removals().is_empty());
 }
 
 // --- Les trois codes ---
@@ -323,7 +465,7 @@ fn a_tree_that_keeps_a_link_is_code_one() {
 }
 
 #[test]
-fn something_still_busy_after_five_seconds_is_code_one() {
+fn something_still_busy_after_ten_seconds_is_code_one() {
     let host = full_pc();
     host.script_file(&local("game.json"), &[Removed::Busy; 1000]);
     assert_eq!(run(&host), Outcome::Left);
@@ -364,9 +506,9 @@ fn a_busy_tree_is_retried_too() {
 }
 
 #[test]
-fn the_five_seconds_are_for_everything_not_per_file() {
+fn the_ten_seconds_are_for_everything_not_per_file() {
     // Quatre fichiers et une arborescence occupés pour toujours : le temps total
-    // d'attente reste cinq secondes, il ne se multiplie pas par le nombre d'occupés.
+    // d'attente reste dix secondes, il ne se multiplie pas par le nombre d'occupés.
     let host = full_pc();
     for name in ["settings.json", "journal.json"] {
         host.script_file(&roaming(name), &[Removed::Busy; 1000]);
@@ -378,13 +520,13 @@ fn the_five_seconds_are_for_everything_not_per_file() {
     assert_eq!(run(&host), Outcome::Left);
     assert_eq!(host.total_slept(), RETRY_BUDGET);
     assert_eq!(host.now(), RETRY_BUDGET);
-    // 20 pauses de 250 ms, donc 21 passes.
-    assert_eq!(host.sleeps().len(), 20);
-    assert_eq!(host.removals().len(), 13 * 21);
+    // 40 pauses de 250 ms, donc 41 passes.
+    assert_eq!(host.sleeps().len(), 40);
+    assert_eq!(host.removals().len(), 13 * 41);
 }
 
 #[test]
-fn time_spent_working_counts_against_the_five_seconds() {
+fn time_spent_working_counts_against_the_ten_seconds() {
     // Chaque suppression coûte 100 ms : une passe de 13 appels en coûte 1,3 s.
     // Le budget s'épuise donc en moins de pauses, et jamais au-delà de 5 s + une passe.
     let mut host = full_pc();
@@ -392,7 +534,7 @@ fn time_spent_working_counts_against_the_five_seconds() {
     host.script_file(&roaming("settings.json"), &[Removed::Busy; 1000]);
     assert_eq!(run(&host), Outcome::Left);
     let passes = host.removals().len() / 13;
-    assert!(passes <= 4, "{passes} passes : le temps de travail doit compter");
+    assert!(passes <= 8, "{passes} passes : le temps de travail doit compter");
     assert!(host.now() < RETRY_BUDGET + Duration::from_millis(1300) + RETRY_PAUSE);
     assert!(host.total_slept() < RETRY_BUDGET);
 }
@@ -452,4 +594,48 @@ fn it_does_not_sleep_more_when_the_work_already_took_a_second() {
     assert_eq!(run(&host), Outcome::Done);
     assert!(host.sleeps().is_empty());
     assert_eq!(host.now(), Duration::from_millis(2600));
+}
+
+// --- L'échéance totale ---
+
+#[test]
+fn the_deadline_is_twenty_seconds_from_the_start_and_given_to_every_tree() {
+    let host = full_pc();
+    assert_eq!(run(&host), Outcome::Done);
+    assert_eq!(*host.deadlines.borrow(), [TOTAL_DEADLINE, TOTAL_DEADLINE]);
+}
+
+#[test]
+fn a_walk_longer_than_the_deadline_stops_inside_the_tree_with_code_one() {
+    // Un million d'entrées à une milliseconde : mille secondes. L'arborescence
+    // s'arrête d'elle-même à l'échéance, au milieu.
+    let mut host = full_pc();
+    host.tree_walk = Some((1_000_000, Duration::from_millis(1)));
+    assert_eq!(run(&host), Outcome::Left);
+    assert!(host.now() >= TOTAL_DEADLINE);
+    assert!(host.now() <= TOTAL_DEADLINE + Duration::from_millis(1), "{:?}", host.now());
+    // La seconde arborescence n'est même pas commencée.
+    let trees = host.removals().iter().filter(|line| line.starts_with("tree ")).count();
+    assert_eq!(trees, 1);
+}
+
+#[test]
+fn a_slow_host_never_goes_past_the_deadline_by_more_than_one_gesture() {
+    // Chaque geste coûte trois secondes ; les fichiers sont occupés pour toujours.
+    let mut host = full_pc();
+    host.cost = Duration::from_secs(3);
+    host.file_default = Removed::Busy;
+    assert_eq!(run(&host), Outcome::Left);
+    assert!(host.now() <= TOTAL_DEADLINE + Duration::from_secs(3), "{:?}", host.now());
+    // Rien n'est commencé une fois l'échéance passée.
+    let calls = host.removals().len();
+    assert!(calls <= 8, "{calls} gestes");
+}
+
+#[test]
+fn the_retry_never_waits_past_the_deadline() {
+    let host = full_pc();
+    host.script_file(&roaming("settings.json"), &[Removed::Busy; 1000]);
+    assert_eq!(run(&host), Outcome::Left);
+    assert!(host.now() <= TOTAL_DEADLINE);
 }

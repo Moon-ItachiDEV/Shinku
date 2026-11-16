@@ -5,7 +5,7 @@
 //! mes réglages », **après** avoir fermé la fenêtre et l'agent. Le mot de ligne
 //! de commande ne sait rien de la fenêtre ni de l'agent : s'ils tournent encore,
 //! il efface ce qu'il peut (un fichier qu'ils tiennent ouvert est « occupé », et
-//! reste après les cinq secondes d'essais).
+//! reste après les dix secondes d'essais).
 //!
 //! # Ce qu'il fait, dans l'ordre
 //!
@@ -17,16 +17,16 @@
 //! 4. supprime les deux arborescences du modèle de Tauri,
 //!    `%APPDATA%\fr.shinku.app` et `%LOCALAPPDATA%\fr.shinku.app` (le cache de
 //!    WebView2), sans jamais traverser un lien ([`crate::fs::remove_tree`]) ;
-//! 5. si quelque chose était occupé, recommence le tout, de court en court,
-//!    pendant cinq secondes **en tout** ([`RETRY_BUDGET`]) ;
+//! 5. dans l'échéance totale ([`TOTAL_DEADLINE`], vingt secondes), si quelque chose était occupé, recommence le tout, de court en court,
+//!    pendant dix secondes **en tout** ([`RETRY_BUDGET`]) ;
 //! 6. ne se termine pas avant une seconde ([`MIN_LIFETIME`]).
 //!
 //! # La seconde de vie minimale
 //!
 //! C'est un garde-fou d'attente, pas une fonction. Le désinstalleur ne reçoit du
 //! processus ni poignée ni code de sortie (`RunAsUser` n'en rend pas) : il ne le
-//! voit qu'à un verrou, celui du fichier `shinku.exe`, qu'un programme en cours
-//! d'exécution tient. Un processus qui n'aurait rien à faire disparaîtrait avant
+//! voit qu'en interrogeant Windows sur le chemin de `shinku.exe` (le Gestionnaire
+//! de redémarrage ; voir la conception). Un processus qui n'aurait rien à faire disparaîtrait avant
 //! que le désinstalleur ait pu le voir exister, et il croirait qu'il ne s'est pas
 //! lancé. Le processus dort donc le reste de la seconde, même quand il refuse.
 //!
@@ -71,7 +71,12 @@ pub const EXIT_REFUSED: u8 = 2;
 /// voir (voir l'en-tête du module).
 pub const MIN_LIFETIME: Duration = Duration::from_secs(1);
 /// Le temps qu'on laisse, en tout, aux fichiers occupés pour se libérer.
-pub const RETRY_BUDGET: Duration = Duration::from_secs(5);
+pub const RETRY_BUDGET: Duration = Duration::from_secs(10);
+/// L'échéance de **tout** le passage, réessais compris : le désinstalleur attend
+/// trente secondes au plus avant d'arrêter le processus. Elle est regardée entre
+/// deux gestes, et dans l'arborescence entre deux entrées ; un geste commencé
+/// (une suppression, la lecture d'un dossier) n'est pas interrompu.
+pub const TOTAL_DEADLINE: Duration = Duration::from_secs(20);
 /// La pause entre deux passes quand quelque chose est occupé.
 pub const RETRY_PAUSE: Duration = Duration::from_millis(250);
 
@@ -93,7 +98,7 @@ where
 pub enum Outcome {
     /// Tout est parti, ou il n'y avait rien.
     Done,
-    /// Il reste quelque chose : un fichier occupé au bout des cinq secondes, un
+    /// Il reste quelque chose : un fichier occupé au bout des dix secondes, un
     /// lien laissé en place, un fichier qui n'est pas dans la liste, un droit
     /// refusé.
     Left,
@@ -135,8 +140,10 @@ pub trait ForgetHost {
     /// Supprime `dir` s'il est vide (voir [`crate::fs::remove_empty_dir`]).
     fn remove_empty_dir(&self, dir: &Path) -> Removed;
 
-    /// Supprime l'arborescence de `root` (voir [`crate::fs::remove_tree`]).
-    fn remove_tree(&self, root: &Path) -> TreeReport;
+    /// Supprime l'arborescence de `root` (voir [`crate::fs::remove_tree`]), en
+    /// s'arrêtant quand l'horloge de l'hôte ([`ForgetHost::elapsed`]) atteint
+    /// `deadline`.
+    fn remove_tree(&self, root: &Path, deadline: Duration) -> TreeReport;
 }
 
 /// Ce qu'une passe a vu.
@@ -171,18 +178,38 @@ struct Resolved {
 
 /// Une passe : les fichiers, puis les dossiers vides, puis les deux
 /// arborescences.
-fn pass(host: &dyn ForgetHost, settings: &[Resolved], trees: &[PathBuf]) -> Pass {
+fn pass(
+    host: &dyn ForgetHost,
+    settings: &[Resolved],
+    trees: &[PathBuf],
+    deadline: Duration,
+) -> Pass {
     let mut seen = Pass::default();
+    // Passée l'échéance, on ne commence plus rien : ce qui reste est « gardé ».
+    let late = |seen: &mut Pass| {
+        let late = host.elapsed() >= deadline;
+        seen.kept |= late;
+        late
+    };
     for place in settings {
         for name in &place.files {
+            if late(&mut seen) {
+                return seen;
+            }
             seen.file(host.remove_file(&place.dir, name));
         }
     }
     for place in settings {
+        if late(&mut seen) {
+            return seen;
+        }
         seen.file(host.remove_empty_dir(&place.dir));
     }
     for root in trees {
-        seen.tree(host.remove_tree(root));
+        if late(&mut seen) {
+            return seen;
+        }
+        seen.tree(host.remove_tree(root, deadline));
     }
     seen
 }
@@ -205,28 +232,35 @@ fn forget(host: &dyn ForgetHost) -> Outcome {
     if host.elevated() {
         return Outcome::Refused;
     }
-    let settings: Vec<Resolved> = list::closed_list()
-        .into_iter()
-        .filter_map(|group| {
-            let dir = host.folder(group.folder)?.join(group.dir);
-            Some(Resolved { dir, files: group.files })
-        })
-        .collect();
-    let trees: Vec<PathBuf> = [KnownFolder::RoamingAppData, KnownFolder::LocalAppData]
-        .into_iter()
-        .filter_map(|folder| Some(host.folder(folder)?.join(TAURI_IDENTIFIER)))
-        .collect();
-
     let started = host.elapsed();
-    loop {
-        let seen = pass(host, &settings, &trees);
-        if !seen.busy {
-            return if seen.kept { Outcome::Left } else { Outcome::Done };
+    let deadline = started + TOTAL_DEADLINE;
+    // Un dossier connu que l'hôte ne sait pas donner : on n'a rien regardé de ce
+    // côté, et on ne dit pas « tout est parti ».
+    let mut unresolved = false;
+    let mut settings: Vec<Resolved> = Vec::new();
+    for group in list::closed_list() {
+        match host.folder(group.folder) {
+            Some(base) => settings.push(Resolved { dir: base.join(group.dir), files: group.files }),
+            None => unresolved = true,
         }
-        // Cinq secondes en tout, pas par fichier : une seule horloge pour la
-        // série de passes.
+    }
+    let mut trees: Vec<PathBuf> = Vec::new();
+    for folder in [KnownFolder::RoamingAppData, KnownFolder::LocalAppData] {
+        match host.folder(folder) {
+            Some(base) => trees.push(base.join(TAURI_IDENTIFIER)),
+            None => unresolved = true,
+        }
+    }
+
+    loop {
+        let seen = pass(host, &settings, &trees, deadline);
         let spent = host.elapsed().saturating_sub(started);
-        if spent >= RETRY_BUDGET {
+        if !seen.busy {
+            return if seen.kept || unresolved { Outcome::Left } else { Outcome::Done };
+        }
+        // Cinq secondes de réessai en tout, pas par fichier : une seule horloge
+        // pour la série de passes, à l'intérieur de l'échéance totale.
+        if spent >= RETRY_BUDGET || spent >= TOTAL_DEADLINE {
             return Outcome::Left;
         }
         host.sleep(RETRY_PAUSE.min(RETRY_BUDGET - spent));

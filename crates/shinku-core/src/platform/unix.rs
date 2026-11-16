@@ -89,6 +89,10 @@ pub(super) fn own_rights() -> Rights {
     Rights::Standard
 }
 
+pub(super) fn own_rights_known() -> Option<Rights> {
+    Some(Rights::Standard)
+}
+
 pub(super) fn desktop_rights() -> Desktop {
     Desktop::Absent
 }

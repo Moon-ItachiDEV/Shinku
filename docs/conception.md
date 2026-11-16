@@ -1727,9 +1727,16 @@ dossiers connus et les suppressions sont ceux du reste du cœur).
   l'ordre, il ne l'exécute pas ; la preuve en vrai est sous Wine, plus bas).
 - **Aucune fenêtre, aucune boîte, aucun WebView, rien d'écrit sur le disque**,
   quel que soit le résultat.
-- **Il refuse s'il est élevé par rapport au bureau** : code 2, rien n'est
-  touché, pas même un dossier regardé. C'est `elevated_launch`, la décision de la
-  fenêtre : le cas « contrôle de compte coupé » passe.
+- **Il refuse s'il est élevé par rapport au bureau, ou s'il ne sait pas** : code
+  2, rien n'est touché, pas même un dossier regardé. Le cas connu est
+  `elevated_launch`, la décision de la fenêtre (le cas « contrôle de compte
+  coupé » passe). Le cas inconnu est propre à `--oublier` : si Windows ne dit pas
+  les droits du processus (le jeton ne se lit pas), ou ceux du bureau quand ils
+  comptent, il refuse. La fenêtre garde le choix contraire (ne bloquer personne,
+  `runs_elevated`) ; un effaceur ne peut pas se permettre de viser, sans le
+  savoir, les réglages d'un autre compte. La lecture garde donc « inconnu »
+  (`own_rights_known`, `Option<Rights>`) jusqu'à la décision
+  `elevated_or_unknown`.
 - Dans l'ordre : (1) les fichiers de la **liste fermée**, chacun par les règles
   de `fs` ; (2) les deux dossiers `Shinku`, **seulement s'ils sont vides** ;
   (3) les deux arborescences `%APPDATA%\fr.shinku.app` et
@@ -1744,45 +1751,81 @@ dossiers connus et les suppressions sont ceux du reste du cœur).
   de plus : un fichier qui n'est pas dans la liste reste, et son dossier avec lui.
 - **Chaque fichier** passe par `fs::Removal` : fichier ordinaire (ni lien, ni
   dossier, ni point d'analyse inconnu), un seul nom, pas « en ligne
-  uniquement », aucun point d'analyse dans la chaîne des dossiers
-  (`inspect_dir_chain`), contrôle de la nature, de la taille, de la date et de
-  l'identifiant sur le handle ouvert, puis suppression par ce handle. Pas de
-  Corbeille : ce sont des fichiers de Shinku, sans valeur pour personne.
-- **La suppression récursive** (`fs::remove_tree`, nouvelle) : la racine doit
-  être un vrai dossier (une jonction ou un fichier à sa place est laissé, et le
-  résultat est « il reste quelque chose ») ; un point d'analyse rencontré plus
-  bas n'est **jamais traversé** et reste en place, avec les dossiers qui y
-  mènent ; un fichier à plusieurs noms est supprimé comme un nom (un cache n'est
-  pas une trace : l'autre nom n'est pas touché) ; la profondeur (40 niveaux) et
-  le nombre d'entrées (200 000) sont bornés ; chaque dossier est lu par un handle
-  ouvert sans suivre de lien et revérifié par son identifiant ; chaque entrée est
-  supprimée par le handle qui l'a contrôlée.
+  uniquement », avec un identifiant de fichier, aucun point d'analyse dans la
+  chaîne des dossiers (`inspect_dir_chain`), contrôle de la nature, de la taille,
+  de la date et de l'identifiant sur le handle ouvert, puis suppression par ce
+  handle. Pas de Corbeille : ce sont des fichiers de Shinku, sans valeur pour
+  personne.
+- **La suppression récursive** (`fs::remove_tree`, nouvelle) :
+  - la chaîne des dossiers **au-dessus** de la racine ne traverse aucun lien (un
+    profil derrière une jonction est refusé en entier : code 1, les fichiers de
+    réglages et le cache restent ensemble, au lieu de perdre l'un et de garder
+    l'autre) ;
+  - la racine doit être un vrai dossier (une jonction ou un fichier à sa place
+    est laissé, et le résultat est « il reste quelque chose ») ;
+  - un point d'analyse rencontré plus bas n'est **jamais traversé** et reste en
+    place, avec les dossiers qui y mènent ;
+  - **sans identifiant de fichier** (FAT, exFAT), un dossier n'est pas traversé
+    et un fichier n'est pas supprimé : « sans identité, pas effaçable », comme
+    pour la Confidentialité. Il reste, code 1 ;
+  - un nom d'entrée vide, `.`, `..` ou qui contient un séparateur n'est jamais
+    joint à un chemin : l'entrée est comptée comme restante ;
+  - un fichier à plusieurs noms est supprimé comme un nom (un cache n'est pas une
+    trace : l'autre nom n'est pas touché) ;
+  - un dossier qui n'est plus vide au moment de partir (une app y a écrit) reste
+    et n'est jamais compté « parti » : il est occupé, donc réessayé, puis code 1 ;
+  - bornes : 40 niveaux de profondeur, et **50 000 entrées** en tout. Un vrai cache
+    de WebView2 compte quelques milliers de fichiers : 50 000 laissent dix fois
+    la marge. La borne compte aussi pour le temps : chaque entrée coûte une
+    ouverture, quelques lectures, une disposition et une fermeture, et le
+    désinstalleur n'attend que 30 s ;
+  - chaque dossier est lu par un handle ouvert sans suivre de lien et revérifié
+    par son identifiant ; chaque entrée est supprimée par le handle qui l'a
+    contrôlée.
 - **Le nom `fr.shinku.app`** n'a qu'une source, `tauri.conf.json`
   (`identifier`) : `forget::TAURI_IDENTIFIER` le répète, et un essai lit le
   fichier et échoue si les deux diffèrent.
-- **Le réessai.** Un fichier occupé (les processus de WebView2 finissent de
-  sortir) est réessayé : toute la suite des suppressions est reprise, de pause de
-  250 ms en pause, pendant **cinq secondes au plus en tout**, une seule horloge
-  pour l'ensemble et non par fichier. Seul un fichier « occupé » se réessaie ; un
-  lien, un droit refusé ou un fichier à plusieurs noms sont laissés sans attente.
+- **Le réessai et l'échéance.** Un fichier occupé (les processus de WebView2
+  finissent de sortir : le désinstalleur ne les ferme pas, ils sortent d'eux-mêmes
+  après la fenêtre) est réessayé : toute la suite des suppressions est reprise, de
+  pause de 250 ms en pause, pendant **dix secondes au plus en tout**, une seule
+  horloge pour l'ensemble et non par fichier ; dix secondes peuvent ne pas suffire,
+  à vérifier sur le vrai Windows. Tout cela tient dans une **échéance totale de
+  vingt secondes** (`TOTAL_DEADLINE`), donnée par l'horloge de l'hôte et regardée
+  entre deux gestes et, dans une arborescence, **entre deux entrées** : à
+  l'échéance, on s'arrête, ce qui reste est compté comme restant (code 1). Un
+  geste commencé n'est pas interrompu : au pire vingt secondes plus un geste, sous
+  les trente que le désinstalleur attend. Seul un fichier « occupé » se réessaie ;
+  un lien, un droit refusé ou un fichier à plusieurs noms sont laissés sans
+  attente.
 - **La seconde de vie minimale** est un garde-fou d'attente, pas une fonction :
   le désinstalleur ne reçoit de `RunAsUser` ni poignée ni code de sortie, il ne
-  voit le processus que par le verrou du fichier `shinku.exe` (un programme en
-  cours d'exécution ne s'ouvre pas en écriture) et doit pouvoir le voir exister.
-  Le processus dort donc le reste de la seconde, même quand il refuse ou n'a rien
-  à faire. L'horloge et l'attente passent par l'hôte : les essais ne dorment pas.
+  voit le processus qu'en interrogeant Windows sur lui (voir plus bas), et doit
+  pouvoir le voir exister. Le processus dort donc le reste de la seconde, même
+  quand il refuse ou n'a rien à faire. L'horloge et l'attente passent par l'hôte :
+  les essais ne dorment pas.
 - **Codes de sortie** : `0` tout est parti, ou il n'y avait rien ; `1` il reste
-  quelque chose (un fichier occupé au bout des cinq secondes, un lien laissé, un
-  fichier hors liste qui garde son dossier, un droit refusé) ; `2` refusé parce
-  qu'élevé. Ils servent aux essais : le désinstalleur ne peut pas les lire.
+  quelque chose (un fichier occupé au bout du réessai, un lien laissé, un fichier
+  hors liste qui garde son dossier, un droit refusé, l'échéance, **un dossier
+  connu que Windows ne sait pas donner** : rien n'y a été regardé) ; `2` refusé
+  parce qu'élevé ou parce que les droits ne se lisent pas (y compris ceux du
+  bureau, quand ils comptent). Ils servent aux essais : le désinstalleur ne peut
+  pas les lire.
 - **La fenêtre ou l'agent encore ouverts** : `--oublier` ne le sait pas et n'a
   pas à le savoir. Il efface ce qu'il peut ; un fichier qu'ils tiennent est
-  « occupé » et reste après les cinq secondes. Seul le désinstalleur l'appelle,
-  après avoir fermé la fenêtre et l'agent. Un programme du compte qui le lance
+  « occupé » et reste après le réessai. Seul le désinstalleur l'appelle, après
+  avoir fermé la fenêtre et l'agent. Un programme du compte qui le lance
   lui-même n'y gagne rien : il peut déjà effacer ces fichiers.
+- **Une panique** en version finale (`panic = "abort"`) arrête le processus sans
+  code 0, 1 ni 2 et sans la seconde de vie ; Windows peut écrire un rapport
+  d'erreur. Aucune panique atteignable n'a été trouvée. Le désinstalleur n'a
+  rien à ajouter : il traite ce cas comme « jamais vu occupé » ou « fini » selon
+  l'instant où le processus a disparu.
 
-**Le désinstalleur** (`installeur/oublier.nsh`, appelé par `habillage.nsh`). Dans
-`NSIS_HOOK_PREUNINSTALL`, dans cet ordre :
+**Le désinstalleur** (`installeur/oublier.nsh`, appelé par `habillage.nsh`).
+Cette partie est en cours d'écriture par l'autre constructeur : **le détail est
+dans `apps/shinku/src-tauri/installeur/oublier.nsh`**, qui fait foi. Ce que la
+conception fixe, dans `NSIS_HOOK_PREUNINSTALL`, dans cet ordre :
 
 1. fermer la fenêtre de Shinku d'abord, par la macro du modèle
    (`CheckIfAppIsRunning`, la même question « Shinku est ouvert » qu'une
@@ -1794,12 +1837,23 @@ dossiers connus et les suppressions sont ceux du reste du cœur).
    `StrCpy $DeleteAppDataCheckboxState 0` (le bloc du modèle ne fait plus ses
    deux `RmDir /r`), lancer `"$INSTDIR\shinku.exe" --oublier` par
    `nsis_tauri_utils::RunAsUser` (le greffon que le modèle embarque déjà pour
-   « Lancer Shinku »), puis **attendre sans greffon de plus**, par le verrou du
-   fichier : jusqu'à dix secondes pour le voir occupé, puis jusqu'à trente pour le
-   voir libre. S'il n'a jamais été vu occupé, ou s'il l'est encore au bout du
-   délai : un message, « Shinku n'a pas pu supprimer tes réglages. Ils sont dans
+   « Lancer Shinku »), puis **attendre en interrogeant le Gestionnaire de
+   redémarrage de Windows** sur le chemin exact `$INSTDIR\shinku.exe` : jusqu'à
+   dix secondes pour le voir en marche, puis jusqu'à trente pour le voir fini.
+   Une réponse inattendue du Gestionnaire compte comme un échec de l'attente,
+   jamais comme « fini ». Si le processus tourne encore au bout du délai, il est
+   **arrêté** par ce même Gestionnaire, sur ce chemin seulement (comme le modèle
+   de Tauri ferme la fenêtre). S'il n'a jamais été vu, ou s'il a dû être arrêté :
+   un message, « Shinku n'a pas pu supprimer tes réglages. Ils sont dans
    %APPDATA%\Shinku et %LOCALAPPDATA%\Shinku : tu peux les supprimer à la
    main. », avec `/SD IDOK`. **Jamais de repli sur un effacement élevé.**
+
+**L'état que laisse un `--oublier` arrêté.** Les fichiers de réglages partent en
+premier : au moment de l'arrêt, ils sont déjà partis (ou occupés), et le message
+peut donc être trop pessimiste pour eux. Seul le cache peut rester en partie : une
+suppression par handle est faite ou pas faite, elle ne laisse pas de fichier
+abîmé, et `--oublier` n'écrit rien. Un arrêt en pleine arborescence laisse une
+arborescence entamée, jamais un fichier à moitié.
 
 Dans `NSIS_HOOK_POSTUNINSTALL`, `ShinkuDeleteSettings` a disparu. Quand notre
 variable dit que la case était cochée, le crochet refait seulement le ménage du
@@ -1809,30 +1863,61 @@ profil. `/S` et le mode passif ne montrent pas la page de la case : elle vaut 0,
 donc **une désinstallation silencieuse n'appelle jamais `--oublier`** et ne
 supprime jamais les réglages, comme avant.
 
+**Ce que coûte l'effacement.** Effacer `startup.json` fait oublier ce que Shinku
+avait coupé au démarrage : les entrées restent coupées, et se rallument depuis le
+Gestionnaire des tâches de Windows. Effacer `game.json` efface le journal du mode
+jeu : si l'agent n'a pas pu tout remettre en place en sortant (le mode
+d'alimentation, par exemple), la trace de l'état d'avant part avec lui, et une
+réinstallation ne le reprendra pas. Case décochée, ces fichiers restent et sont
+repris.
+
 **Ce qui le tient.**
 
 - Cœur, sous Linux : la ligne de commande exacte ; la liste fermée (noms exacts,
-  et couverture de ce que l'ancienne macro effaçait) ; l'ordre (fichiers,
-  dossiers vides, arborescences) ; les trois codes ; le refus élevé sans un
-  appel autre que la question d'élévation ; le réessai borné **en tout** (cinq
-  secondes pour trois fichiers et une arborescence occupés, le temps de travail
-  compté, la dernière pause raccourcie) ; la seconde de vie minimale (rien à
-  faire, refus, travail rapide, travail déjà long) ; le nom de Tauri contre
-  `tauri.conf.json`. Sur de vrais dossiers : un fichier à deux noms, un lien à la
-  place du fichier, un dossier à sa place, un lien au milieu de la chaîne des
-  dossiers (le piège que le dernier composant seul ne retient pas), une racine
-  qui est un lien, un lien plus bas, un fichier à plusieurs noms dans le cache,
-  les deux bornes, et `forget::run` de bout en bout (témoins voisins intacts).
-  Chaque règle a son essai, qui échoue quand on la retire.
-- **Ce que l'essai « un module gagne un fichier » sait attraper** : il lit les
-  sources livrées du cœur, de l'assistant, de l'agent et de la fenêtre, et
-  échoue si un fichier autre que les quatre magasins appelle `write_replacing`,
-  ou si `File::create`, `fs::write`, `.create(true)`, `.append(true)` ou
-  `fs::rename` apparaissent ailleurs que là où ils sont aujourd'hui. **Ce qu'il
-  ne sait pas attraper** : une écriture d'une autre sorte (une API de Windows,
-  un autre crate), un fichier écrit par WebView2 ou par Tauri lui-même, ou un
-  magasin qui écrit hors des deux dossiers `Shinku`. Pour ceux-là, la liste reste
-  ce que les constructeurs y mettent.
+  et couverture de ce que l'ancienne macro effaçait) ; l'ordre ; les trois codes ;
+  le refus élevé sans un appel autre que la question d'élévation ; la décision
+  « inconnu refuse, connu suit la fenêtre » ; le dossier connu introuvable (code
+  1) ; le réessai borné **en tout** (dix secondes pour des fichiers et une
+  arborescence occupés, le temps de travail compté, la dernière pause raccourcie) ;
+  l'échéance de vingt secondes (au milieu d'une arborescence, et avec un hôte lent) ;
+  la seconde de vie minimale ; le nom de Tauri contre `tauri.conf.json`. Sur de
+  vrais dossiers, avec un changement glissé entre deux gestes : la racine, puis un
+  dossier, remplacés après leur lecture ; un dossier disparu ; un dossier rempli
+  avant son retrait ; l'échéance entre deux entrées. Et : un fichier à deux
+  noms, un lien à la place du fichier, un lien au milieu de la chaîne (au-dessus
+  d'un fichier, d'un dossier vide, d'une arborescence), une racine qui est un
+  lien, un lien plus bas, les deux bornes, et `forget::run` de bout en bout
+  (témoins voisins intacts).
+- **Mutations.** Chaque règle citée ici a été retirée, et un essai a échoué :
+  refus élevé, inconnu qui refuse, seconde de vie, horloge unique du réessai,
+  échéance (dans l'arborescence et entre deux gestes), identité de la racine,
+  identité de chaque dossier, `NotEmpty` jamais « parti », dossier disparu,
+  `regular && !online_only` (par une fonction pure, `acceptable` : un fichier
+  « en ligne uniquement » ou à point d'analyse inconnu ne se fabrique pas ici),
+  chaîne des dossiers (fichier nommé, dossier vide, arborescence), sans identifiant,
+  noms impossibles, dossier connu introuvable, bornes. **Une seule règle n'a pas
+  d'essai à son point d'appel** : le refus d'un fichier nommé sans identifiant
+  dans `remove_plain_file` (un système de fichiers de développement en donne
+  toujours un). La décision qu'il appelle (`plan_for`) est, elle, essayée sans
+  disque.
+- **La garde « un module gagne un fichier »** lit les sources livrées du cœur, de
+  l'assistant, de l'agent et de la fenêtre, **par fichier et par nombre
+  d'occurrences**, sans exempter un fichier en entier. Elle ne retire que les
+  modules d'essais (`#[cfg(test)] mod x;` et leurs fichiers, `#[cfg(test)] mod x {`
+  fermé en colonne 0, éléments isolés) : le code qui suit un module d'essais est lu.
+  Elle échoue si : un cinquième appel de `write_replacing` apparaît (un par magasin,
+  deux dans `settings.rs` avec sa définition) ; un magasin définit un deuxième nom de
+  fichier ; `File::create`, `fs::write`, `.create(true)`, `.create_new(true)`,
+  `.append(true)` ou `fs::rename` apparaissent ailleurs que là où ils sont
+  aujourd'hui ; ou un nom de fichier (`.json`, `.tmp`, `.bak`, `.old`, `.log`,
+  `.ini`, `.toml`, `.dat`) écrit entre guillemets dans le code livré sort de la
+  liste épinglée. **Elle n'attrape pas** : une écriture d'une autre sorte (API de
+  Windows, `OpenOptions` composé autrement, autre crate), un nom de fichier
+  construit au lieu d'être écrit en entier, un fichier écrit par WebView2 ou par
+  Tauri lui-même, un élément `#[cfg(test)]` écrit en retrait. Ses mutations
+  (File::create dans `forget/mod.rs`, `fs::write` dans `apps/mod.rs`, un
+  `settings.bak` dans `settings.rs`, un cinquième appel dans `journal.rs`) ont été
+  faites : elle échoue à chacune.
 - `installer.test.ts` épingle l'ordre du `PREUNINSTALL`, le
   `StrCpy $DeleteAppDataCheckboxState 0` et la condition `$UpdateMode <> 1`
   autour de l'appel, l'absence de tout `Delete`, `RMDir` ou `RmDir` vers
@@ -1847,16 +1932,18 @@ supprime jamais les réglages, comme avant.
   seul dure 0,14 s). Le chemin qui efface n'y est pas atteint par le vrai
   programme : il l'est par `forget::run` sur la vraie implémentation Windows de
   `fs`, avec une élévation fabriquée. Wine ne sait pas créer de jonction
-  (`mklink /J` répond « fait » sans rien créer) : les sept essais de liens sont
-  **sautés sous Wine** (ils écrivent « SAUTÉ » ; les mêmes tournent sous Linux
-  avec des liens symboliques).
+  (`mklink /J` répond « fait » sans rien créer) : **neuf essais de liens
+  sautent sous Wine** (huit dans `forget_fs`, un dans `forget_run`). Ils
+  impriment « SAUTÉ » sur la sortie d'erreur, mais **comptent « ok » dans le
+  bilan de cargo** : un bilan vert ne les distingue pas des réussis. Les mêmes
+  tournent sous Linux avec des liens symboliques.
 - Vrai Windows : voir « À vérifier sur le vrai Windows ».
 
 **Limites, écrites ici telles quelles.**
 
 - **Le désinstalleur ne lit pas le résultat de `--oublier`** : `RunAsUser` ne rend
-  ni poignée ni code. S'il reste un fichier occupé au bout de cinq secondes, rien
-  ne le dit à la personne.
+  ni poignée ni code. S'il reste un fichier occupé au bout du délai, rien ne le
+  dit à la personne.
 - **« Mes réglages » sont ceux de la personne devant le bureau.** Les réglages des
   autres comptes du PC restent.
 - **L'agent a le même défaut de cible** : `--retirer` est lancé par le
@@ -1865,16 +1952,27 @@ supprime jamais les réglages, comme avant.
   passage prouvé sur le vrai Windows, utilisé aussi à l'installation) ; la
   solution est le même lancement par `RunAsUser`. À faire avant la sortie
   publique, une fois ce lot prouvé.
+- **Le modèle de Tauri touche encore le profil du compte qui a élevé**, hors de la
+  case : il retire les raccourcis, l'épinglage et la valeur `Run` de `HKCU` (des
+  appels ciblés, sans récursion). Même défaut de cible que l'agent quand
+  l'élévation s'est faite avec un autre compte.
 - **Un profil derrière une jonction** (`C:\Users\Léa` déplacé par un lien) fait
-  refuser les fichiers de la liste, dont la chaîne de dossiers est contrôlée :
-  ils restent, et le code est 1. Les deux arborescences, elles, ne contrôlent que
-  leur racine. Cet écart avec l'ancienne macro (qui ne regardait que le dossier
-  `Shinku` lui-même) est voulu, et à vérifier sur un profil déplacé.
+  refuser tout : les fichiers de la liste comme les arborescences contrôlent la
+  chaîne de leurs dossiers, rien n'est effacé, le code est 1. Cet écart avec
+  l'ancienne macro (qui ne regardait que le dossier `Shinku` lui-même) est voulu :
+  mieux vaut tout garder que perdre le cache et garder les réglages. À vérifier
+  sur un profil déplacé.
+- **La lecture d'un dossier n'est pas interrompue.** Un dossier est lu d'un bloc
+  par le système, et l'échéance n'est regardée qu'entre deux entrées. La liste
+  d'un dossier n'est gardée en mémoire que dans la limite des 50 000 entrées
+  permises, mais la lecture d'un dossier de plusieurs millions d'entrées dure
+  autant qu'elle dure.
 - **Windows n'offre pas ici d'ouverture relative à un handle de dossier** : une
   entrée est ouverte par son chemin et revérifiée (nature, taille, date,
   identifiant) avant d'être supprimée sur ce handle. Un dossier du chemin
   remplacé par un lien entre la lecture et l'ouverture ne ferait partir que ce
-  qui a exactement la même identité, la même taille et la même date. Le processus
+  qui a exactement la même identité, la même taille et la même date (sur NTFS et
+  ReFS ; sans identifiant, rien n'est supprimé, voir plus haut). Le processus
   n'est pas élevé : il n'a de toute façon que les droits de la personne.
 
 **À vérifier sur le vrai Windows** (rien de cela n'a été prouvé ici) :
@@ -1882,26 +1980,32 @@ supprime jamais les réglages, comme avant.
 - `RunAsUser` transmet-il l'argument `--oublier` (le modèle l'utilise ainsi pour
   `/ARGS`) ? Preuve : `essai-installeur.ps1`, étape `desinstaller`, qui coche
   la case dans la vraie page et compte les fichiers qui disparaissent.
-- Le verrou de `shinku.exe` est-il vu occupé pendant que le processus tourne, puis
-  libre ? Preuve : la même étape (et le message d'échec, qui doit ne pas
-  s'afficher) ; l'étape `oublier` mesure en plus la durée de vie du processus
-  (au moins une seconde).
-- Les cinq secondes suffisent-elles à WebView2 pour sortir et libérer son cache
-  quand la fenêtre était ouverte ? Preuve : l'étape `desinstaller` lancée fenêtre
-  ouverte au départ (aucun fichier ne doit revenir).
+- Le Gestionnaire de redémarrage voit-il `shinku.exe` en marche pendant que le
+  processus tourne (dix secondes), puis fini ? Preuve : la même étape (et le
+  message d'échec, qui ne doit pas s'afficher) ; l'étape `oublier` mesure en plus
+  la durée de vie du processus (au moins une seconde).
+- Dix secondes de réessai suffisent-elles à WebView2 pour sortir et libérer son
+  cache quand la fenêtre était ouverte ? Preuve : l'étape `desinstaller` lancée
+  fenêtre ouverte au départ (aucun fichier ne doit revenir).
 - Une vraie jonction NTFS à la place d'un des deux dossiers `fr.shinku.app` :
   témoin derrière intact, jonction laissée. Preuve : l'étape
   `desinstaller-jonction`. Sous Wine, c'est sauté.
 - Le code 2 quand `--oublier` est élevé face à un bureau qui ne l'est pas, et le
   code 0 quand tout le PC tourne avec tous les droits. Preuve : l'étape `oublier`,
-  si le runner le permet ; sinon c'est noté.
+  si le runner le permet ; sinon c'est noté. La lecture réelle de l'élévation (et
+  le cas « inconnu » qui refuse) ne s'essaie pas ailleurs que sur Windows.
 - Que fait `RunAsUser` quand le bureau est à un autre compte que le
   désinstalleur, sur le runner de GitHub (contrôle de compte coupé, pas
   forcément d'Explorateur), et avec la protection administrateur de Windows 11 ?
   Les deux cas à deux comptes ne s'essaient pas en intégration continue : ils
   restent une limite dite.
 - Un fichier occupé réel, tenu par un vrai WebView2 (Wine a essayé un verrou sans
-  partage, pas un vrai moteur web).
+  partage, pas un vrai moteur web), et la durée réelle d'une passe sur un vrai
+  cache, sous Defender.
+- Un volume FAT ou exFAT (sans identifiant), des dossiers redirigés sur un
+  partage réseau, un fichier « en ligne uniquement », un profil déplacé.
+- « Rien d'écrit sur le disque » : un arrêt brutal (panique) peut faire écrire un
+  rapport par Windows.
 
 ### Le manifeste de `shinku.exe`
 
