@@ -5,10 +5,13 @@
 //! des disques.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use super::{Desktop, Environment, KnownFolder, RecycleBin, Rights, Volume};
 use crate::fs::to_internal_path;
+use crate::game::host::{GameHost, InertHost};
 use crate::model::Timestamp;
+use crate::startup::host::{InertStartupHost, StartupHost};
 
 #[derive(Debug)]
 pub(super) struct SystemEnvironment {
@@ -85,4 +88,66 @@ pub(super) fn own_rights() -> Rights {
 
 pub(super) fn desktop_rights() -> Desktop {
     Desktop::Absent
+}
+
+/// Hors de Windows, le mode jeu ne voit rien : pas de premier plan, pas de
+/// mode d'alimentation.
+pub(super) fn game_host() -> Arc<dyn GameHost> {
+    Arc::new(InertHost)
+}
+
+/// Hors de Windows, le module « Démarrage » ne voit rien : aucune entrée.
+pub(super) fn startup_host() -> Arc<dyn StartupHost> {
+    Arc::new(InertStartupHost)
+}
+
+/// L'agent hors de Windows : il n'existe pas.
+pub(super) mod agent {
+    use std::io;
+
+    use crate::game::agent::{AgentEvent, Flow};
+    use crate::platform::agent::{AgentState, Autostart, OpenProgram, Order, WindowsPage};
+
+    /// Rien à garder : il n'y a pas d'instance unique hors de Windows.
+    #[derive(Debug)]
+    pub struct Guard;
+
+    pub fn acquire_instance() -> Option<Guard> {
+        None
+    }
+
+    pub fn agent_running() -> bool {
+        false
+    }
+
+    pub fn spawn_agent(_release_first: bool) -> AgentState {
+        AgentState::Missing
+    }
+
+    pub fn post_agent(_order: Order) -> bool {
+        false
+    }
+
+    pub fn run_agent(_handler: &mut dyn FnMut(AgentEvent) -> Flow) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "l'agent ne tourne que sous Windows"))
+    }
+
+    pub fn set_autostart(_on: bool) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn autostart() -> Autostart {
+        Autostart::Absent
+    }
+
+    pub fn open_apps() -> Vec<OpenProgram> {
+        Vec::new()
+    }
+
+    pub fn open_windows_settings(_page: WindowsPage) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "les réglages de Windows n'existent que sous Windows",
+        ))
+    }
 }

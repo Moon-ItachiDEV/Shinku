@@ -13,6 +13,7 @@
 pub mod backend;
 pub mod clean;
 pub mod fs;
+pub mod game;
 pub mod guard;
 pub mod hash;
 pub mod helper;
@@ -23,6 +24,7 @@ pub mod scan;
 pub mod scope;
 pub mod session;
 pub mod settings;
+pub mod startup;
 #[cfg(test)]
 mod testing;
 pub mod walk;

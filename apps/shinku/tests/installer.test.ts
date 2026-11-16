@@ -44,11 +44,61 @@ test("la configuration de l'installeur pointe sur des fichiers qui existent", ()
   assert.equal(nsis.headerImage, 'installeur/images/signe-100.bmp');
 });
 
-test("habillage.nsh est en ASCII : les textes n'y dépendent pas de l'option -INPUTCHARSET que Tauri passe à makensis", () => {
-  const bytes = readFileSync(new URL('habillage.nsh', folder));
-  const outside = bytes.findIndex((byte) => byte > 0x7f);
-  assert.equal(outside, -1, `octet non ASCII à la position ${outside} : les textes vont dans textes.nsh`);
-  assert.match(bytes.toString('latin1'), /!include \/CHARSET=UTF8 "\$\{SHINKU_INSTALLEUR\}\\textes\.nsh"/);
+test("habillage.nsh et agent.nsh sont en ASCII : les textes n'y dépendent pas de l'option -INPUTCHARSET que Tauri passe à makensis", () => {
+  for (const name of ['habillage.nsh', 'agent.nsh']) {
+    const bytes = readFileSync(new URL(name, folder));
+    const outside = bytes.findIndex((byte) => byte > 0x7f);
+    assert.equal(outside, -1, `${name} : octet non ASCII à la position ${outside} (les textes vont dans textes.nsh)`);
+  }
+  assert.match(read('habillage.nsh'), /!include \/CHARSET=UTF8 "\$\{SHINKU_INSTALLEUR\}\\textes\.nsh"/);
+});
+
+/** Le corps d'une macro NSIS de habillage.nsh, sans ses commentaires. */
+function macro(name: string): string {
+  const body = new RegExp(`^!macro ${name}\\n([\\s\\S]*?)^!macroend`, 'm').exec(read('habillage.nsh'))?.[1];
+  assert.ok(body !== undefined, `habillage.nsh ne définit pas ${name}`);
+  return body.replace(/^\s*;.*$/gm, '');
+}
+
+test("les quatre hooks de Tauri sont dans habillage.nsh et appellent ceux de l'agent du mode jeu", () => {
+  const text = read('habillage.nsh');
+  assert.match(text, /^!include "\$\{SHINKU_INSTALLEUR\}\\agent\.nsh"$/m);
+  for (const [hook, agent] of [
+    ['NSIS_HOOK_PREINSTALL', 'ShinkuAgentPreInstall'],
+    ['NSIS_HOOK_POSTINSTALL', 'ShinkuAgentPostInstall'],
+    ['NSIS_HOOK_PREUNINSTALL', 'ShinkuAgentPreUninstall'],
+    ['NSIS_HOOK_POSTUNINSTALL', 'ShinkuAgentPostUninstall'],
+  ] as const) {
+    assert.match(read('agent.nsh'), new RegExp(`^!macro ${agent}$`, 'm'), `agent.nsh ne définit pas ${agent}`);
+    // L'agent passe en premier : il lit encore ses fichiers, que la suite peut supprimer.
+    assert.match(macro(hook).trimStart(), new RegExp(`^!insertmacro ${agent}\\n`), `${hook} doit commencer par ${agent}`);
+  }
+  // Tauri n'accepte qu'un fichier de hooks : aucun autre ne doit en définir.
+  for (const name of ['agent.nsh', 'textes.nsh', 'francais.nsh']) {
+    assert.doesNotMatch(read(name), /^!macro NSIS_HOOK_/m, `${name} définit un hook de Tauri`);
+  }
+});
+
+test('« Supprimer aussi mes réglages » supprime fichier par fichier, jamais un dossier entier', () => {
+  const body = macro('ShinkuDeleteSettings');
+  assert.doesNotMatch(body, /RMDir\s+\/r/i, 'RMDir /r suit les jonctions');
+  const deleted = Array.from(body.matchAll(/^\s*Delete "([^"]+)"$/gm), (match) => match[1] ?? '').sort();
+  assert.deepEqual(deleted, [
+    '$APPDATA\\Shinku\\journal.json',
+    '$APPDATA\\Shinku\\journal.json.tmp',
+    '$APPDATA\\Shinku\\settings.illisible.json',
+    '$APPDATA\\Shinku\\settings.json',
+    '$APPDATA\\Shinku\\settings.json.tmp',
+    '$LOCALAPPDATA\\Shinku\\game.json',
+    '$LOCALAPPDATA\\Shinku\\game.json.tmp',
+    '$LOCALAPPDATA\\Shinku\\startup.json',
+    '$LOCALAPPDATA\\Shinku\\startup.json.tmp',
+  ]);
+  // La suppression n'a lieu que case cochée et hors mise à jour.
+  assert.match(
+    macro('NSIS_HOOK_POSTUNINSTALL'),
+    /\$\{If\} \$DeleteAppDataCheckboxState = 1\n\s*\$\{AndIf\} \$UpdateMode <> 1\n\s*!insertmacro ShinkuDeleteSettings\n\s*\$\{EndIf\}/,
+  );
 });
 
 /** Un BMP 24 bits : ses dimensions et la couleur de ses quatre coins. */
@@ -143,7 +193,7 @@ test("francais.nsh ne dépend d'aucun chemin relatif : Tauri en fait une copie a
 test("aucun fichier de l'installeur ne vouvoie", () => {
   const formal = /(?<![\p{L}\p{N}_])(vous|votre|vos|veuillez|cliquez|choisissez|sélectionnez)(?![\p{L}\p{N}_])/giu;
   const files = readdirSync(folder).filter((name) => name.endsWith('.nsh'));
-  assert.deepEqual(files.sort(), ['francais.nsh', 'habillage.nsh', 'textes.nsh']);
+  assert.deepEqual(files.sort(), ['agent.nsh', 'francais.nsh', 'habillage.nsh', 'textes.nsh']);
   for (const name of files) {
     for (const [number, line] of read(name).split('\n').entries()) {
       const found = line.match(formal);

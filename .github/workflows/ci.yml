@@ -6,8 +6,8 @@
 #   - « Lint de la cible Windows » (Linux) : le code propre à Windows, que le
 #     premier travail ne compile pas, passe au lint par compilation croisée.
 #   - « Windows » : les tests du cœur sur un vrai NTFS, puis l'installeur,
-#     parcouru page par page, installé et essayé pour de bon avant d'être
-#     publié.
+#     parcouru page par page, installé et essayé pour de bon (la fenêtre, puis
+#     le mode jeu) avant d'être publié.
 #
 # Les minutes Windows comptent double sur un dépôt privé : tout ce qui peut
 # être vérifié sous Linux l'est sous Linux.
@@ -162,9 +162,11 @@ jobs:
         working-directory: apps/shinku
         run: npm ci
 
-      # Compile l'interface, puis shinku.exe en version finale, puis
-      # l'installeur NSIS (non signé : la signature vient avant la version
-      # publique).
+      # Compile l'interface, puis l'agent du mode jeu (beforeBuildCommand, dans
+      # target/release), puis shinku.exe en version finale, puis l'installeur
+      # NSIS, qui embarque l'agent par ses crochets (installeur/habillage.nsh, puis
+      # installeur/agent.nsh). Non signé : la signature vient avant la version
+      # publique.
       - name: Installeur
         working-directory: apps/shinku
         run: npm run tauri build
@@ -179,6 +181,7 @@ jobs:
       # l'essai vérifie sur le disque ce qui est parti et ce qui est resté.
       # Sans cela, l'installeur n'est pas publié.
       - name: Installation
+        id: install
         run: |
           $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
           $options = @()
@@ -186,9 +189,76 @@ jobs:
           powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
             -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape installer @options
 
+      # Le Démarrage : cinq entrées d'essai (quatre dans le compte, une dans le
+      # PC) sont créées avant la fenêtre, qui les coupe et les remet pour de
+      # bon. Le script tourne en administrateur, et crée seul l'entrée du PC ;
+      # la fenêtre tourne avec les droits ordinaires du même compte : HKCU est
+      # le même.
+      - name: Préparer l'essai du Démarrage
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Preparer
+
+      # Les trois essais qui suivent tournent chacun même si un essai d'avant a
+      # échoué (il suffit que Shinku soit installé) : un passage dit ainsi tout
+      # ce qu'il peut dire. Le travail échoue quand même si l'un d'eux échoue.
       - name: Essai de la fenêtre
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: apps/shinku
         run: node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures" --grand-vide
+
+      # Le mode jeu, de bout en bout : l'agent installé reconnaît un vrai jeu
+      # (une petite fenêtre compilée pour l'occasion) au premier plan, met un
+      # ping en veilleuse, change le mode d'alimentation, puis remet tout en
+      # place quand le jeu se ferme. Les machines de GitHub tournent en
+      # administrateur : l'essai lance l'agent et le jeu avec les droits
+      # ordinaires d'un utilisateur, comme sur un PC.
+      - name: Essai du mode jeu
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-mode-jeu.ps1 -Agent "$env:ProgramFiles\Shinku\shinku-agent.exe"
+
+      # Quoi qu'il arrive : le mode d'alimentation, les réglages et le journal
+      # d'origine sont remis, et ce qui reste de l'essai est arrêté.
+      - name: Remettre la machine d'essai en place
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-mode-jeu.ps1 -Restaurer
+
+      # Quoi qu'il arrive : les cinq entrées d'essai et leurs approbations sont retirées.
+      - name: Remettre la machine d'essai en place (démarrage)
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Nettoyer
+
+      # Shinku est déjà installé : l'installeur doit le dire, et rien ne doit
+      # changer sur le disque quand on annule.
+      - name: Installeur sur une installation existante
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          $options = @()
+          if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
+            -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape deja-installe @options
+
+      # Les crochets de l'installeur, avec un agent qui tourne : l'installeur
+      # tout juste fabriqué est relancé par-dessus l'installation (mise à jour),
+      # puis Shinku est désinstallé. Dans les deux cas, plus aucun agent ne doit
+      # rester, la valeur de démarrage doit suivre (rester à la mise à jour,
+      # partir à la désinstallation) et le dossier d'installation disparaître.
+      # Shinku n'est plus installé ensuite : les étapes qui suivent le
+      # réinstallent elles-mêmes. L'installeur n'est publié que si tout a réussi.
+      - name: Essai de la mise à jour et de la désinstallation
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: apps/shinku
+        run: |
+          $setup = Get-ChildItem "$env:GITHUB_WORKSPACE/target/release/bundle/nsis" -Filter *-setup.exe | Select-Object -First 1
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-installeur-agent.ps1 -Installeur $setup.FullName
+
+      - name: Remettre la machine d'essai en place (installeur)
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-installeur-agent.ps1 -Restaurer
 
       - name: Publier les captures de la fenêtre
         if: always()
@@ -199,28 +269,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      # Shinku est déjà installé : l'installeur doit le dire, et rien ne doit
-      # changer sur le disque quand on annule.
-      - name: Installeur sur une installation existante
-        run: |
-          $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
-          $options = @()
-          if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
-          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
-            -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape deja-installe @options
-
-      # Le désinstalleur, avec la case « Supprimer aussi mes réglages » : le
-      # dossier d'installation et %APPDATA%\Shinku doivent disparaître.
-      - name: Désinstallation
-        run: |
-          $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
-          $options = @()
-          if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
-          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
-            -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape desinstaller @options
-
       # Le mode silencieux (/S) n'a pas de fenêtre : il garde sa propre preuve,
-      # un aller-retour installation, vérification, désinstallation.
+      # un aller-retour installation, vérification, désinstallation. L'essai
+      # d'avant a laissé Shinku désinstallé, et celui-ci aussi.
       - name: Aller-retour silencieux
         run: |
           $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
@@ -231,7 +282,7 @@ jobs:
           Set-Content -LiteralPath $reglages -Value '{}' -Encoding ASCII
           $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
-          foreach ($fichier in 'shinku.exe', 'uninstall.exe') {
+          foreach ($fichier in 'shinku.exe', 'shinku-agent.exe', 'uninstall.exe') {
             if (-not (Test-Path "$dossier\$fichier")) { throw "L'installation silencieuse n'a pas posé $fichier." }
           }
           # Le désinstalleur se recopie dans le dossier temporaire et rend la main
@@ -242,6 +293,20 @@ jobs:
           if (Test-Path $dossier) { throw "La désinstallation silencieuse a laissé $dossier." }
           if (-not (Test-Path -LiteralPath $reglages)) { throw "La désinstallation silencieuse a supprimé les réglages." }
           Remove-Item -LiteralPath (Split-Path $reglages) -Recurse -Force
+
+      # Le désinstalleur, avec la case « Supprimer aussi mes réglages » : le
+      # dossier d'installation, %APPDATA%\Shinku et %LOCALAPPDATA%\Shinku
+      # doivent disparaître. Les essais d'avant ont désinstallé Shinku : il est
+      # d'abord réinstallé en silence.
+      - name: Désinstallation
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
+          $options = @()
+          if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
+            -Installeur $setup.FullName -Captures "$env:RUNNER_TEMP\captures-installeur" -Etape desinstaller @options
 
       - name: Publier les captures de l'installeur
         if: always()

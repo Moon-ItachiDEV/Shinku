@@ -11,7 +11,10 @@ import {
   formatAgo,
   formatBytes,
   formatCount,
+  formatDay,
+  formatDuration,
   formatLimit,
+  formatSince,
   frenchSpacing,
   listOf,
   percent,
@@ -113,4 +116,66 @@ test('une énumération se termine par « et »', () => {
   assert.equal(listOf(['Discord']), 'Discord');
   assert.equal(listOf(['Google Chrome', 'Discord']), 'Google Chrome et Discord');
   assert.equal(listOf(['Google Chrome', 'Discord', 'Steam']), 'Google Chrome, Discord et Steam');
+});
+
+test('une durée de jeu se lit « 45 min » ou « 2 h 10 »', () => {
+  const minute = 60_000;
+  assert.equal(formatDuration(45 * minute), `45${NBSP}min`);
+  assert.equal(formatDuration(59 * minute + 59_000), `59${NBSP}min`);
+  assert.equal(formatDuration(60 * minute), `1${NBSP}h`);
+  assert.equal(formatDuration(130 * minute), `2${NBSP}h${NBSP}10`);
+  assert.equal(formatDuration(125 * minute), `2${NBSP}h${NBSP}05`);
+  assert.equal(formatDuration(26 * 60 * minute + 7 * minute), `26${NBSP}h${NBSP}07`);
+});
+
+test('une durée de jeu ne descend jamais sous une minute, ni sous zéro', () => {
+  assert.equal(formatDuration(0), `1${NBSP}min`);
+  assert.equal(formatDuration(20_000), `1${NBSP}min`);
+  assert.equal(formatDuration(-5 * 60_000), `1${NBSP}min`);
+});
+
+test('le début d’une partie dit le jour quand ce n’est pas aujourd’hui', () => {
+  // Heures et jours sont ceux de la machine : les dates se construisent en heure locale.
+  const at = (year: number, month: number, day: number, hour: number, minute: number) =>
+    new Date(year, month - 1, day, hour, minute).getTime();
+  const now = at(2026, 11, 15, 9, 5);
+  assert.equal(formatSince(at(2026, 11, 15, 0, 1), now), '00:01');
+  assert.equal(formatSince(at(2026, 11, 15, 8, 30), now), '08:30');
+  // Hier soir, même à moins de 24 h : la veille s'annonce.
+  assert.equal(formatSince(at(2026, 11, 14, 23, 40), now), 'hier, 23:40');
+  assert.equal(formatSince(at(2026, 11, 14, 0, 0), now), 'hier, 00:00');
+  assert.equal(formatSince(at(2026, 11, 14, 23, 40), at(2026, 11, 14, 23, 50)), '23:40');
+  // Plus loin : le jour et le mois, sans l'année de cette année.
+  assert.equal(formatSince(at(2026, 11, 13, 23, 40), now), `le 13${NBSP}nov., 23:40`);
+  assert.equal(formatSince(at(2026, 10, 1, 7, 0), now), `le 1er${NBSP}oct., 07:00`);
+  assert.equal(formatSince(at(2026, 7, 4, 12, 0), now), `le 4${NBSP}juil., 12:00`);
+  assert.equal(formatSince(at(2026, 5, 4, 12, 0), now), `le 4${NBSP}mai, 12:00`);
+  // Une autre année la porte.
+  assert.equal(formatSince(at(2025, 12, 31, 22, 15), now), `le 31${NBSP}déc. 2025, 22:15`);
+  // Une date dans le futur (horloge qui recule) ne fait pas dire n'importe quoi.
+  assert.equal(formatSince(now + 3_600_000, now), '10:05');
+});
+
+test('un jour se lit « le 15 nov. », avec l’année si ce n’est pas l’année en cours', () => {
+  const at = (year: number, month: number, day: number, hour = 12) => new Date(year, month - 1, day, hour).getTime();
+  const now = at(2026, 11, 15, 9);
+  assert.equal(formatDay(at(2026, 11, 15), now), `le 15${NBSP}nov.`);
+  assert.equal(formatDay(at(2026, 11, 2), now), `le 2${NBSP}nov.`);
+  assert.equal(formatDay(at(2026, 1, 1), now), `le 1er${NBSP}janv.`);
+  assert.equal(formatDay(at(2026, 5, 4), now), `le 4${NBSP}mai`);
+  assert.equal(formatDay(at(2026, 8, 31), now), `le 31${NBSP}août`);
+  // Une autre année la porte, l'an dernier comme l'an prochain.
+  assert.equal(formatDay(at(2025, 11, 2), now), `le 2${NBSP}nov. 2025`);
+  assert.equal(formatDay(at(2024, 12, 31, 23), now), `le 31${NBSP}déc. 2024`);
+  assert.equal(formatDay(at(2027, 1, 3), now), `le 3${NBSP}janv. 2027`);
+  // Le 1er janvier de l'année en cours n'a pas d'année, la veille de l'an dernier en a une.
+  assert.equal(formatDay(at(2025, 12, 31, 23), at(2026, 1, 1, 0)), `le 31${NBSP}déc. 2025`);
+});
+
+test('la phrase de la partie en cours porte ce début', async () => {
+  const { fr } = await import('../src/i18n/fr.ts');
+  assert.equal(
+    fr.game.textPlaying('hier, 23:40'),
+    'Mode jeu actif depuis hier, 23:40. Tout revient en place quand tu quittes le jeu.',
+  );
 });

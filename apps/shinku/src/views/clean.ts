@@ -28,6 +28,7 @@ import {
 import { mainVolume } from '../model/scan.ts';
 import type { Actions, AppState } from '../state.ts';
 import { doneArt, hole, ring } from './art.ts';
+import { openModal } from './modal.ts';
 import { CLEAN_NAMES, SEGMENT_CLASS, stage, stopCore } from './parts.ts';
 import { styles } from './style.ts';
 
@@ -39,22 +40,6 @@ function openApps(apps: readonly LeftOpen[]): [names: string, count: number, byt
 }
 
 // ── Confirmation ───────────────────────────────────────────────────────────
-
-/**
- * Ouvre la boîte de dialogue en mode modal : le reste de la fenêtre ne répond
- * plus, et Échap la referme. Quand la boîte est dessinée pour la première
- * fois, elle n'est pas encore dans la page : l'ouverture attend qu'elle y soit.
- */
-function openModal(element: Element | undefined): void {
-  if (!(element instanceof HTMLDialogElement)) {
-    return;
-  }
-  queueMicrotask(() => {
-    if (element.isConnected && !element.open) {
-      element.showModal();
-    }
-  });
-}
 
 function confirmHint(step: ConfirmStep): string {
   switch (step.id) {

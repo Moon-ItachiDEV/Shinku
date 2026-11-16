@@ -6,7 +6,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:5173",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && cargo build --release --locked -p shinku-agent"
   },
   "app": {
     "withGlobalTauri": false,

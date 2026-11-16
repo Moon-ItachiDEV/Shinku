@@ -23,13 +23,23 @@ use serde::Serialize;
 use crate::clean::journal::{JournalStore, Run};
 use crate::clean::{CleanPreview, CleanRefusal, CleanRequest};
 use crate::fs::{fold_path, to_display_path, to_internal_path};
+use crate::game::control::{AgentControl, InertAgent, SystemAgent};
+use crate::game::desk::{self as game_desk, GameDesk};
+use crate::game::host::{GameHost, InertHost};
+use crate::game::store::GameStore;
+use crate::game::view::{GameOption, GameRefusal, GameStatus, GameView, OpenApp};
 use crate::hash::{DigestCache, MemoryCache};
 use crate::model::Trigger;
+use crate::platform::agent::WindowsPage;
 use crate::platform::{self, Environment, RecycleBin, Volume};
 use crate::scan::ScanOptions;
 use crate::scan::report::{DuplicateGroup, DuplicatesState, JunkReport, KeepChoice, LargeFile};
 use crate::session::{Session, SessionError, SessionView};
 use crate::settings::{LoadIssue, Loaded, Settings, SettingsStore, Theme};
+use crate::startup::desk::StartupDesk;
+use crate::startup::host::{InertStartupHost, StartupHost};
+use crate::startup::store::StartupStore;
+use crate::startup::view::{StartupRefusal, StartupView};
 
 /// Nombre maximal d'éléments rendus par page, quelle que soit la demande.
 pub const PAGE_LIMIT: usize = 200;
@@ -155,6 +165,16 @@ pub enum BackendError {
         /// Ce que le système en dit.
         reason: String,
     },
+    /// Le mode jeu refuse cette demande : rien n'a changé.
+    GameRefused {
+        /// La raison.
+        reason: GameRefusal,
+    },
+    /// Le module Démarrage refuse cette demande : rien n'a changé.
+    StartupRefused {
+        /// La raison.
+        reason: StartupRefusal,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -175,6 +195,8 @@ impl fmt::Display for BackendError {
             Self::CleanNotStarted { reason } => {
                 write!(f, "le grand vide n'a pas pu démarrer : {reason}")
             }
+            Self::GameRefused { reason } => write!(f, "mode jeu : {reason}"),
+            Self::StartupRefused { reason } => write!(f, "démarrage : {reason}"),
         }
     }
 }
@@ -206,6 +228,14 @@ pub struct Backend {
     journal: Option<JournalStore>,
     desk: Mutex<Desk>,
     scan_defaults: ScanOptions,
+    game: GameDesk,
+    startup: StartupDesk,
+    /// Un seul `sync` du mode jeu à la fois, dans l'ordre d'arrivée.
+    sync_lock: Mutex<()>,
+    /// Pour les tests : fait attendre le prochain changement du mode jeu entre
+    /// son enregistrement et sa mise en accord de l'agent.
+    #[cfg(test)]
+    hold_before_sync: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl Backend {
@@ -216,7 +246,19 @@ impl Backend {
         let environment: Arc<dyn Environment> = Arc::new(platform::system());
         let store = SettingsStore::for_machine(environment.as_ref());
         let journal = JournalStore::for_machine(environment.as_ref());
-        let backend = Self::new(environment, Arc::new(MemoryCache::new()), store);
+        let game = GameDesk::new(
+            Arc::clone(&environment),
+            platform::game_host(),
+            Arc::new(SystemAgent),
+            GameStore::for_machine(environment.as_ref()),
+        );
+        let startup = StartupDesk::new(
+            platform::startup_host(),
+            StartupStore::for_machine(environment.as_ref()),
+        );
+        let backend = Self::new(environment, Arc::new(MemoryCache::new()), store)
+            .with_game(game)
+            .with_startup(startup);
         match journal {
             Some(journal) => backend.with_journal(journal),
             None => backend,
@@ -236,14 +278,66 @@ impl Backend {
             || Loaded { settings: Settings::default(), issue: None },
             SettingsStore::load,
         );
+        let game = GameDesk::new(
+            Arc::clone(&environment),
+            Arc::new(InertHost),
+            Arc::new(InertAgent),
+            GameStore::for_machine(environment.as_ref()),
+        );
+        let startup = StartupDesk::new(
+            Arc::new(InertStartupHost),
+            StartupStore::for_machine(environment.as_ref()),
+        );
         Self {
             session: Session::new(Arc::clone(&environment), cache),
+            game,
+            startup,
             environment,
             store,
             journal: None,
             desk: Mutex::new(Desk { settings, issue, interrupted: None }),
             scan_defaults: ScanOptions::new(Trigger::Button),
+            sync_lock: Mutex::new(()),
+            #[cfg(test)]
+            hold_before_sync: Mutex::new(None),
         }
+    }
+
+    /// Branche le mode jeu : la machine vue par l'agent, son contrôle, et le
+    /// journal `game.json`.
+    pub fn with_game(mut self, game: GameDesk) -> Self {
+        self.game = game;
+        self
+    }
+
+    /// Comme [`Backend::with_game`], pour des tests : la machine et l'agent
+    /// fabriqués, le journal donné.
+    pub fn with_game_parts(
+        self,
+        host: Arc<dyn GameHost>,
+        control: Arc<dyn AgentControl>,
+        store: Option<GameStore>,
+    ) -> Self {
+        let game = GameDesk::new(Arc::clone(&self.environment), host, control, store);
+        self.with_game(game)
+    }
+
+    /// Branche le module Démarrage : la machine vue par le module et
+    /// `startup.json`.
+    pub fn with_startup(mut self, startup: StartupDesk) -> Self {
+        self.startup = startup;
+        self
+    }
+
+    /// Comme [`Backend::with_startup`], pour des tests : la machine fabriquée,
+    /// le fichier donné, et la commande qu'on prend pour celle de Shinku.
+    pub fn with_startup_parts(
+        self,
+        host: Arc<dyn StartupHost>,
+        store: Option<StartupStore>,
+        own_command: Option<String>,
+    ) -> Self {
+        self.with_startup(StartupDesk::new(host, store).with_own_command(own_command))
     }
 
     /// Branche le journal des grands vides.
@@ -303,7 +397,11 @@ impl Backend {
             if desk.issue.as_ref().is_some_and(blocks_scan) {
                 return Err(BackendError::SettingsUnchecked);
             }
-            let options = self.scan_defaults.clone().with_settings(&desk.settings);
+            let options = self
+                .scan_defaults
+                .clone()
+                .with_settings(&desk.settings)
+                .with_startup(self.startup.probe());
             self.session.start_scan(options).map_err(|error| match error {
                 SessionError::CleanRunning => BackendError::CleanRunning,
                 SessionError::Thread(error) => {
@@ -482,6 +580,135 @@ impl Backend {
         Ok(settings)
     }
 
+    // --- Démarrage ---
+
+    /// Tout ce que la page « Démarrage » affiche : les apps inscrites au
+    /// démarrage de Windows, pour le compte et pour le PC. Met `startup.json`
+    /// à jour.
+    pub fn startup_view(&self) -> StartupView {
+        self.startup.view()
+    }
+
+    /// Coupe ou remet une entrée du compte, désignée par son identifiant, puis
+    /// rend la vue d'après. Un seul changement à la fois : un second appel
+    /// simultané est refusé (`busy`).
+    pub fn set_startup_entry(&self, id: &str, enabled: bool) -> Result<StartupView, BackendError> {
+        self.startup.set(id, enabled).map_err(|reason| BackendError::StartupRefused { reason })
+    }
+
+    // --- Mode jeu ---
+
+    /// Tout ce que la page « Mode jeu » affiche.
+    pub fn game_view(&self) -> GameView {
+        let settings = self.desk().settings.clone();
+        self.game.view(&settings)
+    }
+
+    /// Allume ou éteint un interrupteur du mode jeu, puis met l'agent d'accord.
+    pub fn set_game_option(&self, option: GameOption, on: bool) -> Result<GameView, BackendError> {
+        self.change_game(|settings| {
+            match option {
+                GameOption::Auto => settings.game_mode_auto = on,
+                GameOption::Power => settings.game_mode_power = on,
+                GameOption::QuietApps => settings.game_mode_quiet_apps = on,
+            }
+            Ok(())
+        })
+    }
+
+    /// Met une app de la liste en veilleuse, ou la laisse tranquille.
+    pub fn set_quiet_app(&self, exe: &str, on: bool) -> Result<GameView, BackendError> {
+        self.change_game(|settings| game_desk::set_quiet(settings, exe, on, false))
+    }
+
+    /// Les apps ouvertes en ce moment, pour les sélecteurs de la page.
+    pub fn open_apps(&self) -> Vec<OpenApp> {
+        self.game.open_apps()
+    }
+
+    /// Ajoute aux jeux l'app de ce numéro de la dernière liste rendue. `path`
+    /// doit être exactement le chemin de cette app dans cette liste : il n'est
+    /// que comparé, jamais utilisé. Sinon la liste a changé, et la demande est
+    /// refusée (`unknownApp`).
+    pub fn add_game(&self, id: u32, path: &str) -> Result<GameView, BackendError> {
+        let program = self.game.open_app(id, path).map_err(game_refused)?;
+        self.change_game(|settings| game_desk::add_game(settings, &program))
+    }
+
+    /// Ajoute aux apps en veilleuse l'app de ce numéro de la dernière liste
+    /// rendue. Même règle pour `path` que [`Backend::add_game`].
+    pub fn add_quiet_app(&self, id: u32, path: &str) -> Result<GameView, BackendError> {
+        let program = self.game.open_app(id, path).map_err(game_refused)?;
+        // L'app tourne : c'est le moment de lire son nom, qui restera.
+        self.game.remember_label(&program);
+        self.change_game(|settings| game_desk::add_quiet_app(settings, &program))
+    }
+
+    /// Dit ce que la personne pense d'un jeu de la liste.
+    pub fn set_game_status(
+        &self,
+        path: &str,
+        status: GameStatus,
+    ) -> Result<GameView, BackendError> {
+        // Les réglages sont copiés avant : `known_paths` lit `game.json`, et
+        // aucun verrou n'est tenu pendant une lecture de fichier.
+        let settings = self.desk().settings.clone();
+        let known = self.game.known_paths(&settings);
+        self.change_game(|settings| game_desk::set_status(settings, &known, path, status))
+    }
+
+    /// « Tout remettre maintenant ».
+    pub fn release_game(&self) -> GameView {
+        self.game.release();
+        self.game_view()
+    }
+
+    /// Ouvre une page des réglages de Windows.
+    pub fn open_windows_settings(&self, page: WindowsPage) {
+        self.game.open_settings(page);
+    }
+
+    /// Met l'agent et la valeur `Run` d'accord avec les réglages. À appeler au
+    /// démarrage de Shinku, hors du fil de la fenêtre.
+    pub fn sync_agent(&self) {
+        self.sync();
+    }
+
+    /// Met l'agent et la valeur `Run` d'accord avec les réglages *d'à présent*.
+    ///
+    /// Les commandes tournent sur plusieurs fils : deux changements qui se
+    /// suivent de près pourraient se croiser, le plus ancien posant la valeur
+    /// `Run` après le plus récent. Un verrou dédié les met en file, et les
+    /// réglages sont relus sous ce verrou, pas reçus en argument.
+    fn sync(&self) {
+        let _turn = self.sync_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let settings = self.desk().settings.clone();
+        self.game.sync(&settings);
+    }
+
+    /// Change les réglages du mode jeu d'un seul tenant (refusé = rien ne
+    /// change), puis met l'agent d'accord, hors du verrou.
+    fn change_game(
+        &self,
+        edit: impl FnOnce(&mut Settings) -> Result<(), GameRefusal>,
+    ) -> Result<GameView, BackendError> {
+        let settings = {
+            let mut desk = self.desk();
+            let mut next = desk.settings.clone();
+            edit(&mut next).map_err(game_refused)?;
+            self.save_settings(&mut desk, |settings| *settings = next)?
+        };
+        #[cfg(test)]
+        {
+            let held = self.hold_before_sync.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(release) = held {
+                let _ = release.recv();
+            }
+        }
+        self.sync();
+        Ok(self.game.view(&settings))
+    }
+
     /// Applique un changement aux réglages et l'enregistre.
     fn change_settings(&self, edit: impl FnOnce(&mut Settings)) -> Result<Settings, BackendError> {
         self.save_settings(&mut self.desk(), edit)
@@ -509,6 +736,10 @@ impl Backend {
         desk.settings = next.clone();
         Ok(next)
     }
+}
+
+fn game_refused(reason: GameRefusal) -> BackendError {
+    BackendError::GameRefused { reason }
 }
 
 /// Vrai si ce problème de lecture a pu faire oublier des dossiers exclus.
@@ -547,6 +778,7 @@ mod tests {
     use crate::clean::report::{CleanOutcome, CleanReport, StepState};
     use crate::model::{ModuleId, Timestamp};
     use crate::platform::{KnownFolder, StaticEnvironment};
+    use crate::scan::report::CategoryState;
     use crate::session::SessionState;
     use crate::testing::SlowBin;
 
@@ -672,6 +904,113 @@ mod tests {
     fn items(view: &SessionView, module: ModuleId) -> u64 {
         let summary = view.summary.as_ref().expect("un bilan");
         summary.categories.iter().find(|category| category.module == module).unwrap().items
+    }
+
+    fn startup_category(view: &SessionView) -> &crate::scan::report::CategorySummary {
+        let summary = view.summary.as_ref().expect("un bilan");
+        summary.categories.iter().find(|category| category.module == ModuleId::Startup).unwrap()
+    }
+
+    #[test]
+    fn the_scan_counts_the_apps_registered_at_startup() {
+        use crate::startup::Place;
+        use crate::startup::approval::cut_bytes;
+        use crate::startup::host::FakeStartupHost;
+        const OWN: &str = r#""C:\Shinku\shinku-agent.exe" --demarrage"#;
+
+        let pc = pc();
+        let host = Arc::new(FakeStartupHost::new());
+        host.add(Place::UserRun, "A", r"C:\a.exe");
+        host.add(Place::UserRun, "Shinku", OWN);
+        host.add(Place::UserFolder, "B.lnk", r"C:\b.exe");
+        host.add(Place::MachineRun, "C", r"C:\c.exe");
+        host.add(Place::MachineRun32, "D", r"C:\d.exe");
+        host.set_bytes(Place::MachineRun32, "D", &cut_bytes(host.file_time_now()));
+        let backend = backend(&pc).with_startup_parts(host.clone(), None, Some(OWN.to_owned()));
+
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        let startup = startup_category(&view);
+        // A, B et C : l'entrée de Shinku et la coupée ne comptent pas.
+        assert_eq!((startup.state, startup.items, startup.bytes), (CategoryState::Ready, 3, 0));
+
+        // Une place illisible : le chiffre ne serait pas le bon, il n'est pas donné.
+        host.make_unreadable(Place::MachineFolder);
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        let startup = startup_category(&view);
+        assert_eq!((startup.state, startup.items), (CategoryState::Unavailable, 0));
+    }
+
+    #[test]
+    fn a_startup_list_read_in_part_is_not_counted_in_the_scan_summary() {
+        use crate::startup::Place;
+        use crate::startup::host::FakeStartupHost;
+
+        let pc = pc();
+        let host = Arc::new(FakeStartupHost::new());
+        host.add(Place::UserRun, "A", r"C:\a.exe");
+        let backend = backend(&pc).with_startup_parts(host.clone(), None, None);
+        backend.start_scan().unwrap();
+        let startup = startup_category(&wait_for_results(&backend)).items;
+        assert_eq!(startup, 1);
+
+        // Une borne atteinte : le chiffre ne serait pas le bon, il n'est pas donné,
+        // et la page dit que la portée est lue en partie.
+        host.make_incomplete(Place::UserRun);
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        assert_eq!(startup_category(&view).state, CategoryState::Unavailable);
+        assert_eq!(backend.startup_view().unreadable, [crate::startup::Scope::User]);
+    }
+
+    #[test]
+    fn the_startup_page_goes_through_the_desk_and_refuses_with_a_reason() {
+        use crate::startup::Place;
+        use crate::startup::host::FakeStartupHost;
+        use crate::startup::view::StartupRefusal;
+
+        let pc = pc();
+        let host = Arc::new(FakeStartupHost::new());
+        host.add(Place::UserRun, "A", r"C:\a.exe");
+        host.add(Place::MachineRun, "PC", r"C:\pc.exe");
+        let backend = backend(&pc).with_startup_parts(host.clone(), None, None);
+        let view = backend.startup_view();
+        let id = view.entries.iter().find(|entry| entry.name == "A").unwrap().id.to_string();
+        let machine = view.entries.iter().find(|entry| entry.name == "PC").unwrap().id.to_string();
+
+        let view = backend.set_startup_entry(&id, false).unwrap();
+        assert!(view.entries.iter().find(|entry| entry.name == "A").unwrap().disabled_at.is_some());
+        let refused = |result: Result<StartupView, BackendError>| match result {
+            Err(BackendError::StartupRefused { reason }) => reason,
+            other => panic!("un refus était attendu : {other:?}"),
+        };
+        assert_eq!(
+            refused(backend.set_startup_entry("pas un id", true)),
+            StartupRefusal::UnknownEntry
+        );
+        assert_eq!(
+            refused(backend.set_startup_entry(&machine, false)),
+            StartupRefusal::NotAdjustable
+        );
+        host.refuse_writes();
+        assert_eq!(refused(backend.set_startup_entry(&id, true)), StartupRefusal::Failed);
+        assert_eq!(
+            BackendError::StartupRefused { reason: StartupRefusal::Busy }.to_string(),
+            "démarrage : un autre changement est en cours"
+        );
+    }
+
+    #[test]
+    fn without_a_startup_host_the_page_is_empty_and_the_scan_says_not_measured() {
+        let pc = pc();
+        let backend = backend(&pc);
+        assert!(backend.startup_view().entries.is_empty());
+        backend.start_scan().unwrap();
+        let view = wait_for_results(&backend);
+        let startup = startup_category(&view);
+        // Un « 0 » serait un chiffre inventé : la machine inerte ne mesure rien.
+        assert_eq!(startup.state, CategoryState::Unavailable);
     }
 
     #[test]
@@ -1058,5 +1397,628 @@ mod tests {
         backend.start_clean(request).unwrap();
         wait_for_the_report(&backend);
         assert!(!pc.temp().join("vieux.tmp").exists());
+    }
+
+    // ---------------------------------------------------------- mode jeu
+
+    use crate::game::PowerOutcome;
+    use crate::game::control::FakeAgent;
+    use crate::game::detect::Source;
+    use crate::game::host::{FakeHost, PowerPlan};
+    use crate::game::store::{GameFile, GameRef, Last, PowerRecord, Session as GameSession};
+    use crate::platform::agent::{AgentState, OpenProgram, Order};
+
+    const FOO: &str = r"C:\Games\Foo\foo.exe";
+    const BAR: &str = r"C:\Games\Bar\bar.exe";
+    const CHROME: &str = r"C:\Program Files\Google\Chrome\Application\chrome.exe";
+    const EXPLORER: &str = r"C:\Windows\explorer.exe";
+    const MYCLOUD: &str = r"C:\Program Files\MyCloud\mycloud.exe";
+
+    struct Arcade {
+        host: FakeHost,
+        agent: FakeAgent,
+        store: GameStore,
+    }
+
+    fn program(path: &str) -> OpenProgram {
+        OpenProgram { name: path.rsplit('\\').next().unwrap().to_owned(), path: path.to_owned() }
+    }
+
+    /// Un guichet dont le mode jeu parle à une fausse machine et à un faux agent.
+    fn arcade(pc: &Pc, state: AgentState) -> (Backend, Arcade) {
+        let arcade = Arcade {
+            host: FakeHost::new(),
+            agent: FakeAgent::new(state),
+            store: GameStore::at(
+                pc.profile.join("AppData").join("Local").join("Shinku").join("game.json"),
+            ),
+        };
+        arcade.agent.set_open_apps(vec![
+            program(MYCLOUD),
+            program(FOO),
+            program(BAR),
+            program(CHROME),
+            program(EXPLORER),
+        ]);
+        let backend = backend(pc).with_game_parts(
+            Arc::new(arcade.host.clone()),
+            Arc::new(arcade.agent.clone()),
+            Some(arcade.store.clone()),
+        );
+        (backend, arcade)
+    }
+
+    fn saved(pc: &Pc) -> Settings {
+        pc.store.load().settings
+    }
+
+    #[test]
+    fn the_game_page_starts_with_sober_defaults() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let view = backend.game_view();
+        assert!(!view.auto);
+        assert!(view.power && view.quiet_apps);
+        assert_eq!(view.agent, AgentState::Stopped);
+        assert_eq!(view.power_support, crate::game::view::PowerSupport::Available);
+        assert!(view.session.is_none() && view.last.is_none());
+        assert!(view.games.is_empty() && view.not_games.is_empty());
+        assert_eq!(view.apps.len(), crate::game::apps::BUILT_IN.len());
+        assert!(view.apps.iter().all(|app| app.built_in));
+        // Les apps de synchronisation sont cochées d'office, pas les navigateurs.
+        let on: Vec<&str> =
+            view.apps.iter().filter(|app| app.on).map(|app| app.exe.as_str()).collect();
+        assert_eq!(on, ["onedrive.exe", "dropbox.exe", "googledrivefs.exe"]);
+        assert!(!view.startup_disabled && !view.on_battery);
+        // Mode éteint : on ne relance pas l'agent juste pour regarder.
+        assert!(arcade.agent.spawns().is_empty());
+    }
+
+    #[test]
+    fn turning_the_mode_on_is_saved_then_the_agent_follows() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let view = backend.set_game_option(GameOption::Auto, true).unwrap();
+        assert!(view.auto);
+        assert!(saved(&pc).game_mode_auto, "enregistré avant tout");
+        assert_eq!(arcade.agent.autostart_calls(), [true], "la valeur Run est posée");
+        assert_eq!(arcade.agent.spawns(), [false], "l'agent est lancé, sans --relacher");
+        assert_eq!(view.agent, AgentState::Running);
+
+        let view = backend.set_game_option(GameOption::Auto, false).unwrap();
+        assert!(!view.auto);
+        assert!(!saved(&pc).game_mode_auto);
+        assert_eq!(arcade.agent.autostart_calls().last(), Some(&false));
+        // Éteint, rien d'ouvert : l'agent s'arrête tout seul, on ne le tue pas.
+        assert!(arcade.agent.orders().is_empty());
+    }
+
+    #[test]
+    fn the_other_switches_are_saved_too() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        assert!(!backend.set_game_option(GameOption::Power, false).unwrap().power);
+        assert!(!backend.set_game_option(GameOption::QuietApps, false).unwrap().quiet_apps);
+        let settings = saved(&pc);
+        assert!(!settings.game_mode_power && !settings.game_mode_quiet_apps);
+    }
+
+    #[test]
+    fn without_the_launch_with_windows_setting_no_run_value_is_written() {
+        let pc = pc();
+        pc.store.save(&Settings { launch_with_windows: false, ..Settings::default() }).unwrap();
+        let (backend, arcade) = arcade(&pc, AgentState::Running);
+        backend.set_game_option(GameOption::Auto, true).unwrap();
+        assert_eq!(arcade.agent.autostart_calls(), [false]);
+        assert!(arcade.agent.spawns().is_empty(), "l'agent tourne déjà");
+    }
+
+    #[test]
+    fn quiet_apps_are_switched_one_by_one() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        let view = backend.set_quiet_app("OneDrive.exe", false).unwrap();
+        let onedrive = view.apps.iter().find(|app| app.exe == "onedrive.exe").unwrap();
+        assert!(!onedrive.on);
+        assert_eq!(saved(&pc).game_mode_quiet_removed, ["onedrive.exe"]);
+        let view = backend.set_quiet_app("onedrive.exe", true).unwrap();
+        assert!(view.apps.iter().any(|app| app.exe == "onedrive.exe" && app.on));
+        // Un navigateur, décoché d'office, se coche en s'ajoutant à la liste.
+        let view = backend.set_quiet_app("chrome.exe", true).unwrap();
+        assert!(view.apps.iter().any(|app| app.exe == "chrome.exe" && app.on));
+        assert_eq!(saved(&pc).game_mode_quiet_added, ["chrome.exe"]);
+        backend.set_quiet_app("chrome.exe", false).unwrap();
+        let settings = saved(&pc);
+        assert!(
+            settings.game_mode_quiet_removed.is_empty()
+                && settings.game_mode_quiet_added.is_empty()
+        );
+    }
+
+    #[test]
+    fn an_unknown_app_cannot_be_switched_and_nothing_changes() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        backend.set_theme(Theme::Dark).unwrap();
+        let before = fs::read(pc.store.path()).unwrap();
+        let error = backend.set_quiet_app("inconnu.exe", true).unwrap_err();
+        assert_eq!(error, BackendError::GameRefused { reason: GameRefusal::UnknownApp });
+        assert_eq!(fs::read(pc.store.path()).unwrap(), before, "le fichier n'a pas bougé");
+    }
+
+    #[test]
+    fn an_open_app_joins_the_quiet_list_by_its_number() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        let open = backend.open_apps();
+        assert_eq!(open.len(), 5);
+        assert_eq!(open[0].id, 0);
+        let view = backend.add_quiet_app(open[0].id, &open[0].path).unwrap();
+        let added = view.apps.iter().find(|app| app.exe == "mycloud.exe").unwrap();
+        assert!(added.on && !added.built_in);
+        assert_eq!(added.label, "mycloud");
+        // Éteindre une app ajoutée la retire de la liste.
+        let view = backend.set_quiet_app("mycloud.exe", false).unwrap();
+        assert!(view.apps.iter().all(|app| app.exe != "mycloud.exe"));
+        assert!(saved(&pc).game_mode_quiet_added.is_empty());
+    }
+
+    #[test]
+    fn protected_apps_and_stale_numbers_are_refused() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        let open = backend.open_apps();
+        let explorer = open.iter().find(|app| app.path == EXPLORER).unwrap();
+        assert_eq!(
+            backend.add_quiet_app(explorer.id, &explorer.path).unwrap_err(),
+            BackendError::GameRefused { reason: GameRefusal::ProtectedApp }
+        );
+        assert_eq!(
+            backend.add_quiet_app(99, EXPLORER).unwrap_err(),
+            BackendError::GameRefused { reason: GameRefusal::UnknownApp }
+        );
+        assert_eq!(
+            backend.add_game(99, FOO).unwrap_err(),
+            BackendError::GameRefused { reason: GameRefusal::UnknownApp }
+        );
+    }
+
+    #[test]
+    fn numbers_are_only_valid_after_a_list_was_given() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        // La page n'a encore rien demandé : aucun numéro ne vaut.
+        assert_eq!(
+            backend.add_game(0, FOO).unwrap_err(),
+            BackendError::GameRefused { reason: GameRefusal::UnknownApp }
+        );
+    }
+
+    #[test]
+    fn a_game_is_added_listed_and_never_a_browser() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        let open = backend.open_apps();
+        let add = |path: &str| {
+            let app = open.iter().find(|app| app.path == path).unwrap();
+            backend.add_game(app.id, &app.path)
+        };
+        let view = add(FOO).unwrap();
+        assert_eq!(view.games.len(), 1);
+        assert_eq!(view.games[0].path, FOO);
+        assert_eq!(view.games[0].name, "foo");
+        assert_eq!(view.games[0].source, Source::Added);
+        assert_eq!(
+            add(CHROME).unwrap_err(),
+            BackendError::GameRefused { reason: GameRefusal::NotAGame }
+        );
+        // Deux fois le même jeu : une seule ligne ; le dernier ajouté d'abord.
+        add(FOO).unwrap();
+        let view = add(BAR).unwrap();
+        assert_eq!(
+            view.games.iter().map(|game| game.path.as_str()).collect::<Vec<_>>(),
+            [BAR, FOO]
+        );
+        assert_eq!(saved(&pc).game_mode_games.len(), 2);
+    }
+
+    #[test]
+    fn a_game_can_be_discarded_and_forgotten() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        let open = backend.open_apps();
+        let foo = open.iter().find(|app| app.path == FOO).unwrap();
+        backend.add_game(foo.id, &foo.path).unwrap();
+        let view = backend.set_game_status(FOO, GameStatus::NotGame).unwrap();
+        assert!(view.games.is_empty());
+        assert_eq!(view.not_games.len(), 1);
+        assert_eq!(view.not_games[0].path, FOO);
+        // La comparaison ignore la casse et le sens des barres.
+        let view = backend
+            .set_game_status(&FOO.to_uppercase().replace('\\', "/"), GameStatus::Forgotten)
+            .unwrap();
+        assert!(view.games.is_empty() && view.not_games.is_empty());
+        let settings = saved(&pc);
+        assert!(settings.game_mode_games.is_empty() && settings.game_mode_not_games.is_empty());
+        // Un jeu ajouté de nouveau sort de « ce n'est pas un jeu ».
+        backend.set_game_status(FOO, GameStatus::NotGame).unwrap_err();
+        backend.add_game(foo.id, &foo.path).unwrap();
+        backend.set_game_status(FOO, GameStatus::NotGame).unwrap();
+        let view = backend.add_game(foo.id, &foo.path).unwrap();
+        assert!(view.not_games.is_empty());
+        assert_eq!(view.games.len(), 1);
+    }
+
+    #[test]
+    fn only_known_games_can_be_judged() {
+        let pc = pc();
+        let (backend, _arcade) = arcade(&pc, AgentState::Stopped);
+        assert_eq!(
+            backend
+                .set_game_status(r"C:\Windows\System32\cmd.exe", GameStatus::NotGame)
+                .unwrap_err(),
+            BackendError::GameRefused { reason: GameRefusal::UnknownGame }
+        );
+        assert!(saved(&pc).game_mode_not_games.is_empty());
+    }
+
+    #[test]
+    fn the_journal_shows_in_the_view_and_seen_games_are_listed() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Running);
+        let mut file = GameFile::default();
+        file.remember(r"D:\SteamLibrary\steamapps\common\Baz\baz.exe", "Baz", 1_700_000_000_000);
+        file.session = Some(GameSession {
+            game: GameRef { path: FOO.to_owned(), name: "Foo".to_owned(), source: Source::Added },
+            since: 5,
+            released: false,
+            power: PowerRecord::applied(PowerPlan::BALANCED),
+            quieted: Vec::new(),
+            restore_pending: true,
+        });
+        file.last = Some(Last {
+            name: "Bar".to_owned(),
+            path: BAR.to_owned(),
+            started: 1,
+            ended: 2,
+            power_restored: Some(true),
+            apps_restored: 3,
+            complete: true,
+        });
+        arcade.store.save(&file).unwrap();
+        let view = backend.game_view();
+        let session = view.session.unwrap();
+        assert_eq!((session.name.as_str(), session.since), ("Foo", 5));
+        assert_eq!(session.power, PowerOutcome::Applied);
+        assert!(session.restore_pending && !session.released);
+        assert_eq!(view.last.unwrap().apps_restored, 3);
+        assert_eq!(view.games.len(), 1);
+        assert_eq!(view.games[0].name, "Baz");
+        assert_eq!(view.games[0].source, Source::Library);
+        assert_eq!(view.games[0].last_played, Some(1_700_000_000_000));
+        // Un jeu de la bibliothèque que la personne écarte disparaît de la liste.
+        let view = backend.set_game_status(&view.games[0].path, GameStatus::NotGame).unwrap();
+        assert!(view.games.is_empty());
+        assert_eq!(view.not_games.len(), 1);
+    }
+
+    #[test]
+    fn a_file_name_is_read_once_per_game() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Running);
+        let open = backend.open_apps();
+        backend.add_game(open[1].id, &open[1].path).unwrap();
+        for _ in 0..4 {
+            backend.game_view();
+        }
+        assert_eq!(arcade.host.name_reads(), 1);
+    }
+
+    #[test]
+    fn battery_and_power_support_come_from_the_machine() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Running);
+        arcade.host.set_on_battery(true);
+        assert!(backend.game_view().on_battery);
+        let pc2 = self::pc();
+        let (backend, arcade) = self::arcade(&pc2, AgentState::Running);
+        arcade.host.set_processor("AMD Ryzen 9 7950X3D 16-Core Processor");
+        assert_eq!(backend.game_view().power_support, crate::game::view::PowerSupport::Unsuited);
+        let pc3 = self::pc();
+        let (backend, arcade) = self::arcade(&pc3, AgentState::Running);
+        arcade.host.remove_plan(PowerPlan::HIGH_PERFORMANCE);
+        assert_eq!(backend.game_view().power_support, crate::game::view::PowerSupport::Unavailable);
+    }
+
+    /// Un guichet dont l'agent ne démarre jamais, et dont le délai entre deux
+    /// relances est celui-ci.
+    fn stubborn(pc: &Pc, gap: Option<Duration>) -> (Backend, FakeAgent) {
+        let agent = FakeAgent::new(AgentState::Stopped);
+        agent.set_spawn_works(false);
+        let mut desk = GameDesk::new(
+            Arc::new(pc.environment.clone()),
+            Arc::new(FakeHost::new()),
+            Arc::new(agent.clone()),
+            Some(GameStore::at(pc.profile.join("game.json"))),
+        );
+        if let Some(gap) = gap {
+            desk = desk.with_relaunch_gap(gap);
+        }
+        pc.store.save(&Settings { game_mode_auto: true, ..Settings::default() }).unwrap();
+        (backend(pc).with_game(desk), agent)
+    }
+
+    #[test]
+    fn a_stopped_agent_is_not_relaunched_twice_within_ten_seconds() {
+        let pc = pc();
+        let (backend, agent) = stubborn(&pc, None);
+        for _ in 0..5 {
+            assert_eq!(backend.game_view().agent, AgentState::Stopped);
+        }
+        assert_eq!(agent.spawns(), [false], "une seule relance, sans --relacher");
+    }
+
+    #[test]
+    fn relaunches_are_capped_at_three_per_opening_of_shinku() {
+        let pc = pc();
+        let (backend, agent) = stubborn(&pc, Some(Duration::ZERO));
+        for _ in 0..10 {
+            backend.game_view();
+        }
+        assert_eq!(agent.spawns().len(), 3, "trois relances au plus");
+    }
+
+    #[test]
+    fn nothing_is_relaunched_while_the_mode_is_off() {
+        let pc = pc();
+        let (backend, agent) = stubborn(&pc, Some(Duration::ZERO));
+        backend.set_game_option(GameOption::Auto, false).unwrap();
+        let before = agent.spawns().len();
+        for _ in 0..5 {
+            backend.game_view();
+        }
+        assert_eq!(agent.spawns().len(), before);
+    }
+
+    #[test]
+    fn nothing_is_relaunched_when_the_agent_file_is_missing() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Missing);
+        backend.set_game_option(GameOption::Auto, true).unwrap();
+        for _ in 0..3 {
+            assert_eq!(backend.game_view().agent, AgentState::Missing);
+        }
+        assert_eq!(arcade.agent.spawns().iter().filter(|release| **release).count(), 0);
+    }
+
+    #[test]
+    fn releasing_posts_an_order_to_a_running_agent() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Running);
+        backend.release_game();
+        assert_eq!(arcade.agent.orders(), [Order::Release]);
+        assert!(arcade.agent.spawns().is_empty());
+    }
+
+    #[test]
+    fn releasing_without_an_agent_launches_one_only_if_a_game_is_open() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        backend.release_game();
+        assert!(arcade.agent.spawns().is_empty(), "rien à relâcher");
+        let file = GameFile {
+            session: Some(GameSession {
+                game: GameRef {
+                    path: FOO.to_owned(),
+                    name: "Foo".to_owned(),
+                    source: Source::Added,
+                },
+                since: 5,
+                released: false,
+                power: PowerRecord::of(PowerOutcome::Custom),
+                quieted: Vec::new(),
+                restore_pending: false,
+            }),
+            ..GameFile::default()
+        };
+        arcade.store.save(&file).unwrap();
+        backend.release_game();
+        assert_eq!(arcade.agent.spawns(), [true], "un agent est lancé avec --relacher");
+    }
+
+    #[test]
+    fn syncing_at_startup_launches_the_agent_only_when_needed() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        backend.sync_agent();
+        assert!(arcade.agent.spawns().is_empty(), "mode éteint, aucune partie");
+        assert_eq!(arcade.agent.autostart_calls(), [false], "la valeur Run est retirée");
+
+        pc.store.save(&Settings { game_mode_auto: true, ..Settings::default() }).unwrap();
+        let (backend, arcade) = self::arcade(&pc, AgentState::Stopped);
+        backend.sync_agent();
+        assert_eq!(arcade.agent.spawns(), [false]);
+        assert_eq!(arcade.agent.autostart_calls(), [true]);
+    }
+
+    #[test]
+    fn syncing_with_a_game_in_the_journal_launches_the_agent_even_if_the_mode_is_off() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let file = GameFile {
+            session: Some(GameSession {
+                game: GameRef {
+                    path: FOO.to_owned(),
+                    name: "Foo".to_owned(),
+                    source: Source::Added,
+                },
+                since: 5,
+                released: false,
+                power: PowerRecord::of(PowerOutcome::Custom),
+                quieted: Vec::new(),
+                restore_pending: false,
+            }),
+            ..GameFile::default()
+        };
+        arcade.store.save(&file).unwrap();
+        backend.sync_agent();
+        assert_eq!(arcade.agent.spawns(), [false]);
+    }
+
+    #[test]
+    fn windows_settings_pages_open_through_the_agent_control() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        backend.open_windows_settings(WindowsPage::GameMode);
+        backend.open_windows_settings(WindowsPage::Power);
+        assert_eq!(arcade.agent.opened(), [WindowsPage::GameMode, WindowsPage::Power]);
+    }
+
+    #[test]
+    fn the_startup_switched_off_in_windows_is_reported() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Running);
+        arcade.agent.set_autostart_state(crate::platform::agent::Autostart::DisabledInWindows);
+        assert!(backend.game_view().startup_disabled);
+    }
+
+    #[test]
+    fn game_edits_without_a_settings_file_are_refused() {
+        let pc = pc();
+        let backend =
+            Backend::new(Arc::new(pc.environment.clone()), Arc::new(MemoryCache::new()), None);
+        assert!(matches!(
+            backend.set_game_option(GameOption::Auto, true),
+            Err(BackendError::SettingsNotSaved { .. })
+        ));
+        assert!(!backend.game_view().auto);
+    }
+
+    #[test]
+    fn game_refusals_travel_as_plain_json() {
+        let json =
+            serde_json::to_value(BackendError::GameRefused { reason: GameRefusal::ListFull })
+                .unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "gameRefused", "reason": "listFull" }));
+        assert_eq!(
+            BackendError::GameRefused { reason: GameRefusal::NotAGame }.to_string(),
+            "mode jeu : ce programme n'est jamais un jeu"
+        );
+    }
+
+    #[test]
+    fn the_selector_refuses_a_path_that_is_not_the_one_of_the_number() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let open = backend.open_apps();
+        let foo = open.iter().find(|app| app.path == FOO).unwrap();
+        let unknown = BackendError::GameRefused { reason: GameRefusal::UnknownApp };
+        // Le bon numéro, le chemin d'une autre app.
+        assert_eq!(backend.add_game(foo.id, BAR).unwrap_err(), unknown);
+        assert_eq!(backend.add_quiet_app(foo.id, BAR).unwrap_err(), unknown);
+        // Le chemin n'est comparé qu'à l'identique : pas de différence de casse.
+        assert_eq!(backend.add_game(foo.id, &foo.path.to_uppercase()).unwrap_err(), unknown);
+        assert!(saved(&pc).game_mode_games.is_empty(), "rien n'a été ajouté");
+        // La liste change : le même numéro désigne une autre app.
+        arcade_apps_changed(&arcade);
+        let _ = backend.open_apps();
+        assert_eq!(backend.add_game(foo.id, &foo.path).unwrap_err(), unknown);
+    }
+
+    fn arcade_apps_changed(arcade: &Arcade) {
+        arcade.agent.set_open_apps(vec![program(MYCLOUD), program(BAR), program(FOO)]);
+    }
+
+    #[test]
+    fn a_game_launcher_cannot_be_added_to_the_quiet_apps() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        arcade.agent.set_open_apps(vec![program(r"C:\Program Files (x86)\Steam\steam.exe")]);
+        let open = backend.open_apps();
+        assert_eq!(
+            backend.add_quiet_app(open[0].id, &open[0].path).unwrap_err(),
+            BackendError::GameRefused { reason: GameRefusal::ProtectedApp }
+        );
+        assert!(saved(&pc).game_mode_quiet_added.is_empty());
+    }
+
+    #[test]
+    fn an_added_app_shows_the_name_of_its_file_description() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        arcade.host.set_display_name(MYCLOUD, "My Cloud");
+        let open = backend.open_apps();
+        let app = open.iter().find(|app| app.path == MYCLOUD).unwrap();
+        let view = backend.add_quiet_app(app.id, &app.path).unwrap();
+        let added = view.apps.iter().find(|app| app.exe == "mycloud.exe").unwrap();
+        assert_eq!(added.label, "My Cloud", "le nom est lu quand l'app est ouverte, et il reste");
+        // L'app se ferme : le nom noté reste.
+        arcade.agent.set_open_apps(Vec::new());
+        let view = backend.game_view();
+        let added = view.apps.iter().find(|app| app.exe == "mycloud.exe").unwrap();
+        assert_eq!(added.label, "My Cloud");
+    }
+
+    #[test]
+    fn only_the_excluded_folders_block_a_scan() {
+        let unreadable = LoadIssue::Unreadable { reason: "x".to_owned() };
+        assert!(blocks_scan(&unreadable));
+        assert!(blocks_scan(&LoadIssue::Partial { fields: vec![EXCLUDED_FIELD] }));
+        assert!(!blocks_scan(&LoadIssue::Partial {
+            fields: vec!["gameModeGames", "gameModeQuietAdded", "gameModeAuto"]
+        }));
+    }
+
+    #[test]
+    fn two_quick_changes_leave_the_autostart_as_the_latest_one_wants() {
+        let pc = pc();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let backend = Arc::new(backend);
+        arcade.agent.set_autostart_delay(Duration::from_millis(150));
+        let first = {
+            let backend = Arc::clone(&backend);
+            std::thread::spawn(move || backend.set_game_option(GameOption::Auto, true).unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(40));
+        backend.set_game_option(GameOption::Auto, false).unwrap();
+        first.join().unwrap();
+        assert_eq!(
+            arcade.agent.autostart_calls().last(),
+            Some(&false),
+            "le plus récent des deux changements a le dernier mot : {:?}",
+            arcade.agent.autostart_calls()
+        );
+    }
+
+    #[test]
+    fn a_change_that_waits_for_the_agent_sync_applies_the_settings_of_the_moment() {
+        let pc = pc();
+        pc.store.save(&Settings { game_mode_auto: true, ..Settings::default() }).unwrap();
+        let (backend, arcade) = arcade(&pc, AgentState::Stopped);
+        let backend = Arc::new(backend);
+        // Le premier changement (éteindre) s'arrête entre son enregistrement et
+        // la mise en accord de l'agent.
+        let (release, hold) = std::sync::mpsc::channel();
+        *backend.hold_before_sync.lock().unwrap() = Some(hold);
+        let first = {
+            let backend = Arc::clone(&backend);
+            std::thread::spawn(move || backend.set_game_option(GameOption::Auto, false).unwrap())
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while saved(&pc).game_mode_auto && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!saved(&pc).game_mode_auto, "le premier changement est enregistré");
+        // Le second (rallumer) passe tout entier pendant ce temps.
+        backend.set_game_option(GameOption::Auto, true).unwrap();
+        release.send(()).unwrap();
+        first.join().unwrap();
+        assert!(saved(&pc).game_mode_auto);
+        assert_eq!(
+            arcade.agent.autostart_calls().last(),
+            Some(&true),
+            "la mise en accord du premier lit les réglages d'à présent : {:?}",
+            arcade.agent.autostart_calls()
+        );
     }
 }

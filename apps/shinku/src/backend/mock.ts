@@ -17,17 +17,31 @@ import type {
   CleanStop,
   DuplicateGroup,
   DuplicatesPage,
+  GameOption,
+  GameRefusal,
+  GameSession,
+  GameStatus,
+  GameView,
   JunkReport,
+  KnownGame,
   LargeFile,
   LargeFilesPage,
+  LastGame,
   LeftOpen,
   LoadIssue,
+  OpenApp,
   Overview,
+  PowerOutcome,
   Phase,
   Progress,
+  QuietApp,
   RecycleBin,
   SessionView,
   Settings,
+  StartupEntry,
+  StartupRefusal,
+  StartupScope,
+  StartupView,
   StepState,
   Summary,
   Theme,
@@ -38,6 +52,29 @@ import { keepIn } from '../model/duplicates.ts';
 const GB = 1024 ** 3;
 const MB = 1024 ** 2;
 const DAY = 24 * 3600 * 1000;
+
+/** Ce que la démo montre du mode jeu (`?game=…&agent=…&power=…&startup=…`). */
+export interface GameDemo {
+  /** Où en est la partie : éteint, en veille, en jeu, remis en place, remise en attente. */
+  state: 'off' | 'idle' | 'playing' | 'released' | 'pending';
+  agent: 'running' | 'stopped' | 'missing';
+  power: 'available' | 'unavailable' | 'unsuited' | 'battery';
+  startup: 'enabled' | 'disabled';
+}
+
+/** Ce que la démo montre du démarrage (`?boot=few|many|empty&bootfail=1&bootread=user|machine&bootload=fail&bootshinku=off`). */
+export interface BootDemo {
+  /** Les apps inscrites : quelques-unes, une quarantaine, ou aucune. */
+  data: 'few' | 'many' | 'empty';
+  /** Tout changement échoue. */
+  fail: boolean;
+  /** La portée dont une place n'a pas pu être lue, ou aucune. */
+  read: 'all' | 'user' | 'machine';
+  /** La première lecture de la vue échoue (`?bootload=fail`) ; « Réessayer » la réussit. */
+  load: 'ok' | 'fail';
+  /** Shinku est coupé dans Windows (`?bootshinku=off`). */
+  shinku: 'on' | 'off';
+}
 
 export interface MockOptions {
   /** Accélère l'analyse simulée (1 : durée normale, environ 7 secondes). */
@@ -56,11 +93,18 @@ export interface MockOptions {
   clean: 'smooth' | 'rough' | 'halt';
   /** Annonce, à l'Accueil, un grand vide interrompu au lancement précédent. */
   interrupted: boolean;
+  /** Ce que la démo montre du mode jeu. */
+  game: GameDemo;
+  /** Ce que la démo montre du démarrage. */
+  boot: BootDemo;
 }
 
 /**
  * Lit les options de la démo dans l'adresse de la page :
  * `?speed=4&theme=light&issue=unreadable&bin=empty&clean=rough&interrupted=1`.
+ * Le mode jeu : `?game=off|idle|playing|released|pending`, `?agent=missing|stopped`,
+ * `?power=unavailable|unsuited|battery`, `?startup=disabled`.
+ * Le démarrage : `?boot=few|many|empty`, `?bootfail=1`, `?bootread=user|machine`, `?bootload=fail`, `?bootshinku=off`.
  */
 export function demoOptions(search: string): MockOptions {
   const query = new URLSearchParams(search);
@@ -68,6 +112,11 @@ export function demoOptions(search: string): MockOptions {
   const issue = query.get('issue');
   const theme = query.get('theme');
   const clean = query.get('clean');
+  const game = query.get('game');
+  const agent = query.get('agent');
+  const power = query.get('power');
+  const boot = query.get('boot');
+  const read = query.get('bootread');
   return {
     speed: Number.isFinite(speed) && speed > 0 ? speed : 1,
     issue: issue === 'unreadable' || issue === 'partial' ? issue : 'none',
@@ -75,7 +124,225 @@ export function demoOptions(search: string): MockOptions {
     theme: theme === 'light' || theme === 'dark' ? theme : 'system',
     clean: clean === 'rough' || clean === 'halt' ? clean : 'smooth',
     interrupted: query.get('interrupted') === '1',
+    game: {
+      state:
+        game === 'idle' || game === 'playing' || game === 'released' || game === 'pending' ? game : 'off',
+      agent: agent === 'missing' || agent === 'stopped' ? agent : 'running',
+      power: power === 'unavailable' || power === 'unsuited' || power === 'battery' ? power : 'available',
+      startup: query.get('startup') === 'disabled' ? 'disabled' : 'enabled',
+    },
+    boot: {
+      data: boot === 'many' || boot === 'empty' ? boot : 'few',
+      fail: query.get('bootfail') === '1',
+      read: read === 'user' || read === 'machine' ? read : 'all',
+      load: query.get('bootload') === 'fail' ? 'fail' : 'ok',
+      shinku: query.get('bootshinku') === 'off' ? 'off' : 'on',
+    },
   };
+}
+
+// ── Le mode jeu de la démo ─────────────────────────────────────────────────
+
+/** Les apps que le cœur propose d'office : `on` est leur état d'origine. */
+const BUILT_IN_APPS: ReadonlyArray<{ exe: string; label: string; on: boolean }> = [
+  { exe: 'onedrive.exe', label: 'OneDrive', on: true },
+  { exe: 'dropbox.exe', label: 'Dropbox', on: true },
+  { exe: 'googledrivefs.exe', label: 'Google Drive', on: true },
+  { exe: 'chrome.exe', label: 'Google Chrome', on: false },
+  { exe: 'msedge.exe', label: 'Microsoft Edge', on: false },
+  { exe: 'firefox.exe', label: 'Firefox', on: false },
+  { exe: 'brave.exe', label: 'Brave', on: false },
+  { exe: 'opera.exe', label: 'Opera', on: false },
+  { exe: 'vivaldi.exe', label: 'Vivaldi', on: false },
+];
+
+const fileName = (path: string): string => path.slice(path.lastIndexOf('\\') + 1).toLowerCase();
+
+/** Les apps qui tournent dans la démo, en plus des programmes ouverts ci-dessous. */
+const RUNNING_APPS: ReadonlySet<string> = new Set(['onedrive.exe', 'chrome.exe', 'qbittorrent.exe']);
+
+/**
+ * Les programmes ouverts de la démo : quatre que le sélecteur propose (dont un
+ * lanceur que le cœur refuse comme jeu et comme app en veilleuse), et
+ * l'Explorateur de Windows, que le cœur ne propose jamais (nom protégé).
+ */
+const OPEN_PROGRAMS: ReadonlyArray<{ name: string; path: string }> = [
+  { name: 'Roblox', path: 'C:\\Users\\Léa\\AppData\\Local\\Roblox\\Versions\\version-1a2b3c4d\\RobloxPlayerBeta.exe' },
+  { name: 'Notepad++', path: 'C:\\Program Files\\Notepad++\\notepad++.exe' },
+  { name: 'VLC media player', path: 'C:\\Program Files\\VideoLAN\\VLC\\vlc.exe' },
+  { name: 'Battle.net', path: 'C:\\Program Files (x86)\\Battle.net\\Battle.net.exe' },
+  { name: 'Explorateur Windows', path: 'C:\\Windows\\explorer.exe' },
+];
+
+/** Les noms de fichier que le cœur ne propose ni ne met jamais en veilleuse. */
+const PROTECTED_EXES: ReadonlySet<string> = new Set(['explorer.exe']);
+
+/** Les lanceurs de jeux : jamais mis en veilleuse (règle du cœur), refusés comme « protégés ». */
+const LAUNCHER_EXES: ReadonlySet<string> = new Set(['steam.exe', 'epicgameslauncher.exe', 'battle.net.exe']);
+
+/** Les bornes des listes du cœur (`MAX_GAME_PATHS` et `MAX_EXE_NAMES`, crates/shinku-core/src/settings.rs). */
+export const GAME_LIST_LIMIT = 256;
+export const QUIET_LIST_LIMIT = 64;
+
+/** Les noms d'affichage que le cœur lit sur une app ouverte. */
+const DISPLAY_NAMES: ReadonlyMap<string, string> = new Map([
+  ['qbittorrent.exe', 'qBittorrent'],
+  ...OPEN_PROGRAMS.map((program): [string, string] => [fileName(program.path), program.name]),
+]);
+
+/** Les programmes que le cœur ne laisse jamais ajouter comme jeu. */
+const NEVER_GAMES: ReadonlySet<string> = new Set(['vlc.exe', 'battle.net.exe']);
+
+const HOLLOW_PEAKS = 'D:\\SteamLibrary\\steamapps\\common\\Hollow Peaks\\hp.exe';
+const MINECRAFT = 'C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.9.9-hotspot\\bin\\javaw.exe';
+
+const samePath = (left: string, right: string): boolean => left.toLowerCase() === right.toLowerCase();
+// ── Le démarrage de la démo ────────────────────────────────────────────────
+
+/**
+ * L'identifiant d'une entrée : les deux lettres de la place, un tiret, seize
+ * chiffres hexadécimaux. Il a la forme de celui du cœur (un FNV-1a 64 bits du
+ * nom) ; la démo n'a pas besoin de la même valeur.
+ */
+function startupId(place: 'ur' | 'uw' | 'uf' | 'mr' | 'mw' | 'mf', name: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let index = 0; index < name.length; index += 1) {
+    hash = ((hash ^ BigInt(name.charCodeAt(index))) * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return `${place}-${hash.toString(16).padStart(16, '0')}`;
+}
+
+/** Ce que la démo écrit d'une entrée ; le reste (identifiant, portée, réglable) s'en déduit. */
+interface BootSeed {
+  place: 'ur' | 'uw' | 'uf' | 'mr' | 'mw' | 'mf';
+  raw: string;
+  name: string;
+  alias?: string | undefined;
+  publisher?: string | undefined;
+  state?: StartupEntry['state'] | undefined;
+  /** Il y a combien de jours Windows a noté la coupure. */
+  cutDaysAgo?: number | undefined;
+  /** La coupure a eu lieu à cette date (mois à partir de 0, jour, années avant maintenant). */
+  cutOn?: { month: number; day: number; yearsAgo: number } | undefined;
+  mark?: 'cutByShinku' | 'cameBack' | undefined;
+  target?: StartupEntry['target'] | undefined;
+  host?: string | undefined;
+  sync?: boolean | undefined;
+  own?: boolean | undefined;
+}
+
+function bootEntry(seed: BootSeed, now: number): StartupEntry {
+  const machine = seed.place.startsWith('m');
+  const state = seed.state ?? 'enabled';
+  const cutAt =
+    seed.cutOn !== undefined
+      ? new Date(new Date(now).getFullYear() - seed.cutOn.yearsAgo, seed.cutOn.month, seed.cutOn.day, 9, 41).getTime()
+      : seed.cutDaysAgo === undefined
+        ? null
+        : now - seed.cutDaysAgo * DAY;
+  return {
+    id: startupId(seed.place, seed.raw),
+    name: seed.name,
+    alias: seed.alias ?? null,
+    // Le cœur ne lit l'éditeur que dans le fichier qu'il a trouvé.
+    publisher: (seed.target ?? 'found') === 'found' ? (seed.publisher ?? null) : null,
+    scope: machine ? 'machine' : 'user',
+    origin: seed.place.endsWith('f') ? 'folder' : 'registry',
+    state,
+    disabledAt: state === 'disabled' ? cutAt : null,
+    mark:
+      seed.mark === 'cutByShinku' && cutAt !== null
+        ? { kind: 'cutByShinku', at: cutAt }
+        : seed.mark === 'cameBack' && cutAt !== null
+          ? { kind: 'cameBack', cut: cutAt }
+          : null,
+    target: seed.target ?? 'found',
+    host: seed.host ?? null,
+    hint: seed.sync === true && (seed.target ?? 'found') === 'found' ? 'sync' : null,
+    own: seed.own === true,
+    adjustable: !machine && state !== 'unknown' && seed.own !== true,
+  };
+}
+
+const FEW_BOOT: readonly BootSeed[] = [
+  { place: 'ur', raw: 'Discord', name: 'Discord', publisher: 'Discord Inc.' },
+  { place: 'ur', raw: 'Steam', name: 'Steam', publisher: 'Valve Corporation', state: 'disabled', mark: 'cutByShinku', cutDaysAgo: 3 },
+  { place: 'ur', raw: 'OneDrive', name: 'Microsoft OneDrive', alias: 'OneDrive', publisher: 'Microsoft Corporation', sync: true },
+  { place: 'ur', raw: 'Spotify', name: 'Spotify', publisher: 'Spotify AB', mark: 'cameBack', cutDaysAgo: 5 },
+  { place: 'uf', raw: 'Adobe Updater Startup Utility.lnk', name: 'Mise à jour Adobe', target: 'missing' },
+  { place: 'ur', raw: 'Lancement rapide', name: 'Lancement rapide', target: 'hosted', host: 'rundll32.exe' },
+  { place: 'ur', raw: 'Shinku', name: 'Shinku', publisher: 'Shinku', own: true },
+  { place: 'ur', raw: 'Ancien outil', name: 'Ancien outil', state: 'unknown' },
+  { place: 'mr', raw: 'SecurityHealth', name: 'Sécurité Windows', alias: 'SecurityHealth', publisher: 'Microsoft Corporation' },
+  { place: 'mr', raw: 'RtkAudUService', name: 'Realtek HD Audio Universal Service', publisher: 'Realtek Semiconductor' },
+  { place: 'mr', raw: 'LGHUB', name: 'Logitech G HUB', publisher: 'Logitech, Inc.', state: 'disabled', cutOn: { month: 10, day: 2, yearsAgo: 1 } },
+  { place: 'mw', raw: 'SunJavaUpdateSched', name: 'Java Update Scheduler', publisher: 'Oracle Corporation' },
+];
+
+const MANY_NAMES: readonly string[] = [
+  'Adobe Creative Cloud', 'Battle.net', 'Brave', 'Dropbox', 'EA app', 'Epic Games Launcher', 'Figma', 'GeForce Experience',
+  'Google Drive', 'iCloud', 'Logi Options+', 'Malwarebytes', 'Microsoft Teams', 'NordVPN', 'Notion', 'Opera GX',
+  'Overwolf', 'Razer Synapse', 'Signal', 'Slack', 'Spotify', 'Steam', 'TeamViewer', 'Telegram', 'Ubisoft Connect',
+  'Zoom', 'Corsair iCUE', 'Wacom Tablet', '7-Zip', '1Password', 'AMD Software', 'Bluetooth', 'Intel Driver Assistant',
+  'Lenovo Vantage', 'OneNote', 'qBittorrent', 'Skype', 'VLC', 'Zotero', 'Visual Studio Code',
+];
+
+const MANY_PUBLISHERS: readonly string[] = [
+  'Microsoft Corporation',
+  'Adobe Inc.',
+  'Google LLC',
+  'Valve Corporation',
+  'Razer Inc.',
+  'Mozilla Foundation',
+  'Logitech, Inc.',
+];
+
+function manyBoot(): BootSeed[] {
+  return MANY_NAMES.map((name, index): BootSeed => {
+    const machine = index % 4 === 3;
+    const place = machine ? (index % 8 === 3 ? 'mr' : 'mf') : index % 7 === 0 ? 'uf' : index % 5 === 0 ? 'uw' : 'ur';
+    const kind = index % 9;
+    return {
+      place,
+      raw: `${name}${place === 'mf' || place === 'uf' ? '.lnk' : ''}`,
+      name,
+      publisher: kind === 5 ? undefined : MANY_PUBLISHERS[index % MANY_PUBLISHERS.length],
+      state: kind === 1 || kind === 2 ? 'disabled' : kind === 7 && !machine ? 'unknown' : 'enabled',
+      cutDaysAgo: kind === 1 ? index : kind === 2 ? 40 + index : kind === 6 ? 2 + (index % 9) : undefined,
+      mark: kind === 1 ? 'cutByShinku' : kind === 6 ? 'cameBack' : undefined,
+      target: kind === 3 ? 'missing' : kind === 4 ? 'hosted' : kind === 8 ? 'unknown' : 'found',
+      host: kind === 4 ? 'javaw.exe' : undefined,
+      alias: kind === 0 ? `${name.toLowerCase().replaceAll(' ', '')}.exe` : undefined,
+      sync: index % 6 === 0,
+    };
+  });
+}
+
+const gameRefused = (reason: GameRefusal): Promise<never> => Promise.reject({ kind: 'gameRefused', reason });
+const startupRefused = (reason: StartupRefusal): Promise<never> =>
+  Promise.reject({ kind: 'startupRefused', reason });
+
+/**
+ * Comme le cœur (`startup/mod.rs`) : le compte d'abord, puis le PC ; dans chaque portée, par nom en
+ * minuscules, puis nom d'inscription en minuscules (l'absence d'abord), puis identifiant. La
+ * comparaison est celle des points de code, pas celle d'une langue.
+ */
+function sortedBoot(entries: readonly StartupEntry[]): StartupEntry[] {
+  const rank = (scope: StartupScope): number => (scope === 'user' ? 0 : 1);
+  const text = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
+  return entries.toSorted(
+    (left, right) =>
+      rank(left.scope) - rank(right.scope) ||
+      text(left.name.toLowerCase(), right.name.toLowerCase()) ||
+      (left.alias === null
+        ? right.alias === null
+          ? 0
+          : -1
+        : right.alias === null
+          ? 1
+          : text(left.alias.toLowerCase(), right.alias.toLowerCase())) ||
+      text(left.id, right.id),
+  );
 }
 
 const JUNK: JunkReport = {
@@ -223,7 +490,14 @@ function endOf(run: Cleaning): number {
   return (run.stopAt === null ? last : Math.min(last, run.stopAt)) + WRAP_UP_TIME;
 }
 
-export function mockBackend(options: MockOptions): Backend {
+/** Ce que les essais changent aux listes de départ du mode jeu (les paramètres d'adresse n'y touchent pas). */
+export interface GameSeed {
+  games?: readonly string[];
+  quietAdded?: readonly string[];
+}
+
+export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend {
+  const demo = options.game;
   let settings: Settings = {
     version: 1,
     launchWithWindows: true,
@@ -231,7 +505,6 @@ export function mockBackend(options: MockOptions): Backend {
     theme: options.theme,
     autoScan: 'weekly',
     notifyFromGb: 5,
-    gameModeOnLaunch: true,
     shaderCacheLimitGb: 5,
     recycleBinAlert: true,
     recycleBinThresholdGb: 5,
@@ -240,7 +513,28 @@ export function mockBackend(options: MockOptions): Backend {
     useRecycleBin: true,
     excludedFolders:
       options.issue === 'unreadable' ? [] : ['C:\\Users\\Léa\\Documents\\Projets', 'D:\\Sauvegardes'],
+    gameModeAuto: demo.state !== 'off',
+    gameModePower: true,
+    gameModeQuietApps: true,
+    gameModeQuietAdded: [...(seed.quietAdded ?? ['qbittorrent.exe'])],
+    gameModeQuietRemoved: [],
+    gameModeGames: [...(seed.games ?? [MINECRAFT])],
+    gameModeNotGames: [],
   };
+  let bootEntries: StartupEntry[] = sortedBoot(
+    (options.boot.data === 'few' ? FEW_BOOT : options.boot.data === 'many' ? manyBoot() : []).map((seed) =>
+      bootEntry(
+        seed.own === true && options.boot.shinku === 'off'
+          ? { ...seed, state: 'disabled', cutDaysAgo: 2 }
+          : seed,
+        Date.now(),
+      ),
+    ),
+  );
+  const bootView = (): StartupView => ({
+    entries: structuredClone(bootEntries),
+    unreadable: options.boot.read === 'all' ? [] : [options.boot.read],
+  });
   let issue: LoadIssue | null =
     options.issue === 'unreadable'
       ? { kind: 'unreadable', reason: 'EOF while parsing a value at line 4 column 0' }
@@ -262,6 +556,9 @@ export function mockBackend(options: MockOptions): Backend {
   // Ce qu'un grand vide a emporté : l'analyse suivante ne le retrouve pas.
   let junkGone = false;
   let duplicatesGone = false;
+  /** Le nombre d'apps actives, lu à la fin de la dernière analyse. */
+  let startupCount: number | null = null;
+  let bootLoadFails = options.boot.load === 'fail';
   let cleaning: Cleaning | null = null;
 
   /** L'app que le scénario `rough` laisse ouverte : ses fichiers ne partent pas. */
@@ -313,6 +610,181 @@ export function mockBackend(options: MockOptions): Backend {
     interruptedClean: interrupted,
   });
 
+
+  // ── Le mode jeu simulé ───────────────────────────────────────────────────
+  // Les réglages vivent dans `settings`, comme dans le cœur ; l'agent est
+  // joué par `session`, `last` et `seen`.
+
+  const startedAt = Date.now();
+  const MINUTE = 60_000;
+  /** Les jeux reconnus par bibliothèque déjà joués, le plus récent d'abord. */
+  let seen: Array<{ path: string; name: string; lastPlayed: number }> = [
+    { path: HOLLOW_PEAKS, name: 'Hollow Peaks', lastPlayed: demo.state === 'off' || demo.state === 'idle' ? startedAt - 130 * MINUTE : startedAt - 38 * MINUTE },
+  ];
+  /** Les noms que la démo connaît pour les chemins que la personne a ajoutés. */
+  const names = new Map<string, string>([
+    [MINECRAFT.toLowerCase(), 'Minecraft'],
+    [HOLLOW_PEAKS.toLowerCase(), 'Hollow Peaks'],
+  ]);
+  let last: LastGame | null = {
+    name: 'Hollow Peaks',
+    // Deux heures dix de jeu, finies il y a deux heures dix.
+    started: startedAt - 260 * MINUTE,
+    ended: startedAt - 130 * MINUTE,
+    powerRestored: true,
+    appsRestored: 2,
+    complete: true,
+  };
+  let session: { path: string; name: string; since: number; released: boolean; restorePending: boolean } | null =
+    demo.state === 'playing' || demo.state === 'released' || demo.state === 'pending'
+      ? {
+          path: HOLLOW_PEAKS,
+          name: 'Hollow Peaks',
+          since: startedAt - 38 * MINUTE,
+          released: demo.state === 'released',
+          restorePending: demo.state === 'pending',
+        }
+      : null;
+  /** La dernière liste d'apps ouvertes rendue : les `id` ne valent que pour elle. */
+  let offered: readonly OpenApp[] = [];
+  /**
+   * Ce que l'agent fera à son pas suivant : le cœur poste l'ordre et répond
+   * tout de suite, la partie ne change qu'à la vue demandée ensuite.
+   */
+  let releaseAsked = false;
+  let endAsked = false;
+
+  const isRunning = (exe: string): boolean =>
+    RUNNING_APPS.has(exe) || OPEN_PROGRAMS.some((program) => fileName(program.path) === exe);
+
+  /**
+   * Le libellé d'une app ajoutée : son nom d'affichage quand elle tourne, sinon
+   * son nom de fichier sans « .exe » (comme le cœur ; la démo ne ferme jamais
+   * une app : « déjà vue pendant cette ouverture » revient à « ouverte »).
+   */
+  const addedLabel = (exe: string): string => {
+    const stem = exe.replace(/\.exe$/, '');
+    return isRunning(exe) ? (DISPLAY_NAMES.get(exe) ?? stem) : stem;
+  };
+
+  const gameApps = (): QuietApp[] => [
+    ...BUILT_IN_APPS.map(
+      (app): QuietApp => ({
+        exe: app.exe,
+        label: app.label,
+        on: settings.gameModeQuietAdded.includes(app.exe) || (app.on && !settings.gameModeQuietRemoved.includes(app.exe)),
+        running: isRunning(app.exe),
+        builtIn: true,
+      }),
+    ),
+    ...settings.gameModeQuietAdded
+      .filter((exe) => !BUILT_IN_APPS.some((app) => app.exe === exe))
+      .map((exe): QuietApp => ({ exe, label: addedLabel(exe), on: true, running: isRunning(exe), builtIn: false })),
+  ];
+
+  const powerSupport = (): GameView['powerSupport'] =>
+    demo.power === 'unavailable' || demo.power === 'unsuited' ? demo.power : 'available';
+
+  /** Ce que l'agent a fait de l'alimentation pour la partie en cours. */
+  function powerOutcome(): PowerOutcome {
+    if (!settings.gameModePower) {
+      return 'off';
+    }
+    if (demo.power === 'unavailable' || demo.power === 'unsuited') {
+      return demo.power;
+    }
+    return demo.power === 'battery' ? 'onBattery' : 'applied';
+  }
+
+  const quietedCount = (): number =>
+    settings.gameModeQuietApps ? gameApps().filter((app) => app.on && app.running).length : 0;
+
+  function gameSession(): GameSession | null {
+    if (session === null) {
+      return null;
+    }
+    const released = session.released;
+    return {
+      name: session.name,
+      path: session.path,
+      since: session.since,
+      source: settings.gameModeGames.some((path) => samePath(path, session?.path ?? '')) ? 'added' : 'library',
+      power: released ? 'off' : powerOutcome(),
+      quietedApps: released ? 0 : quietedCount(),
+      released,
+      restorePending: session.restorePending,
+    };
+  }
+
+  /** Les jeux connus : ajoutés (le dernier ajouté d'abord, comme le cœur), puis vus, sans ceux que la personne a écartés. */
+  function gameList(): KnownGame[] {
+    const added = settings.gameModeGames.toReversed().map(
+      (path): KnownGame => ({ path, name: names.get(path.toLowerCase()) ?? fileName(path), source: 'added', lastPlayed: null }),
+    );
+    const known = seen
+      .filter((entry) => ![...settings.gameModeGames, ...settings.gameModeNotGames].some((path) => samePath(path, entry.path)))
+      .map((entry): KnownGame => ({ path: entry.path, name: entry.name, source: 'library', lastPlayed: entry.lastPlayed }));
+    return [...added, ...known];
+  }
+
+  function gameView(): GameView {
+    const auto = settings.gameModeAuto;
+    return {
+      auto,
+      power: settings.gameModePower,
+      quietApps: settings.gameModeQuietApps,
+      agent: demo.agent === 'running' ? (auto || session !== null ? 'running' : 'stopped') : demo.agent,
+      startupDisabled: demo.startup === 'disabled',
+      session: gameSession(),
+      last,
+      powerSupport: powerSupport(),
+      onBattery: demo.power === 'battery',
+      apps: gameApps(),
+      games: gameList(),
+      notGames: settings.gameModeNotGames.map((path) => ({ path, name: names.get(path.toLowerCase()) ?? fileName(path) })),
+    };
+  }
+
+  /** Le pas suivant de l'agent : il exécute les ordres postés depuis la dernière vue. */
+  function agentStep(): void {
+    if (session !== null) {
+      if (endAsked) {
+        endSession();
+      } else if (releaseAsked) {
+        session = { ...session, released: true, restorePending: false };
+      }
+    }
+    releaseAsked = false;
+    endAsked = false;
+  }
+
+  /** Fin de partie : tout est remis en place, le bilan est noté. */
+  function endSession(): void {
+    if (session === null) {
+      return;
+    }
+    const outcome = powerOutcome();
+    last = {
+      name: session.name,
+      started: session.since,
+      ended: Date.now(),
+      powerRestored: outcome === 'applied' && !session.released ? true : null,
+      appsRestored: session.released ? 0 : quietedCount(),
+      complete: true,
+    };
+    const known = seen.filter((entry) => !samePath(entry.path, session?.path ?? ''));
+    seen = [{ path: session.path, name: session.name, lastPlayed: Date.now() }, ...known];
+    session = null;
+  }
+
+  /** Les chemins que le cœur connaît : c'est tout ce qu'`set_game_status` accepte. */
+  const knownGamePath = (path: string): string | undefined =>
+    [...settings.gameModeGames, ...settings.gameModeNotGames, ...seen.map((entry) => entry.path), ...(session === null ? [] : [session.path])].find(
+      (known) => samePath(known, path),
+    );
+
+  const without = (list: readonly string[], path: string): string[] => list.filter((other) => !samePath(other, path));
+
   // Les doublons de l'analyse en cours, avec les exemplaires que la personne a choisi de garder.
   let found: DuplicateGroup[] | null = null;
   const groups = (): DuplicateGroup[] => (duplicatesGone ? [] : (found ??= duplicateGroups(Date.now())));
@@ -341,7 +813,16 @@ export function mockBackend(options: MockOptions): Backend {
         items: large.length,
         state: 'ready',
       },
-      { module: 'startup', lot: 'review', risk: 'C', bytes: 0, items: 0, state: 'unavailable' },
+      {
+        module: 'startup',
+        lot: 'review',
+        risk: 'C',
+        bytes: 0,
+        // Lu une fois, à la fin de l'analyse : couper une app ensuite ne change pas ce compte.
+        items: complete ? (startupCount ??= bootEntries.filter((entry) => entry.state === 'enabled' && !entry.own).length) : 0,
+        // Une place illisible : le cœur ne mesure pas le démarrage.
+        state: options.boot.read !== 'all' ? 'unavailable' : complete ? 'ready' : 'pending',
+      },
     ];
     const autoBytes = categories
       .filter((entry) => entry.lot === 'auto')
@@ -559,6 +1040,7 @@ export function mockBackend(options: MockOptions): Backend {
       cleaning = null;
       interrupted = null;
       found = null;
+      startupCount = null;
       started = Date.now();
       return view();
     },
@@ -730,6 +1212,166 @@ export function mockBackend(options: MockOptions): Backend {
       started = null;
       return structuredClone(settings);
     },
+    gameView: async () => {
+      agentStep();
+      return gameView();
+    },
+    setGameOption: async (option: GameOption, on) => {
+      switch (option) {
+        case 'auto':
+          settings = { ...settings, gameModeAuto: on };
+          if (!on) {
+            // L'agent voit le réglage éteint : la partie se termine, tout est remis.
+            endSession();
+          }
+          break;
+        case 'power':
+          settings = { ...settings, gameModePower: on };
+          break;
+        case 'quietApps':
+          settings = { ...settings, gameModeQuietApps: on };
+          break;
+      }
+      return gameView();
+    },
+    setQuietApp: async (exe, on) => {
+      const known = gameApps().find((app) => app.exe === exe);
+      if (known === undefined) {
+        return gameRefused('unknownApp');
+      }
+      const added = settings.gameModeQuietAdded;
+      if (on) {
+        // Cochée d'office : on la retire des refusées ; sinon on l'ajoute aux choisies.
+        const builtIn = BUILT_IN_APPS.find((app) => app.exe === exe);
+        settings =
+          builtIn?.on === true
+            ? { ...settings, gameModeQuietRemoved: settings.gameModeQuietRemoved.filter((other) => other !== exe) }
+            : { ...settings, gameModeQuietAdded: added.includes(exe) ? added : [...added, exe] };
+      } else {
+        const builtIn = BUILT_IN_APPS.find((app) => app.exe === exe);
+        settings = {
+          ...settings,
+          gameModeQuietAdded: added.filter((other) => other !== exe),
+          gameModeQuietRemoved:
+            builtIn?.on === true && !settings.gameModeQuietRemoved.includes(exe)
+              ? [...settings.gameModeQuietRemoved, exe]
+              : settings.gameModeQuietRemoved,
+        };
+      }
+      return gameView();
+    },
+    openApps: async () => {
+      await delay(250);
+      // Le cœur ne propose pas les noms protégés.
+      offered = OPEN_PROGRAMS.filter((program) => !PROTECTED_EXES.has(fileName(program.path))).map(
+        (program, index): OpenApp => ({ id: index + 1, ...program }),
+      );
+      return offered.map((app) => ({ ...app }));
+    },
+    addGame: async (id, path) => {
+      const app = offered.find((entry) => entry.id === id);
+      // Le chemin n'est que comparé, exactement (casse comprise, comme le cœur) : il doit être celui du numéro, dans la dernière liste du cœur.
+      if (app === undefined || app.path !== path) {
+        return gameRefused('unknownApp');
+      }
+      if (NEVER_GAMES.has(fileName(app.path))) {
+        return gameRefused('notAGame');
+      }
+      if (!settings.gameModeGames.some((other) => samePath(other, app.path)) && settings.gameModeGames.length >= GAME_LIST_LIMIT) {
+        return gameRefused('listFull');
+      }
+      names.set(app.path.toLowerCase(), app.name);
+      settings = {
+        ...settings,
+        gameModeGames: [...without(settings.gameModeGames, app.path), app.path],
+        gameModeNotGames: without(settings.gameModeNotGames, app.path),
+      };
+      return gameView();
+    },
+    addQuietApp: async (id, path) => {
+      const app = offered.find((entry) => entry.id === id);
+      if (app === undefined || app.path !== path) {
+        return gameRefused('unknownApp');
+      }
+      const exe = fileName(app.path);
+      if (PROTECTED_EXES.has(exe) || LAUNCHER_EXES.has(exe)) {
+        return gameRefused('protectedApp');
+      }
+      const builtIn = BUILT_IN_APPS.find((entry) => entry.exe === exe);
+      if (builtIn?.on === true) {
+        settings = { ...settings, gameModeQuietRemoved: settings.gameModeQuietRemoved.filter((other) => other !== exe) };
+      } else if (!settings.gameModeQuietAdded.includes(exe)) {
+        if (settings.gameModeQuietAdded.length >= QUIET_LIST_LIMIT) {
+          return gameRefused('listFull');
+        }
+        settings = { ...settings, gameModeQuietAdded: [...settings.gameModeQuietAdded, exe] };
+      }
+      return gameView();
+    },
+    setGameStatus: async (path: string, status: GameStatus) => {
+      const known = knownGamePath(path);
+      if (known === undefined) {
+        return gameRefused('unknownGame');
+      }
+      if (status === 'notGame') {
+        settings = {
+          ...settings,
+          gameModeGames: without(settings.gameModeGames, known),
+          gameModeNotGames: [...without(settings.gameModeNotGames, known), known],
+        };
+        if (session !== null && samePath(session.path, known)) {
+          // Ce n'est plus un jeu : l'agent finira la partie à son pas suivant.
+          endAsked = true;
+        }
+      } else {
+        settings = {
+          ...settings,
+          gameModeGames: without(settings.gameModeGames, known),
+          gameModeNotGames: without(settings.gameModeNotGames, known),
+        };
+      }
+      return gameView();
+    },
+    releaseGame: async () => {
+      if (session !== null) {
+        // L'agent remettra tout en place à son pas suivant ; la partie continue sans rien appliquer.
+        releaseAsked = true;
+      }
+      return gameView();
+    },
+    startupView: async () => {
+      if (bootLoadFails) {
+        bootLoadFails = false;
+        throw new Error('démo : la première lecture échoue');
+      }
+      return bootView();
+    },
+    setStartupEntry: async (id, enabled) => {
+      // L'ordre du cœur : l'entrée inconnue, puis celle qu'on ne règle pas, puis l'échec.
+      const entry = bootEntries.find((other) => other.id === id);
+      if (entry === undefined) {
+        return startupRefused('unknownEntry');
+      }
+      if (!entry.adjustable) {
+        return startupRefused('notAdjustable');
+      }
+      if (options.boot.fail) {
+        return startupRefused('failed');
+      }
+      if ((entry.state === 'enabled') !== enabled) {
+        const now = Date.now();
+        bootEntries = bootEntries.map(
+          (other): StartupEntry =>
+            other.id !== id
+              ? other
+              : enabled
+                ? { ...other, state: 'enabled', disabledAt: null, mark: null }
+                : { ...other, state: 'disabled', disabledAt: now, mark: { kind: 'cutByShinku', at: now } },
+        );
+      }
+      return bootView();
+    },
+    openWindowsSettings: async () => {},
     minimizeWindow: async () => {},
     toggleMaximizeWindow: async () => {},
     closeWindow: async () => {},

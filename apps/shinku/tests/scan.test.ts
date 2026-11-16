@@ -56,13 +56,13 @@ function view(
 
 const statuses = (session: SessionView) => scanRows(session).map((row) => `${row.id}:${row.status}`);
 
-test('avant toute analyse, chaque ligne attend, et Démarrage est annoncé pour plus tard', () => {
+test('avant toute analyse, chaque ligne attend, Démarrage comme les autres', () => {
   assert.deepEqual(statuses(view('idle', 'preparing', null)), [
     'junkFiles:waiting',
     'duplicates:waiting',
     'recycleBin:waiting',
     'largeFiles:waiting',
-    'startup:soon',
+    'startup:waiting',
   ]);
 });
 
@@ -73,7 +73,7 @@ test('pendant le parcours, les fichiers inutiles et les gros fichiers se compten
     'duplicates:waiting',
     'recycleBin:waiting',
     'largeFiles:running',
-    'startup:soon',
+    'startup:waiting',
   ]);
   const junk = scanRows(session)[0];
   assert.deepEqual(junk, { id: 'junkFiles', status: 'running', bytes: 2 * GB });
@@ -94,7 +94,7 @@ test('après le parcours, seuls les doublons sont encore en cours', () => {
     'duplicates:running',
     'recycleBin:done',
     'largeFiles:done',
-    'startup:soon',
+    'startup:waiting',
   ]);
   assert.deepEqual(scanRows(session)[1], { id: 'duplicates', status: 'running', percent: 25 });
   assert.equal(duplicatesPercent(session), 25);
@@ -109,6 +109,24 @@ test('une catégorie non mesurée le dit, au lieu d’afficher zéro', () => {
   assert.equal(rows[2]?.status, 'unavailable');
   // Gros fichiers absents du rapport : la ligne attend, elle n'invente rien.
   assert.equal(rows[3]?.status, 'waiting');
+});
+
+test('la ligne Démarrage est terminée avec le nombre d’apps inscrites, ou non mesurée', () => {
+  const startup = (state: CategorySummary['state'], items: number): CategorySummary => ({
+    module: 'startup',
+    lot: 'review',
+    risk: 'C',
+    bytes: 0,
+    items,
+    state,
+  });
+  const done = scanRows(view('results', 'done', summary(true, [...FOUND, startup('ready', 5)])))[4];
+  assert.deepEqual(done, { id: 'startup', status: 'done', bytes: 0, items: 5, lot: 'review' });
+  // Une place illisible : le cœur ne mesure pas, la ligne le dit.
+  const unavailable = scanRows(view('results', 'done', summary(true, [...FOUND, startup('unavailable', 0)])))[4];
+  assert.deepEqual(unavailable, { id: 'startup', status: 'unavailable' });
+  // Le démarrage ne compte jamais dans le grand chiffre.
+  assert.equal(counterBytes(view('results', 'done', summary(true, [...FOUND, startup('ready', 5)]))), 9 * GB);
 });
 
 test('l’anneau avance d’un bout à l’autre sans jamais reculer', () => {
@@ -137,7 +155,8 @@ test('le grand chiffre de l’analyse ne compte que le lot automatique', () => {
   assert.equal(counterBytes(session), 9 * GB);
   // Chaque ligne terminée porte son lot : l'écran dit pourquoi un chiffre ne compte pas.
   const lots = scanRows(session).map((row) => (row.status === 'done' ? `${row.id}:${row.lot}` : `${row.id}:${row.status}`));
-  assert.deepEqual(lots, ['junkFiles:auto', 'duplicates:optional', 'recycleBin:auto', 'largeFiles:review', 'startup:soon']);
+  // Sans la catégorie Démarrage dans le rapport, sa ligne attend : elle n'invente rien.
+  assert.deepEqual(lots, ['junkFiles:auto', 'duplicates:optional', 'recycleBin:auto', 'largeFiles:review', 'startup:waiting']);
 });
 
 test('les doublons ne sont jamais cochés d’office', () => {

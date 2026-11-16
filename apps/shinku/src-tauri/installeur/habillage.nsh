@@ -3,7 +3,8 @@
 ; Ce fichier est celui de `bundle.windows.nsis.installerHooks` (voir
 ; tauri.conf.json). Le modele NSIS de Tauri l'inclut AVANT les pages de
 ; l'assistant. Il ne contient donc que ce qui doit etre dit avant elles : les
-; reglages de Modern UI, la re-declaration de quatre pages, les deux hooks.
+; reglages de Modern UI, la re-declaration de cinq pages, les quatre hooks
+; (qui appellent aussi ceux de l'agent du mode jeu, agent.nsh).
 ; Il reste en ASCII strict (tests/installer.test.ts le verifie), et les
 ; textes, en UTF-8, sont dans textes.nsh, inclus plus bas avec /CHARSET=UTF8 :
 ; ainsi les textes ne dependent pas de l'option -INPUTCHARSET que Tauri passe
@@ -122,50 +123,92 @@
 
 ; --- Hooks de Tauri ---
 
-; Le modele de Tauri garde la page d'installation affichee jusqu'a un clic
-; (MUI_FINISHPAGE_NOAUTOCLOSE, pour lire la liste des details en cas de
-; probleme). Ici la liste est masquee : la page passe seule a la page Termine.
-; Ce hook n'est atteint que si l'installation a reussi ; en cas d'echec, la
-; page reste affichee avec l'en-tete "Installation interrompue".
+; Tauri n'accepte qu'un fichier de hooks et NSIS une seule definition par
+; macro : les quatre hooks sont donc tous ici. Ce qui concerne l'agent du mode
+; jeu (shinku-agent.exe, que Tauri n'embarque pas tout seul) est dans
+; agent.nsh, sous forme de macros ShinkuAgent* ; chaque hook les appelle, puis
+; fait ce qui est propre a l'habillage.
+!include "${SHINKU_INSTALLEUR}\agent.nsh"
+
+; Avant toute copie : l'ancien agent, s'il tourne, verrouille son fichier.
+!macro NSIS_HOOK_PREINSTALL
+  !insertmacro ShinkuAgentPreInstall
+!macroend
+
+; L'agent est depose a cote de shinku.exe. Puis : le modele de Tauri garde la
+; page d'installation affichee jusqu'a un clic (MUI_FINISHPAGE_NOAUTOCLOSE,
+; pour lire la liste des details en cas de probleme). Ici la liste est
+; masquee : la page passe seule a la page Termine. Ce hook n'est atteint que si
+; l'installation a reussi ; en cas d'echec, la page reste affichee avec
+; l'en-tete "Installation interrompue".
 !macro NSIS_HOOK_POSTINSTALL
+  !insertmacro ShinkuAgentPostInstall
   SetAutoClose true
 !macroend
 
+; Avant de retirer quoi que ce soit : l'agent remet tout en place et son
+; fichier part.
+!macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro ShinkuAgentPreUninstall
+!macroend
+
 ; Shinku range ses reglages dans %APPDATA%\Shinku (crates/shinku-core/src/settings.rs,
-; APP_DIR), pas sous l'identifiant du paquet : la case "Supprimer aussi mes
-; reglages" de Tauri ne les supprime donc pas. Ce hook, place par le modele a
-; la fin de la section Uninstall, le fait a sa place : seulement si la case est
-; cochee et hors mise a jour. $APPDATA est celui de l'utilisateur
+; APP_DIR) et les journaux du mode jeu et du Demarrage dans
+; %LOCALAPPDATA%\Shinku (game/store.rs, startup/store.rs), pas sous
+; l'identifiant du paquet : la case "Supprimer aussi mes reglages" de Tauri ne
+; les supprime donc pas. Ce hook, place par le modele a la fin de la section
+; Uninstall, le fait a sa place : seulement si la case est cochee et hors mise
+; a jour. $APPDATA et $LOCALAPPDATA sont ceux de l'utilisateur
 ; (SetShellVarContext current, comme le fait Tauri pour ses propres dossiers)
-; et non celui de "tous les utilisateurs", que l'installation pour toute la
-; machine selectionne par defaut.
+; et non ceux de "tous les utilisateurs", que l'installation pour toute la
+; machine selectionne par defaut. L'agent passe avant ce bloc : il lit encore
+; ses fichiers pour tout remettre en place, et ne doit pas heriter du contexte
+; "current".
 ;
 ; Pas de "RMDir /r" : il suit les jonctions, et le desinstalleur tourne avec
-; les droits d'administrateur sur un dossier que n'importe quel programme de
-; l'utilisateur peut modifier. On ne touche pas au dossier s'il est un point
+; les droits d'administrateur sur des dossiers que n'importe quel programme de
+; l'utilisateur peut modifier. On ne touche pas a un dossier s'il est un point
 ; d'analyse (jonction ou lien), on supprime un par un les fichiers que Shinku
 ; y ecrit, puis "RMDir" sans /r, qui ne retire le dossier que s'il est vide.
-; Tout nouveau fichier ecrit par Shinku dans ce dossier doit etre ajoute a
-; cette liste (aujourd'hui : settings.rs et clean/journal.rs, avec leurs
-; fichiers temporaires ".tmp" de write_replacing).
-!macro NSIS_HOOK_POSTUNINSTALL
-  ${If} $DeleteAppDataCheckboxState = 1
-  ${AndIf} $UpdateMode <> 1
-    SetShellVarContext current
-    ${If} $APPDATA != ""
-      ; -1 : le dossier n'existe pas. Bit 0x400 : point d'analyse.
-      System::Call 'kernel32::GetFileAttributesW(w "$APPDATA\Shinku") i .r0'
-      ${If} $0 <> -1
-        IntOp $0 $0 & 0x400
-        ${If} $0 = 0
-          Delete "$APPDATA\Shinku\settings.json"
-          Delete "$APPDATA\Shinku\settings.illisible.json"
-          Delete "$APPDATA\Shinku\journal.json"
-          Delete "$APPDATA\Shinku\settings.json.tmp"
-          Delete "$APPDATA\Shinku\journal.json.tmp"
-          RMDir "$APPDATA\Shinku"
-        ${EndIf}
+; Tout nouveau fichier ecrit par Shinku dans ces dossiers doit etre ajoute a
+; ces listes (aujourd'hui : settings.rs, clean/journal.rs, game/store.rs et
+; startup/store.rs, avec leurs fichiers temporaires ".tmp" de write_replacing).
+!macro ShinkuDeleteSettings
+  SetShellVarContext current
+  ${If} $APPDATA != ""
+    ; -1 : le dossier n'existe pas. Bit 0x400 : point d'analyse.
+    System::Call 'kernel32::GetFileAttributesW(w "$APPDATA\Shinku") i .r0'
+    ${If} $0 <> -1
+      IntOp $0 $0 & 0x400
+      ${If} $0 = 0
+        Delete "$APPDATA\Shinku\settings.json"
+        Delete "$APPDATA\Shinku\settings.illisible.json"
+        Delete "$APPDATA\Shinku\journal.json"
+        Delete "$APPDATA\Shinku\settings.json.tmp"
+        Delete "$APPDATA\Shinku\journal.json.tmp"
+        RMDir "$APPDATA\Shinku"
       ${EndIf}
     ${EndIf}
+  ${EndIf}
+  ${If} $LOCALAPPDATA != ""
+    System::Call 'kernel32::GetFileAttributesW(w "$LOCALAPPDATA\Shinku") i .r0'
+    ${If} $0 <> -1
+      IntOp $0 $0 & 0x400
+      ${If} $0 = 0
+        Delete "$LOCALAPPDATA\Shinku\game.json"
+        Delete "$LOCALAPPDATA\Shinku\game.json.tmp"
+        Delete "$LOCALAPPDATA\Shinku\startup.json"
+        Delete "$LOCALAPPDATA\Shinku\startup.json.tmp"
+        RMDir "$LOCALAPPDATA\Shinku"
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  !insertmacro ShinkuAgentPostUninstall
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    !insertmacro ShinkuDeleteSettings
   ${EndIf}
 !macroend

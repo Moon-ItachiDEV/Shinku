@@ -14,8 +14,8 @@
 #   deja-installe relance l'installeur : la page « Shinku est déjà installé »,
 #                 puis Annuler. Rien ne doit changer sur le disque ;
 #   desinstaller  lance uninstall.exe, coche « Supprimer aussi mes réglages »
-#                 et vérifie que le dossier d'installation et
-#                 %APPDATA%\Shinku ont disparu.
+#                 et vérifie que le dossier d'installation, %APPDATA%\Shinku
+#                 et %LOCALAPPDATA%\Shinku ont disparu.
 #
 #   powershell -File scripts\essai-installeur.ps1 -Installeur setup.exe -Captures captures -Etape installer
 #
@@ -436,6 +436,8 @@ $programmes = $env:ProgramW6432
 if (-not $programmes) { $programmes = $env:ProgramFiles }
 $dossier = Join-Path $programmes 'Shinku'
 $reglages = Join-Path $env:APPDATA 'Shinku'
+# Les journaux du mode jeu et du Démarrage (game.json, startup.json).
+$journaux = Join-Path $env:LOCALAPPDATA 'Shinku'
 
 function Verifier-Existe([string]$chemin, [string]$quoi) {
     if (-not (Test-Path -LiteralPath $chemin)) {
@@ -543,6 +545,7 @@ function Etape-Installer {
     Dire "installeur terminé, code $code"
 
     Verifier-Existe (Join-Path $dossier 'shinku.exe') 'shinku.exe'
+    Verifier-Existe (Join-Path $dossier 'shinku-agent.exe') 'shinku-agent.exe'
     Verifier-Existe (Join-Path $dossier 'uninstall.exe') 'uninstall.exe'
     $surBureau = @(Raccourcis $bureaux)
     if ($surBureau.Count -gt 0) {
@@ -594,6 +597,13 @@ function Etape-Desinstaller {
     if (-not (Test-Path -LiteralPath $fichier)) {
         Set-Content -LiteralPath $fichier -Value '{}' -Encoding ASCII
     }
+    New-Item -ItemType Directory -Force -Path $journaux | Out-Null
+    foreach ($nom in 'game.json', 'startup.json') {
+        $fichier = Join-Path $journaux $nom
+        if (-not (Test-Path -LiteralPath $fichier)) {
+            Set-Content -LiteralPath $fichier -Value '{}' -Encoding ASCII
+        }
+    }
 
     # Le désinstalleur se recopie dans le dossier temporaire et s'y relance : le
     # processus lancé s'arrête aussitôt, d'où l'attente de la fenêtre par son titre.
@@ -641,6 +651,7 @@ function Etape-Desinstaller {
     }
     Verifier-Absent $dossier "Le dossier d'installation"
     Verifier-Absent $reglages 'Le dossier de réglages %APPDATA%\Shinku'
+    Verifier-Absent $journaux 'Le dossier des journaux %LOCALAPPDATA%\Shinku'
     $restes = @(Raccourcis $menus)
     if ($restes.Count -gt 0) {
         Echouer ('Un raccourci du menu Démarrer est resté : ' + ($restes -join ', '))
