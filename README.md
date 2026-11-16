@@ -110,11 +110,12 @@ npm run tauri dev  # Windows : la vraie fenêtre, rechargée à chaque changemen
 npm run tauri build  # Windows : shinku.exe, shinku-agent.exe et l'installeur
 ```
 
-L'installeur est écrit dans `target/release/bundle/nsis/`. Il embarque
-`shinku-agent.exe`, compilé juste avant par `beforeBuildCommand`
-(`target/release/`) : un `tauri build` avec `--target` ne le trouverait pas. Les
-crochets qui le déposent et le font sortir sont dans
-`apps/shinku/src-tauri/installeur/agent.nsh`.
+L'installeur est écrit dans `target/release/bundle/nsis/`. Son habillage
+(images, textes) est dans `apps/shinku/src-tauri/installeur/` ; voir
+`docs/conception.md`. Il embarque `shinku-agent.exe`, compilé juste avant par
+`beforeBuildCommand` (`target/release/`) : un `tauri build` avec `--target` ne
+le trouverait pas. Les crochets qui le déposent et le font sortir sont dans
+`apps/shinku/src-tauri/installeur/agent.nsh`, appelés depuis `habillage.nsh`.
 
 La démo accepte quelques réglages dans son adresse : `?theme=light` ou
 `?theme=dark`, `?speed=20` (analyse accélérée), `?bin=empty` (corbeille vide),
@@ -205,8 +206,9 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
 
 - L'intégration continue (`.github/workflows/ci.yml`) rejoue le tout sous
   Linux, passe le code propre à Windows au lint, puis, sur un vrai Windows,
-  lance les tests du cœur, fabrique l'installeur, l'installe et essaie la
-  fenêtre, puis le mode jeu, puis la mise à jour et la désinstallation.
+  lance les tests du cœur, fabrique l'installeur, le parcourt page par page
+  (`apps/shinku/scripts/essai-installeur.ps1`), l'installe, essaie la fenêtre,
+  puis le mode jeu, puis la mise à jour et la désinstallation.
   L'installeur n'est publié que si ces essais passent.
 
 ## Pour aller plus loin

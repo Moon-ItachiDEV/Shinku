@@ -1,7 +1,7 @@
 ; Assistant eleve de Shinku (shinku-helper.exe) dans l'installeur NSIS.
 ;
 ; Ce fichier ne definit que quatre macros publiques, que les crochets de Tauri
-; (installer-hooks.nsh) appellent, sur le modele d'agent.nsh :
+; (habillage.nsh) appellent, sur le modele d'agent.nsh :
 ;
 ;   ShinkuHelperPreInstall     avant toute copie : les assistants en marche
 ;                              sont arretes ;
@@ -9,7 +9,10 @@
 ;                              copie a cote de shinku.exe ;
 ;   ShinkuHelperPreUninstall   les assistants sont arretes, puis son fichier
 ;                              part ;
-;   ShinkuHelperPostUninstall  filet de securite : le fichier.
+;   ShinkuHelperPostUninstall  filet de securite : le fichier, puis le
+;                              dossier d'installation s'il est vide.
+;
+; Dans chaque crochet, l'assistant passe apres l'agent du mode jeu.
 ;
 ; L'assistant n'a ni --quitter ni journal : il ne tient aucun etat. Il pose une
 ; question a la personne (une boite intitulee Shinku) puis ecrit une seule valeur
@@ -78,8 +81,14 @@
 !macroend
 
 ; Au cas ou l'assistant n'a pas pu etre supprime plus tot (lance par la fenetre
-; de Shinku entre les deux crochets) : plus rien ne le relance maintenant.
+; de Shinku entre les deux crochets) : plus rien ne le relance maintenant. Le
+; dossier d'installation, que l'agent n'a pas pu retirer tant que ce fichier y
+; etait, part ensuite s'il est vide (RMDir sans /r). Pas pendant une mise a
+; jour : le dossier va resservir.
 !macro ShinkuHelperPostUninstall
   !insertmacro ShinkuHelperStop
   Delete "$INSTDIR\shinku-helper.exe"
+  ${If} $UpdateMode <> 1
+    RMDir "$INSTDIR"
+  ${EndIf}
 !macroend
