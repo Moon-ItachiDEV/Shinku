@@ -886,20 +886,66 @@ function Guetter-Shinku {
 
 # Ce qui reste dans le profil, et les msedgewebview2.exe encore en vie dont la ligne de commande
 # nomme fr.shinku.app (ils peuvent tenir le cache plus longtemps que le réessai de --oublier).
+# Elle ne peut jamais remplacer le message d'échec d'origine : toute exception est rendue en clair, à la place de la liste.
 function Decrire-Restes {
-    $morceaux = @()
-    foreach ($racine in $dossiersProfil) {
-        if (-not [IO.Directory]::Exists($racine)) { continue }
-        if (Est-Lien $racine) { $morceaux += "$racine (lien)"; continue }
-        $contenu = @(Lister $racine)
-        $morceaux += ("$racine : " + $contenu.Count + ' éléments' + $(if ($contenu.Count -gt 0) { ' dont ' + (($contenu | Select-Object -First 15) -join ' ; ') } else { '' }))
-    }
-    $web = @()
     try {
-        $web = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -like '*fr.shinku.app*' })
-    } catch { }
-    $morceaux += ("msedgewebview2.exe en vie nommant fr.shinku.app : " + $web.Count + $(if ($web.Count -gt 0) { ' (PID ' + (($web | ForEach-Object { $_.ProcessId }) -join ', ') + ')' } else { '' }))
-    return ($morceaux -join ' | ')
+        $morceaux = @()
+        foreach ($racine in $dossiersProfil) {
+            try {
+                if (-not [IO.Directory]::Exists($racine)) { continue }
+                if (Est-Lien $racine) { $morceaux += "$racine (lien)"; continue }
+                $contenu = @(Lister $racine)
+                $morceaux += ("$racine : " + $contenu.Count + ' éléments' + $(if ($contenu.Count -gt 0) { ' dont ' + (($contenu | Select-Object -First 15) -join ' ; ') } else { '' }))
+            } catch {
+                $morceaux += "$racine (liste impossible : $($_.Exception.Message))"
+            }
+        }
+        $web = @()
+        try {
+            $web = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -like '*fr.shinku.app*' })
+        } catch { }
+        $morceaux += ("msedgewebview2.exe en vie nommant fr.shinku.app : " + $web.Count + $(if ($web.Count -gt 0) { ' (PID ' + (($web | ForEach-Object { $_.ProcessId }) -join ', ') + ')' } else { '' }))
+        return ($morceaux -join ' | ')
+    } catch {
+        return "(liste impossible : $($_.Exception.Message))"
+    }
+}
+
+$script:ProfilNonRemis = ''
+
+# Avant chaque étape : l'état laissé par une étape précédente (qui a pu échouer) ne doit ni fausser
+# celle-ci ni cacher sa vraie cause.
+#   - une copie du désinstalleur (~nsu*.tmp\Un*.exe) encore en vie est arrêtée, avec une ligne NOTE ;
+#     s'il en reste, l'étape échoue avec ce motif ;
+#   - les boîtes restées ouvertes sont fermées et leurs poignées retenues : seules les boîtes apparues
+#     après le début de l'étape seront comptées ;
+#   - un appel WMI « à blanc » : le premier est lent à froid, le journal ne doit pas le payer pendant l'attente.
+function Preparer-Etape {
+    $script:ProfilNonRemis = ''
+    $script:Questions = 0
+    $script:Echecs = @()
+    $script:ProcessVus = @{}
+    try { $null = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='shinku.exe'" -ErrorAction Stop) } catch { }
+    $copies = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' })
+    foreach ($copie in $copies) {
+        Noter "une copie du désinstalleur d'une étape précédente tournait encore (PID $($copie.Id), $($copie.Path)) : arrêtée."
+        try { $copie.Kill() } catch { }
+        [void]$copie.WaitForExit(15000)
+    }
+    if ($copies.Count -gt 0) {
+        Start-Sleep -Seconds 1
+        $restes = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' })
+        if ($restes.Count -gt 0) { Echouer "Une copie du désinstalleur d'une étape précédente tourne encore et n'a pas pu être arrêtée (PID $($restes[0].Id))." }
+    }
+    $script:BoitesVues = @{}
+    foreach ($fenetre in [ShinkuWin]::Dialogs()) {
+        $textes = @(Textes-Visibles $fenetre)
+        if (@($textes | Where-Object { $_ -match '^Shinku est ouvert\.' -or $_ -match "^Shinku n'a pas pu supprimer tes réglages" }).Count -gt 0) {
+            Noter ("une boîte d'une étape précédente était restée ouverte, fermée : " + ($textes -join ' | '))
+            [ShinkuWin]::Click($fenetre, 1, [ShinkuWin]::Item($fenetre, 1))
+            $script:BoitesVues[[string]$fenetre.ToInt64()] = 'ancienne'
+        }
+    }
 }
 
 function Traiter-Boites {
@@ -960,6 +1006,7 @@ function Lister([string]$racine) {
 function Etape-Oublier {
     $programme = Join-Path $dossier 'shinku.exe'
     Verifier-Existe $programme "shinku.exe (l'étape « installer » doit précéder)"
+    Preparer-Etape
     Arreter-Shinku
     $compte = Compte-Courant
     Sauver-Profil
@@ -1041,8 +1088,13 @@ function Etape-Oublier {
             try { if ([IO.File]::Exists($chemin)) { [IO.File]::Delete($chemin) } } catch { }
         }
         # Un échec de la remise en place ne doit pas cacher l'erreur d'origine.
-        try { Restaurer-Profil } catch { Noter "le profil n'a pas pu être remis en place : $($_.Exception.Message)" }
+        try { Restaurer-Profil } catch {
+            $script:ProfilNonRemis = $_.Exception.Message
+            Noter "le profil n'a pas pu être remis en place : $($script:ProfilNonRemis)"
+        }
     }
+    # Atteint seulement sans erreur d'origine : une étape ne réussit pas avec un profil non remis en place.
+    if ($script:ProfilNonRemis -ne '') { Echouer "Le profil de la machine n'a pas pu être remis en place après l'essai : $($script:ProfilNonRemis)" }
 }
 
 # ── La désinstallation, case cochée ────────────────────────────────────────
@@ -1055,13 +1107,12 @@ function Message-Echec-Oublier {
 
 function Desinstaller-Avec-La-Case {
     Noter-Explorateur
-    $script:ProcessVus = @{}
     try {
         Desinstaller-Pas-A-Pas
     } catch {
         # La boîte d'échec est la cause la plus probable : elle est testée AVANT toute autre explication.
         $cause = $_.Exception.Message
-        Traiter-Boites
+        try { Traiter-Boites } catch { }
         if ($script:Echecs.Count -gt 0) { Echouer ((Message-Echec-Oublier) + " Erreur vue ensuite : $cause") }
         throw
     }
@@ -1094,9 +1145,6 @@ function Desinstaller-Pas-A-Pas {
         Echouer 'Page « Désinstaller » : la case « Supprimer aussi mes réglages » ne se coche pas.'
     }
     $script:Surveiller = $true
-    $script:BoitesVues = @{}
-    $script:Questions = 0
-    $script:Echecs = @()
     Cliquer-Bouton $fenetre 1 'Désinstaller'
 
     # Comme l'installation, la page « en cours » est brève : guettée sans être exigée.
@@ -1141,6 +1189,7 @@ function Desinstaller-Pas-A-Pas {
 function Etape-Desinstaller-Jonction {
     $desinstalleur = Join-Path $dossier 'uninstall.exe'
     Verifier-Existe $desinstalleur "Shinku (l'étape « installer » doit précéder)"
+    Preparer-Etape
     Arreter-Shinku
     $compte = Compte-Courant
     $lien = $dossiersProfil[3]
@@ -1184,8 +1233,12 @@ function Etape-Desinstaller-Jonction {
         $script:Surveiller = $false
         try { Supprimer-Arbre $lien } catch { Noter "la jonction $lien n'a pas pu être retirée : $($_.Exception.Message)" }
         try { Supprimer-Arbre $cible } catch { Noter "$cible n'a pas pu être retiré : $($_.Exception.Message)" }
-        try { Restaurer-Profil } catch { Noter "le profil n'a pas pu être remis en place : $($_.Exception.Message)" }
+        try { Restaurer-Profil } catch {
+            $script:ProfilNonRemis = $_.Exception.Message
+            Noter "le profil n'a pas pu être remis en place : $($script:ProfilNonRemis)"
+        }
     }
+    if ($script:ProfilNonRemis -ne '') { Echouer "Le profil de la machine n'a pas pu être remis en place après l'essai : $($script:ProfilNonRemis)" }
     Attendre-Desinstalleur
 }
 
@@ -1211,6 +1264,7 @@ function Ouvrir-Shinku {
 function Etape-Desinstaller {
     $desinstalleur = Join-Path $dossier 'uninstall.exe'
     Verifier-Existe $desinstalleur "Shinku (l'étape « installer » doit précéder)"
+    Preparer-Etape
     Arreter-Shinku
     $compte = Compte-Courant
     $ouvert = Ouvrir-Shinku

@@ -417,8 +417,10 @@ jobs:
       #    face à un bureau qui ne l'est pas (si le runner le permet, sinon une ligne NOTE).
       - name: Désinstallation (--oublier à la main)
         if: ${{ !cancelled() }}
+        timeout-minutes: 15
         run: |
           $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "Aucun installeur (*-setup.exe) dans target/release/bundle/nsis : l'étape « Installeur » n'a rien produit." }
           $options = @()
           if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
           # Shinku est réinstallé en silence s'il ne l'est pas (l'essai d'avant l'a désinstallé, ou a échoué).
@@ -426,7 +428,7 @@ jobs:
             $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
             if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
           }
-          # La copie temporaire du désinstalleur d'avant a pu rester en vie.
+          # La copie temporaire du désinstalleur d'avant a pu rester en vie : l'essai l'arrête et le note si elle dure encore.
           $limite = (Get-Date).AddSeconds(120)
           while (@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' }).Count -gt 0 -and (Get-Date) -lt $limite) { Start-Sleep -Milliseconds 500 }
           powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
@@ -436,8 +438,10 @@ jobs:
       #    le témoin posé derrière doit rester intact (voir les limites dans le script).
       - name: Désinstallation (jonction)
         if: ${{ !cancelled() }}
+        timeout-minutes: 15
         run: |
           $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "Aucun installeur (*-setup.exe) dans target/release/bundle/nsis : l'étape « Installeur » n'a rien produit." }
           $options = @()
           if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
           # Shinku est réinstallé en silence s'il ne l'est pas (l'essai d'avant l'a désinstallé, ou a échoué).
@@ -445,7 +449,7 @@ jobs:
             $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
             if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
           }
-          # La copie temporaire du désinstalleur d'avant a pu rester en vie.
+          # La copie temporaire du désinstalleur d'avant a pu rester en vie : l'essai l'arrête et le note si elle dure encore.
           $limite = (Get-Date).AddSeconds(120)
           while (@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' }).Count -gt 0 -and (Get-Date) -lt $limite) { Start-Sleep -Milliseconds 500 }
           powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `
@@ -457,8 +461,10 @@ jobs:
       #    vraiment écrit, et rien qui revienne.
       - name: Désinstallation (fenêtre ouverte)
         if: ${{ !cancelled() }}
+        timeout-minutes: 15
         run: |
           $setup = Get-ChildItem target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "Aucun installeur (*-setup.exe) dans target/release/bundle/nsis : l'étape « Installeur » n'a rien produit." }
           $options = @()
           if ($env:CAPTURES_DANS_LE_JOURNAL -eq 'true') { $options += '-CapturesDansLeJournal' }
           # Shinku est réinstallé en silence s'il ne l'est pas (l'essai d'avant l'a désinstallé, ou a échoué).
@@ -466,7 +472,7 @@ jobs:
             $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait -PassThru
             if ($install.ExitCode -ne 0) { throw "L'installation silencieuse s'arrête avec le code $($install.ExitCode)." }
           }
-          # La copie temporaire du désinstalleur d'avant a pu rester en vie.
+          # La copie temporaire du désinstalleur d'avant a pu rester en vie : l'essai l'arrête et le note si elle dure encore.
           $limite = (Get-Date).AddSeconds(120)
           while (@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' }).Count -gt 0 -and (Get-Date) -lt $limite) { Start-Sleep -Milliseconds 500 }
           powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/shinku/scripts/essai-installeur.ps1 `

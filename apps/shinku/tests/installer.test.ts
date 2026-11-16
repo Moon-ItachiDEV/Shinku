@@ -220,17 +220,31 @@ test("aucun .nsh ne supprime quoi que ce soit dans un profil : ni Delete, ni RMD
 });
 
 const WAIT_LINES = [
+  '!insertmacro ShinkuOublierTemps',
+  'StrCpy $ShinkuOublierLance $ShinkuOublierMaintenant',
+  'StrCpy $ShinkuOublierDebut $ShinkuOublierMaintenant',
   'StrCpy $ShinkuOublierPas 0',
   'StrCpy $ShinkuOublierVu 0',
   'StrCpy $ShinkuOublierInconnu 0',
+  'StrCpy $ShinkuOublierAbandon 0',
+  'StrCpy $ShinkuOublierFini 0',
   '${Do}',
   '!insertmacro ShinkuOublierRm',
   '${If} $0 = 1',
   'StrCpy $ShinkuOublierVu 1',
   '${ExitDo}',
+  '${ElseIf} $0 = -1',
+  'IntOp $ShinkuOublierInconnu $ShinkuOublierInconnu + 1',
+  '${If} $ShinkuOublierInconnu > ${SHINKU_OUBLIER_INCONNU_MAX}',
+  'StrCpy $ShinkuOublierAbandon 1',
+  '${ExitDo}',
   '${EndIf}',
-  '${If} $0 = -1',
-  'StrCpy $ShinkuOublierInconnu 1',
+  '${Else}',
+  'StrCpy $ShinkuOublierInconnu 0',
+  '${EndIf}',
+  '!insertmacro ShinkuOublierTemps',
+  'IntOp $1 $ShinkuOublierMaintenant - $ShinkuOublierDebut',
+  '${If} $1 >= ${SHINKU_OUBLIER_MS_POUR_VOIR}',
   '${ExitDo}',
   '${EndIf}',
   '${If} $ShinkuOublierPas >= ${SHINKU_OUBLIER_PAS_POUR_VOIR}',
@@ -240,14 +254,27 @@ const WAIT_LINES = [
   'IntOp $ShinkuOublierPas $ShinkuOublierPas + 1',
   '${Loop}',
   '${If} $ShinkuOublierVu = 1',
+  '!insertmacro ShinkuOublierTemps',
+  'StrCpy $ShinkuOublierDebut $ShinkuOublierMaintenant',
   'StrCpy $ShinkuOublierPas 0',
+  'StrCpy $ShinkuOublierInconnu 0',
   '${Do}',
   '!insertmacro ShinkuOublierRm',
   '${If} $0 = 0',
+  'StrCpy $ShinkuOublierFini 1',
+  '${ExitDo}',
+  '${ElseIf} $0 = -1',
+  'IntOp $ShinkuOublierInconnu $ShinkuOublierInconnu + 1',
+  '${If} $ShinkuOublierInconnu > ${SHINKU_OUBLIER_INCONNU_MAX}',
+  'StrCpy $ShinkuOublierAbandon 1',
   '${ExitDo}',
   '${EndIf}',
-  '${If} $0 = -1',
-  'StrCpy $ShinkuOublierInconnu 1',
+  '${Else}',
+  'StrCpy $ShinkuOublierInconnu 0',
+  '${EndIf}',
+  '!insertmacro ShinkuOublierTemps',
+  'IntOp $1 $ShinkuOublierMaintenant - $ShinkuOublierDebut',
+  '${If} $1 >= ${SHINKU_OUBLIER_MS_POUR_FINIR}',
   '${ExitDo}',
   '${EndIf}',
   '${If} $ShinkuOublierPas >= ${SHINKU_OUBLIER_PAS_POUR_FINIR}',
@@ -257,21 +284,54 @@ const WAIT_LINES = [
   'IntOp $ShinkuOublierPas $ShinkuOublierPas + 1',
   '${Loop}',
   '${EndIf}',
+  '${If} $ShinkuOublierAbandon = 1',
+  'StrCpy $ShinkuOublierPas 0',
+  '${Do}',
+  '!insertmacro ShinkuOublierTemps',
+  'IntOp $1 $ShinkuOublierMaintenant - $ShinkuOublierLance',
+  '${If} $1 >= ${SHINKU_OUBLIER_MS_ECHEANCE}',
+  '${ExitDo}',
+  '${EndIf}',
+  '${If} $ShinkuOublierPas >= ${SHINKU_OUBLIER_PAS_ECHEANCE}',
+  '${ExitDo}',
+  '${EndIf}',
+  'Sleep ${SHINKU_OUBLIER_PAS_MS}',
+  'IntOp $ShinkuOublierPas $ShinkuOublierPas + 1',
+  '${Loop}',
+  'MessageBox MB_OK|MB_ICONEXCLAMATION "$(shinkuOublierEchec)" /SD IDOK',
+  '${ElseIf} $ShinkuOublierVu = 0',
+  'MessageBox MB_OK|MB_ICONEXCLAMATION "$(shinkuOublierEchec)" /SD IDOK',
+  '${ElseIf} $ShinkuOublierFini = 0',
+  '${If} $0 = 1',
+  '!insertmacro ShinkuOublierArreter',
+  'Sleep 500',
+  '${EndIf}',
+  'MessageBox MB_OK|MB_ICONEXCLAMATION "$(shinkuOublierEchec)" /SD IDOK',
+  '${EndIf}',
 ];
 
-test("l'attente : dix secondes au plus pour voir shinku.exe occupé, puis trente pour le voir libre, par pas de 100 ms", () => {
+test("l'attente : comptée à l'horloge (10 s pour voir, 30 s pour finir, pas de 100 ms), avec une borne de pas, tolérance de 10 « on ne sait pas » de suite, sommeil jusqu'à 21 s à l'abandon", () => {
   const text = code('oublier.nsh');
   const value = (name: string): number => Number(new RegExp(`^!define ${name} (\\d+)$`, 'm').exec(text)?.[1]);
   const step = value('SHINKU_OUBLIER_PAS_MS');
   assert.equal(step, 100);
-  assert.equal((value('SHINKU_OUBLIER_PAS_POUR_VOIR') * step) / 1000, 10);
-  assert.equal((value('SHINKU_OUBLIER_PAS_POUR_FINIR') * step) / 1000, 30);
+  assert.equal(value('SHINKU_OUBLIER_MS_POUR_VOIR') / 1000, 10);
+  assert.equal(value('SHINKU_OUBLIER_MS_POUR_FINIR') / 1000, 30);
+  assert.equal(value('SHINKU_OUBLIER_MS_ECHEANCE') / 1000, 21);
+  assert.equal(value('SHINKU_OUBLIER_INCONNU_MAX'), 10);
+  // La borne de pas vaut au moins la durée : elle ne coupe jamais avant l'horloge.
+  assert.ok(value('SHINKU_OUBLIER_PAS_POUR_VOIR') * step >= value('SHINKU_OUBLIER_MS_POUR_VOIR'));
+  assert.ok(value('SHINKU_OUBLIER_PAS_POUR_FINIR') * step >= value('SHINKU_OUBLIER_MS_POUR_FINIR'));
+  assert.ok(value('SHINKU_OUBLIER_PAS_ECHEANCE') * step >= value('SHINKU_OUBLIER_MS_ECHEANCE'));
+  // L'horloge est GetTickCount, lue sans toucher à $0 (la réponse du sondage).
+  assert.deepEqual(macroLines('oublier.nsh', 'ShinkuOublierTemps'), ["System::Call 'kernel32::GetTickCount() i .s'", 'Pop $ShinkuOublierMaintenant']);
   const lines = macroLines('oublier.nsh', 'ShinkuOublierPreUninstall');
   const start = lines.indexOf(RUN_AS_USER) + 1;
   assert.ok(start > 0);
-  // Les deux boucles, ligne à ligne : la première attend « occupé » (1), la seconde « libre » (0) ;
-  // « on ne sait pas » (-1) arrête l'attente en échec, il n'est jamais compté comme libre ni comme vu.
-  assert.deepEqual(lines.slice(start, start + WAIT_LINES.length), WAIT_LINES);
+  // Tout ce qui suit le lancement, ligne à ligne : la première boucle attend « occupé » (1), la seconde
+  // « libre » (0) ; « on ne sait pas » (-1) est compté de suite, remis à zéro par une réponse sûre, jamais
+  // pris pour libre ni pour vu ; l'abandon dort jusqu'à 21 s après le lancement, sans arrêt forcé.
+  assert.deepEqual(lines.slice(start, lines.length - 1), WAIT_LINES);
 });
 
 test("le Gestionnaire de redémarrage : session par pas, chemin exact, 234 = occupé, 0 = libre, tout autre code = on ne sait pas, session toujours fermée", () => {
@@ -315,10 +375,10 @@ test("le Gestionnaire de redémarrage : session par pas, chemin exact, 234 = occ
 test("RunAsUser et la pile : aucun Push, Pop ni Exch dans la demande de --oublier, le résultat n'est jamais lu", () => {
   const lines = macroLines('oublier.nsh', 'ShinkuOublierPreUninstall');
   assert.deepEqual(lines.filter((line) => /^(?:Push|Pop|Exch)\b/.test(line)), []);
-  assert.equal(lines[lines.indexOf(RUN_AS_USER) + 1], 'StrCpy $ShinkuOublierPas 0');
+  assert.equal(lines[lines.indexOf(RUN_AS_USER) + 1], '!insertmacro ShinkuOublierTemps');
 });
 
-test("si --oublier n'est jamais vu, inconnu ou pas fini : le message, avec /SD IDOK, jamais de repli élevé ; encore occupé, arrêt par le Gestionnaire", () => {
+test("si --oublier n'est jamais vu, abandonné ou pas fini : le message, avec /SD IDOK, jamais de repli élevé ; arrêt par le Gestionnaire seulement vu puis encore occupé", () => {
   const nbsp = ' ';
   const text = /^LangString shinkuOublierEchec \$\{LANG_FRENCH\} "(.*)"$/m.exec(read('francais.nsh'))?.[1];
   assert.equal(
@@ -326,21 +386,40 @@ test("si --oublier n'est jamais vu, inconnu ou pas fini : le message, avec /SD I
     `Shinku n'a pas pu supprimer tes réglages. Ils sont dans %APPDATA%\\Shinku et %LOCALAPPDATA%\\Shinku${nbsp}: tu peux les supprimer à la main.`,
   );
   const lines = macroLines('oublier.nsh', 'ShinkuOublierPreUninstall');
-  const box = lines.filter((line) => line.startsWith('MessageBox'));
-  assert.deepEqual(box, ['MessageBox MB_OK|MB_ICONEXCLAMATION "$(shinkuOublierEchec)" /SD IDOK']);
-  const message = lines.indexOf(box[0] ?? '');
-  assert.deepEqual(lines.slice(message - 8, message), [
-    '${If} $ShinkuOublierVu = 0',
-    '${OrIf} $ShinkuOublierInconnu = 1',
-    '${OrIf} $0 = 1',
-    '${If} $ShinkuOublierInconnu = 0',
-    '${AndIf} $0 = 1',
+  const box = 'MessageBox MB_OK|MB_ICONEXCLAMATION "$(shinkuOublierEchec)" /SD IDOK';
+  assert.deepEqual(lines.filter((line) => line.startsWith('MessageBox')), [box, box, box]);
+  // L'arrêt forcé n'a lieu que dans la branche « vu, puis encore occupé » ; jamais à l'abandon.
+  const stop = lines.indexOf('!insertmacro ShinkuOublierArreter');
+  // « Vu mais jamais vu fini » donne toujours le message : la fin se lit dans la variable
+  // posée par la boucle, pas dans un registre resté de la dernière réponse.
+  assert.deepEqual(lines.slice(stop - 2, stop + 4), [
+    '${ElseIf} $ShinkuOublierFini = 0',
+    '${If} $0 = 1',
     '!insertmacro ShinkuOublierArreter',
     'Sleep 500',
     '${EndIf}',
+    box,
   ]);
-  // Rien après le message : ni effacement, ni autre lancement.
-  assert.deepEqual(lines.slice(message + 1), ['${EndIf}', '${EndIf}']);
+  assert.equal(lines.filter((line) => line.includes('ShinkuOublierArreter')).length, 1);
+  assert.deepEqual(lines.slice(stop + 4), ['${EndIf}', '${EndIf}']);
+  assert.equal(lines.filter((line) => line === 'StrCpy $ShinkuOublierFini 1').length, 1);
+});
+
+test("nos .nsh ne suppriment que sous $INSTDIR : chaque Delete et RMDir vise $INSTDIR\\… (ou $INSTDIR), aucune variable d'environnement lue", () => {
+  const targets = NSH_FILES.flatMap((name) =>
+    code(name)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^(?:Delete|RMDir)\b/i.test(line))
+      .map((line) => ({ name, line })),
+  );
+  assert.ok(targets.length >= 6, 'les Delete et RMDir de l\'agent et de l\'assistant ont disparu de la liste vue');
+  for (const { name, line } of targets) {
+    assert.match(line, /^(?:Delete|RMDir)\s+(?:\/\w+\s+)*"\$INSTDIR(?:\\[^"$]*)?"$/i, `${name} : « ${line} » ne vise pas $INSTDIR`);
+  }
+  for (const name of NSH_FILES) {
+    assert.doesNotMatch(code(name), /^\s*(?:ReadEnvStr|ExpandEnvStrings)\b/im, `${name} : variable d'environnement lue`);
+  }
 });
 
 test("nos .nsh n'écrivent la case de Tauri qu'une fois (StrCpy … 0), ne lancent aucun rd, rmdir, del, erase ni Remove-Item, et ne copient jamais un dossier de profil dans une variable", () => {
@@ -534,6 +613,9 @@ test("l'intégration continue joue les trois essais de --oublier sur le vrai dé
   for (const etape of ['oublier', 'desinstaller-jonction', 'desinstaller']) {
     assert.ok(steps.includes(`'${etape}'`), `essai-installeur.ps1 ne connaît pas l'étape ${etape}`);
   }
+  // Chaque étape : un installeur vide refusé clairement, et un délai maximal.
+  assert.equal(ci.match(/if \(-not \$setup\) \{ throw "Aucun installeur \(\*-setup\.exe\) dans target\/release\/bundle\/nsis/g)?.length, 3);
+  assert.equal(ci.match(/if: \$\{\{ !cancelled\(\) \}\}\n\s+timeout-minutes: 15\n/g)?.length, 3);
   // La désinstallation silencieuse (/S) : la case vaut 0, --oublier n'est jamais appelé, les réglages restent.
   assert.match(ci, /# Une désinstallation silencieuse ne doit jamais supprimer les réglages\./);
   assert.match(ci, /throw "La désinstallation silencieuse a supprimé les réglages\."/);
@@ -548,15 +630,24 @@ test("essai-installeur.ps1 : chaque preuve est une ligne « FAIT : » qui dit ce
   // La boîte est fermée (l'essai ne reste pas bloqué), puis l'essai échoue.
   assert.match(text, /if \(\$script:Echecs\.Count -gt 0\) \{\s*Echouer/);
   // La boîte d'échec est testée avant toute autre explication d'un échec, dans le journal comme dans le message.
-  assert.match(text, /\} catch \{\n[^\n]*\n[^\n]*\n\s*Traiter-Boites\n\s*if \(\$script:Echecs\.Count -gt 0\) \{ Echouer \(\(Message-Echec-Oublier\)/);
+  assert.match(text, /\} catch \{\n[^\n]*\n[^\n]*\n\s*try \{ Traiter-Boites \} catch \{ \}\n\s*if \(\$script:Echecs\.Count -gt 0\) \{ Echouer \(\(Message-Echec-Oublier\)/);
   // Le journal dit l'Explorateur avant chaque désinstallation, les shinku.exe vus, et les restes (avec WebView2).
   assert.match(text, /function Desinstaller-Avec-La-Case \{\n\s*Noter-Explorateur/);
   assert.match(text, /Where-Object \{ \$_\.CommandLine -like '\*fr\.shinku\.app\*' \}/);
   assert.match(text, /shinku\.exe vu pendant la désinstallation : PID/);
   // Droits du bureau illisibles : aucune exigence sur le code de --oublier élevé.
   assert.match(text, /if \(\$moi -eq -1 -or \$bureau -eq -1\) \{\n[^\n]*\n\s*Noter "droits du bureau ou du script illisibles/);
+  // Chaque étape part d'un état propre, et un diagnostic ne remplace jamais l'échec d'origine.
+  assert.equal(text.match(/^\s*Preparer-Etape$/gm)?.length, 3);
+  assert.match(text, /function Decrire-Restes \{\n\s*try \{[\s\S]*\} catch \{\n\s*return "\(liste impossible : /);
+  assert.match(text, /try \{ Traiter-Boites \} catch \{ \}\n\s*if \(\$script:Echecs\.Count -gt 0\)/);
+  assert.match(text, /\$copie\.Kill\(\)/);
+  assert.match(text, /tourne encore et n'a pas pu être arrêtée/);
+  // Un profil non remis en place fait échouer l'étape, quand aucune erreur d'origine ne l'a déjà fait.
+  assert.equal(text.match(/if \(\$script:ProfilNonRemis -ne ''\) \{ Echouer/g)?.length, 2);
+  assert.match(text, /function Preparer-Etape \{[\s\S]*Get-CimInstance -ClassName Win32_Process -Filter "Name='shinku\.exe'"/);
   // Remettre le profil en place ne cache jamais l'erreur d'origine.
-  assert.equal(text.match(/try \{ Restaurer-Profil \} catch \{ Noter/g)?.length, 2);
+  assert.equal(text.match(/try \{ Restaurer-Profil \} catch \{\n\s*\$script:ProfilNonRemis/g)?.length, 2);
 });
 
 /** Un BMP 24 bits : ses dimensions et la couleur de ses quatre coins. */
