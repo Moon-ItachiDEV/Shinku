@@ -170,6 +170,12 @@ async function runStep(name, extra = [], { timeout = 240_000, tolerate = [] } = 
     child.once('exit', (exitCode) => (clearTimeout(timer), resolve(exitCode)));
   });
   const text = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+  // Ce que le script dit n'avoir pas pu faire n'est pas un échec, mais le résumé ne dit pas « réussi » sans le nommer.
+  for (const line of text.split(/\r?\n/)) {
+    if (/ÉPINGLÉ NON VU|ÉPINGLAGE IMPOSSIBLE|n'a été vue par EnumWindows|voie : repli|n'a pas pu être défait/.test(line)) {
+      unproven.push(`${name} : ${line.replace(/^\s*FAIT : /, '').trim().slice(0, 220)}`);
+    }
+  }
   for (const line of text.split(/\r?\n/)) {
     if (line.trim() !== '') {
       console.log(`           ${line}`);
@@ -942,6 +948,9 @@ async function playRealChrome() {
     await erased;
   } catch (error) {
     // La fenêtre a échoué : ce que Chrome a perdu ou gardé est relevé quand même (constat, sans verdict).
+    if (opened !== null) {
+      failures.push(`chrome-ouvert : ${opened.message.split('\n')[0]}`);
+    }
     try {
       await runStep('chrome-apres', ['-Constat'], { timeout: 120_000 });
     } catch (constat) {
@@ -1014,7 +1023,11 @@ async function main() {
     }
     await attempt('chrome-reel', '8. le vrai Chrome, s’il est installé', playRealChrome);
   } finally {
-    // Quoi qu'il arrive : la machine d'essai est remise en place (User Data d'origine, registre, récents).
+    // Quoi qu'il arrive : shinku.exe ne tourne plus (comme l'essai permanent : l'arbre du lanceur, puis le programme lui-même),
+    // puis la machine d'essai est remise en place (User Data d'origine, registre, récents).
+    if (onWindows && !WITHOUT_SCRIPT) {
+      spawnSync('taskkill', ['/im', path.basename(options.programme), '/t', '/f'], { stdio: 'ignore' });
+    }
     try {
       await runStep('nettoyer', [], { timeout: 120_000 });
     } catch (cleaning) {
@@ -1031,6 +1044,10 @@ async function main() {
     say('Essai manqué :');
     quote(failures.join('\n'));
     return 1;
+  }
+  if (unproven.length > 0) {
+    say(`Essai réussi, mais ${unproven.length} point(s) non tranché(s) : voir « non prouvé » ci-dessus.`);
+    return 0;
   }
   say('Essai réussi.');
   return 0;

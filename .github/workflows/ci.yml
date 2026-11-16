@@ -127,7 +127,8 @@ jobs:
   windows:
     name: Windows
     runs-on: windows-latest
-    timeout-minutes: 45
+    # 60 minutes : l'essai de la confidentialité (jusqu'à 20 minutes, jamais mesuré) s'ajoute aux autres essais.
+    timeout-minutes: 60
     env:
       # Vaut « true » quand le lancement à la main demande les captures de
       # l'installeur dans le journal (essai-installeur.ps1).

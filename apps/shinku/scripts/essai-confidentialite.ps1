@@ -1111,6 +1111,7 @@ function Remove-RegistryTrap {
 
 function Step-LienRegistreVerifier {
     $counts = ''
+    $original = $null
     try {
         if (-not [EssaiRegistre]::IsLink("$ExplorerKey\RunMRU")) { Mismatch 'attendu : RunMRU est toujours un lien de registre ; vu : ce n''est plus un lien' }
         $target = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($LinkTarget, $false)
@@ -1124,10 +1125,17 @@ function Step-LienRegistreVerifier {
             } finally { $target.Close() }
         }
         $counts = Show-TypedCounts 'valeurs après :'
-    } finally {
-        # Le piège ne reste pas : ni lui ni sa cible ne gênent l'essai suivant.
-        Remove-RegistryTrap
+    } catch {
+        $original = $_
     }
+    # Le piège ne reste pas : ni lui ni sa cible ne gênent l'essai suivant. Une erreur ici ne masque pas l'écart d'origine.
+    try {
+        Remove-RegistryTrap
+    } catch {
+        Say "  le piège du registre n'a pas pu être défait : $($_.Exception.Message)"
+        if ($null -eq $original) { throw }
+    }
+    if ($null -ne $original) { throw $original }
     Proof "rien n'est touché de l'autre côté du lien de registre : la cible avait encore a=cible-1 et b=cible-2, et RunMRU était encore un lien ; $counts ; le lien et sa cible sont maintenant retirés"
 }
 
@@ -1196,7 +1204,7 @@ function Step-RegistreExplorateurPreparer {
         if ($open -gt 0) { break }
         Start-Sleep -Milliseconds 500
     }
-    if ($open -eq 0) {
+    if ($open -le $before) {
         Set-StateValue 'explorateur' '0'
         Proof "aucune fenêtre de l'Explorateur (classe CabinetWClass, titre « $ViewLeaf ») n'a été vue par EnumWindows en 30 s ($before avant) : la mesure « avec une fenêtre ouverte » n'est pas faite sur cette machine ; $(Show-TypedCounts 'valeurs avant :')"
     } else {
@@ -1365,13 +1373,17 @@ function Step-ChromeCreer {
     if (@(Get-ChromeProcesses).Count -gt 0) { Fail 'attendu : Chrome est fermé ; vu : un processus chrome.exe tourne' }
     # Chrome crée lui-même son User Data (ou en copie le modèle qu'il a créé).
     Initialize-UserData
+    $created = 'modele'
     if (-not (Test-Path -LiteralPath (Join-Path $DefaultProfile 'History'))) {
+        $created = 'direct'
         Start-Chrome 'chrome-creer' { Test-Path -LiteralPath (Join-Path $DefaultProfile 'History') } 'Chrome crée son profil (Default\History)'
         Start-Sleep -Seconds 3
         Stop-Chrome
     }
     $files = @(Get-ChildItem -LiteralPath $DefaultProfile -File -Force -ErrorAction SilentlyContinue | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Length })
-    Proof "Chrome a créé son profil sans fenêtre (--user-data-dir = $UserData) puis s'est arrêté (plus aucun processus chrome.exe) : $($files -join ', ')"
+    $from = 'créé par Chrome à l''instant (--user-data-dir)'
+    if ($created -eq 'modele') { $from = 'copié du modèle que Chrome a créé plus tôt dans cet essai' }
+    Proof "profil $from, $UserData ; Chrome sans fenêtre puis s'est arrêté (plus aucun processus chrome.exe) : $($files -join ', ')"
 }
 
 function Step-ChromeOuvrir {
@@ -1433,6 +1445,13 @@ function Step-Nettoyer([bool]$Final) {
         try { & $Action } catch {
             [void]$problems.Add("$What : $($_.Exception.Message)")
             Say "  $What : $($_.Exception.Message)"
+        }
+    }
+    # Si le délai de la CI a tué le pilote, la fenêtre de Shinku peut être restée
+    # ouverte : l'étape suivante de la CI la trouverait en marche.
+    if ($Final) {
+        & $run 'fenêtre de Shinku restée ouverte' {
+            Get-Process -Name 'shinku' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         }
     }
     & $run 'processus qui tient un fichier' { Stop-Holder }

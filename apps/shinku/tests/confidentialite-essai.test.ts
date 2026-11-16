@@ -423,7 +423,7 @@ test('essai de la Confidentialité : chaque scénario est nettoyé après lui, l
   assert.ok(driver.includes("await runStep('nettoyer', [], { timeout: 120_000 })"), 'et un nettoyage final remet le User Data d’origine');
   // Le lien de registre est défait par sa vérification, et la pose des valeurs refuse un lien resté.
   const verifier = ps1.slice(ps1.indexOf('function Step-LienRegistreVerifier'), ps1.indexOf('# ── 4. Un profil remplacé'));
-  assert.ok(/finally \{[^}]*Remove-RegistryTrap/.test(verifier), 'la vérification défait le piège même après un écart');
+  assert.ok(/\} catch \{\n        \$original = \$_\n    \}[\s\S]*Remove-RegistryTrap[\s\S]*throw \$original/.test(verifier), 'la vérification défait le piège même après un écart, sans masquer l’écart d’origine');
   assert.ok(ps1.slice(ps1.indexOf('function Remove-RegistryTrap'), ps1.indexOf('function Step-LienRegistreVerifier')).includes('DeleteLink'));
   const typed = ps1.slice(ps1.indexOf('function Set-TypedValues'), ps1.indexOf('function Show-TypedCounts'));
   assert.ok(typed.indexOf('IsLink') > 0 && typed.indexOf('IsLink') < typed.indexOf('CreateSubKey'), 'refuse de poser des valeurs à travers un lien');
@@ -471,4 +471,17 @@ test('la CI : la variable ne passe jamais par GITHUB_ENV, et l’essai a un dél
   assert.match(workflow, /- name: Remettre la machine d'essai en place \(confidentialité\)\n {8}if: always\(\)\n {8}timeout-minutes: 5\n/);
   // Le commentaire dit la vérité : les trois clés et les récents sont vidés, pas remis.
   assert.ok(workflow.includes('VIDÉS, pas'));
+});
+
+test('essai de la Confidentialité : le mode -Constat ne dit jamais « FAIT », la ligne inerte absente échoue avant tout retour, et le résumé nomme le non prouvé', () => {
+  const proof = ps1.slice(ps1.indexOf('function Proof('), ps1.indexOf('function Fail('));
+  const constat = proof.slice(proof.indexOf('if ($script:Gaps -eq 0)'));
+  assert.ok(constat.includes('CONSTAT') && !constat.includes('FAIT'), 'la branche -Constat n’écrit pas « FAIT »');
+  const inert = driver.slice(driver.indexOf("if (scenario.row === 'inert' && STRICT) {"), driver.indexOf("if (row === null || row.kind !== 'check') {\n        done("));
+  const absent = inert.indexOf('if (row === null) {');
+  assert.ok(absent > 0 && inert.slice(absent, inert.indexOf('}', absent)).includes('fail('), 'une ligne absente échoue');
+  assert.ok(!inert.slice(0, absent).includes('return'), 'aucun return avant l’échec de la ligne absente');
+  assert.ok(driver.includes('ÉPINGLÉ NON VU') && driver.includes('ÉPINGLAGE IMPOSSIBLE') && driver.includes('voie : repli'));
+  assert.ok(driver.includes("taskkill', ['/im'"), 'le nettoyage final arrête shinku.exe');
+  assert.match(workflow, /timeout-minutes: 60\n/);
 });
