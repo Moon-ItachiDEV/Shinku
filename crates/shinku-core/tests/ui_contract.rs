@@ -572,7 +572,7 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     enums.insert("appsOutcome", variants!(Outcome: Kept));
     enums.insert("leftoverKind", variants!(LeftoverKind: Folder, Data, Shortcut));
     enums.insert("removeOutcome", variants!(RemoveOutcome: Removed, AlreadyGone, Refused, Failed));
-    enums.insert("removeReason", variants!(RemoveReason: InUse, Refused, Partial));
+    enums.insert("removeReason", variants!(RemoveReason: InUse, Refused, Partial, Destroyed));
     enums.insert(
         "uninstallRefusal",
         variants!(

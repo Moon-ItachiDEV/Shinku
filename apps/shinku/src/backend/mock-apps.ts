@@ -7,9 +7,9 @@
 //   ?appsload=fail                 la première lecture de la vue échoue ; « Réessayer » la réussit
 //   ?appsflow=launching|waiting|stuck|leftovers|none|family|unsure
 //                                  la page s'ouvre dans cette phase ; « Désinstaller » finit sur le même bilan
-//   ?appsfail=broken|cancelled|bin|kept
+//   ?appsfail=broken|cancelled|bin|destroyed|kept
 //                                  « Désinstaller » est refusé (broken, cancelled), la corbeille refuse
-//                                  (bin), ou l'installeur sort sans retirer l'app (kept)
+//                                  (bin), Windows supprime pour de bon au lieu de mettre à la corbeille (destroyed), ou l'installeur sort sans retirer l'app (kept)
 
 import type {
   AppRow,
@@ -35,7 +35,7 @@ export interface AppsDemo {
   /** Où en est la page à son ouverture, et sur quel bilan finit « Désinstaller ». */
   flow: 'idle' | 'launching' | 'waiting' | 'stuck' | 'leftovers' | 'none' | 'family' | 'unsure';
   /** Ce qui se passe mal, ou `none`. */
-  fail: 'none' | 'broken' | 'cancelled' | 'bin' | 'kept';
+  fail: 'none' | 'broken' | 'cancelled' | 'bin' | 'destroyed' | 'kept';
 }
 
 export const DEFAULT_APPS_DEMO: AppsDemo = { data: 'few', load: 'ok', flow: 'idle', fail: 'none' };
@@ -58,7 +58,7 @@ export function appsDemoOptions(query: URLSearchParams): AppsDemo {
       flow === 'unsure'
         ? flow
         : 'idle',
-    fail: fail === 'broken' || fail === 'cancelled' || fail === 'bin' || fail === 'kept' ? fail : 'none',
+    fail: fail === 'broken' || fail === 'cancelled' || fail === 'bin' || fail === 'destroyed' || fail === 'kept' ? fail : 'none',
   };
 }
 
@@ -366,6 +366,10 @@ export function appsBackend(
           results.push({ key, outcome: 'refused' });
         } else if (demo.fail === 'bin') {
           results.push({ key, outcome: 'failed', reason: REASONS[key % REASONS.length] ?? 'refused' });
+        } else if (demo.fail === 'destroyed') {
+          // Windows l'a supprimé pour de bon : il n'est plus là, et il n'est pas dans la corbeille.
+          results.push({ key, outcome: 'failed', reason: 'destroyed' });
+          gone.add(found.path);
         } else {
           results.push({ key, outcome: 'removed' });
           bytes += found.bytes ?? 0;

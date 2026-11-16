@@ -156,7 +156,7 @@ const enums: Record<string, readonly string[]> = {
   appsOutcome: allOf<NonNullable<AppsView['outcome']>>()(['kept']),
   leftoverKind: allOf<LeftoverKind>()(['folder', 'data', 'shortcut']),
   removeOutcome: allOf<RemoveOutcome>()(['removed', 'alreadyGone', 'refused', 'failed']),
-  removeReason: allOf<RemoveReason>()(['inUse', 'refused', 'partial']),
+  removeReason: allOf<RemoveReason>()(['inUse', 'refused', 'partial', 'destroyed']),
   uninstallRefusal: allOf<UninstallRefusal>()(['busy', 'vanished', 'unreadable', 'notOffered', 'broken', 'cancelled', 'failed']),
   followPhase: allOf<FollowView['phase']>()(['idle', 'launching', 'waiting', 'settling', 'removed']),
 };

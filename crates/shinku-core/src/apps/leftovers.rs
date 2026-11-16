@@ -39,7 +39,7 @@ use crate::apps::paths::{
     clean_location, is_inside, is_plain, is_same_or_inside, last_name, norm, parent,
 };
 use crate::apps::{MAX_LEFTOVERS, Scope, names};
-use crate::platform::RecycleError;
+use crate::platform::{RecycleError, Sent};
 use crate::startup::command::HOSTS;
 
 /// La famille d'un reste.
@@ -367,6 +367,8 @@ pub enum RemoveReason {
     Refused,
     /// Une partie est restée.
     Partial,
+    /// Windows l'a supprimé pour de bon : il n'est pas dans la corbeille.
+    Destroyed,
 }
 
 /// Le sort d'un reste demandé.
@@ -450,12 +452,18 @@ pub fn remove(
             continue;
         }
         match host.recycle(path) {
-            Ok(()) if host.existence(path) == Existence::Absent => {
+            // Windows a supprimé pour de bon : jamais compté comme envoyé à la corbeille.
+            Ok(Sent::Destroyed) => {
+                results.push(result(key, RemoveOutcome::Failed, Some(RemoveReason::Destroyed)));
+            }
+            Ok(Sent::InBin) if host.existence(path) == Existence::Absent => {
                 bytes = bytes.saturating_add(measure.map_or(0, |measure| measure.bytes));
                 results.push(result(key, RemoveOutcome::Removed, None));
             }
             // La corbeille dit oui, mais le chemin est encore là : jamais « parti ».
-            Ok(()) => results.push(result(key, RemoveOutcome::Failed, Some(RemoveReason::Partial))),
+            Ok(Sent::InBin) => {
+                results.push(result(key, RemoveOutcome::Failed, Some(RemoveReason::Partial)));
+            }
             Err(error) => {
                 let reason = match error {
                     RecycleError::Locked => Some(RemoveReason::InUse),

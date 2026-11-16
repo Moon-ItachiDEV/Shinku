@@ -600,6 +600,7 @@ export const fr = typeset({
       captionNothing: 'Rien n’est coché',
       binNote: 'Ta corbeille peut abandonner d’anciens éléments pour faire de la place.',
       inUse: 'Encore utilisé : ferme ce qui l’utilise, puis réessaie.',
+      destroyed: 'Windows l’a supprimé pour de bon : il n’est pas dans la Corbeille.',
       refused: 'La corbeille ne peut pas le recevoir.',
       partial: 'Une partie est restée.',
       other: 'N’a pas pu partir.',

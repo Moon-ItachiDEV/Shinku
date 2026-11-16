@@ -17,7 +17,7 @@ use std::io;
 use std::time::Duration;
 
 use crate::apps::{Place, Source};
-use crate::platform::RecycleError;
+use crate::platform::{RecycleError, Sent};
 pub use crate::startup::host::Existence;
 
 /// Un nombre que le registre peut écrire en DWORD ou en texte (`SystemComponent`).
@@ -226,7 +226,7 @@ pub trait AppsHost: Send + Sync + fmt::Debug {
 
     /// Met un fichier ou un dossier **entier** à la corbeille. Jamais de
     /// suppression définitive.
-    fn recycle(&self, path: &str) -> Result<(), RecycleError>;
+    fn recycle(&self, path: &str) -> Result<Sent, RecycleError>;
 
     /// Horloge monotone (temps depuis le démarrage), pour tous les délais.
     fn uptime(&self) -> Duration;
@@ -240,12 +240,12 @@ pub trait AppsHost: Send + Sync + fmt::Debug {
     /// eux-mêmes, ni dedans, ni un dossier qui en contient un.
     fn root_allowed(&self, path: &str) -> bool;
 
-    /// Remet un chemin en forme **longue et complète** : noms courts (`~1`)
-    /// développés, `.` et `..` résolus, préfixe `\\?\` retiré. `None` si la
-    /// machine n'y arrive pas (le chemin n'existe pas, ou ne se lit pas). Sert
-    /// pour ce que **les autres apps** écrivent dans leur inscription : un chemin
-    /// qu'on ne sait pas remettre en forme ne protège rien, donc on le dit.
-    fn long_path(&self, path: &str) -> Option<String>;
+    /// La forme **courte** complète d'un chemin (`PROGRA~1\\…`, 8.3), `None` si
+    /// Windows ne la donne pas (volume sans noms courts, chemin illisible). Ne
+    /// sert que pour un **candidat** : celui-ci existe et vient d'être vérifié.
+    /// Jamais pour ce qu'une voisine écrit : ses textes se comparent aux
+    /// écritures du candidat, sans toucher au disque.
+    fn short_path(&self, path: &str) -> Option<String>;
 
     /// Vrai si ce chemin est un dossier synchronisé avec un service en ligne
     /// (OneDrive…), ou dedans : la corbeille n'y a pas le même sens.
@@ -309,7 +309,7 @@ impl AppsHost for InertAppsHost {
         None
     }
 
-    fn recycle(&self, _path: &str) -> Result<(), RecycleError> {
+    fn recycle(&self, _path: &str) -> Result<Sent, RecycleError> {
         Err(RecycleError::Unavailable)
     }
 
@@ -331,7 +331,7 @@ impl AppsHost for InertAppsHost {
         true
     }
 
-    fn long_path(&self, _path: &str) -> Option<String> {
+    fn short_path(&self, _path: &str) -> Option<String> {
         None
     }
 }

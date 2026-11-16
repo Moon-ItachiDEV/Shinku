@@ -59,7 +59,7 @@ test('les paramètres d’adresse de la désinstallation sont lus, et le reste p
   for (const flow of ['launching', 'waiting', 'stuck', 'leftovers', 'none', 'family', 'unsure'] as const) {
     assert.deepEqual(read(`?appsflow=${flow}`), expected({ flow }));
   }
-  for (const fail of ['broken', 'cancelled', 'bin', 'kept'] as const) {
+  for (const fail of ['broken', 'cancelled', 'bin', 'destroyed', 'kept'] as const) {
     assert.deepEqual(read(`?appsfail=${fail}`), expected({ fail }));
   }
   assert.deepEqual(read('?apps=many&appsflow=family&appsfail=bin&appsload=fail'), {
@@ -306,4 +306,16 @@ test('le faux cœur ne renvoie jamais un objet qu’on pourrait modifier de l’
   const first = await answer(backend.appsView());
   first.apps.length = 0;
   assert.equal((await answer(backend.appsView())).apps.length, 15);
+});
+
+test('?appsfail=destroyed : Windows supprime pour de bon, les restes demandés ne sont plus là, aucun octet à la corbeille', async () => {
+  const backend = demo('?appsflow=leftovers&appsfail=destroyed');
+  const before = await answer(backend.appsView());
+  assert.equal(before.follow.phase, 'removed');
+  const keys = before.follow.phase === 'removed' ? before.follow.leftovers.map((row) => row.key) : [];
+  const result = await answer(backend.removeLeftovers(keys.slice(0, 1)), 400);
+  assert.deepEqual(result.results, [{ key: keys[0], outcome: 'failed', reason: 'destroyed' }]);
+  assert.equal(result.bytes, 0);
+  const rest = result.view.follow.phase === 'removed' ? result.view.follow.leftovers : [];
+  assert.equal(rest.length, keys.length - 1, 'l’élément n’est plus dans la vue');
 });

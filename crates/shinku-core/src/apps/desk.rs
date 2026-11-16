@@ -170,10 +170,10 @@ impl AppsDesk {
         }
         let input = if keys.len() > MAX_LEFTOVERS { None } else { self.follow().removal_input() };
         let (results, bytes) = match input {
-            Some((generation, snapshot, found)) => {
+            Some((snapshot, found)) => {
                 let (results, bytes) =
                     leftovers::remove(self.host.as_ref(), &snapshot, &found, keys);
-                self.follow().apply_removal(generation, &results);
+                self.follow().apply_removal(&results);
                 (results, bytes)
             }
             None => {

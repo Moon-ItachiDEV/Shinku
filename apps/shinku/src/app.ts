@@ -17,6 +17,7 @@ import type {
   GameStatus,
   GameView,
   KeepChoice,
+  LeftoverRow,
   SessionView,
   Settings,
   StartupView,
@@ -66,6 +67,7 @@ import {
   appById,
   askFor,
   type AppsSort,
+  checkable,
   checkedRows,
   focusAfterRemoval,
   focusTarget as appsFocusTarget,
@@ -1391,6 +1393,7 @@ export class App {
       appsConfirm: null,
       appsChecked: [],
       appsFailures: {},
+      appsDestroyed: [],
       appsEmptied: false,
       appsAnnounce: '',
     });
@@ -1505,6 +1508,7 @@ export class App {
       // Des restes tout neufs : rien n'est coché, aucun échec à montrer.
       patch.appsChecked = [];
       patch.appsFailures = {};
+      patch.appsDestroyed = [];
       patch.appsEmptied = false;
     }
     const key = this.activeKey();
@@ -1694,7 +1698,7 @@ export class App {
     try {
       const answer = await this.backend.rescanLeftovers();
       this.appsAction += 1;
-      this.set({ appsBusy: null, appsChecked: [], appsFailures: {}, appsEmptied: false });
+      this.set({ appsBusy: null, appsChecked: [], appsFailures: {}, appsDestroyed: [], appsEmptied: false });
       this.adoptApps(answer);
     } catch (error) {
       this.appsAction += 1;
@@ -1706,7 +1710,7 @@ export class App {
 
   private toggleLeftover(path: string): void {
     const view = this.state.apps;
-    if (this.state.appsBusy !== null || view === null || !proposed(view.follow).some((row) => row.path === path)) {
+    if (this.state.appsBusy !== null || this.state.appsFailures[path] === 'destroyed' || view === null || !proposed(view.follow).some((row) => row.path === path)) {
       return;
     }
     const checked = this.state.appsChecked;
@@ -1720,7 +1724,7 @@ export class App {
       return;
     }
     const rows = proposed(view.follow);
-    const picked = checkedRows(rows, this.state.appsChecked);
+    const picked = checkedRows(checkable(rows, this.state.appsFailures), this.state.appsChecked);
     if (picked.length === 0) {
       return;
     }
@@ -1732,10 +1736,18 @@ export class App {
       this.appsAction += 1;
       const removal = removalOf(rows, answer);
       const after = proposed(answer.view.follow);
+      // Ceux que Windows a supprimés pour de bon ne sont plus dans la vue : la page les garde, avec leur raison.
+      const stillThere = (row: LeftoverRow): boolean => after.some((one) => one.path === row.path);
+      const destroyed = [
+        ...this.state.appsDestroyed.filter((row) => !removal.settled.includes(row.path) && !stillThere(row)),
+        ...removal.destroyed.filter((row) => !stillThere(row)),
+      ];
+      const failures = mergedFailures(this.state.appsFailures, removal, [...after, ...destroyed]);
       this.set({
         appsBusy: null,
         appsChecked: [],
-        appsFailures: mergedFailures(this.state.appsFailures, removal, after),
+        appsDestroyed: destroyed,
+        appsFailures: failures,
         appsEmptied: noneBecause(answer.view.follow) === 'none',
       });
       this.adoptApps(answer.view);
@@ -1745,8 +1757,9 @@ export class App {
       }
       if (this.appsWatching && this.state.route === 'uninstall' && screenOf(answer.view.follow) === 'leftovers') {
         // L'orbe est inactif : le focus va au premier reste qui est encore là (avec sa raison), sinon à « Terminé ».
-        this.focusAny([focusAfterRemoval(after)]);
-        this.forceFocus(focusAfterRemoval(after));
+        const target = focusAfterRemoval(checkable(after, failures));
+        this.focusAny([target]);
+        this.forceFocus(target);
       }
     } catch (error) {
       this.appsAction += 1;

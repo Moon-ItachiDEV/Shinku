@@ -4,56 +4,67 @@
 //! inscriptions des **quatre places** sont relues, sans le filtre de la liste :
 //! les composants cachés comptent aussi. Si une place est illisible ou
 //! incomplète, **aucun reste n'est proposé** : on ne sait pas à qui sont les
-//! dossiers.
+//! dossiers. C'est la **seule** cause d'illisibilité.
+//!
+//! **On ne touche jamais au disque pour une voisine.** Ce qu'elle écrit
+//! (`InstallLocation`, `UninstallString`, `DisplayIcon`) est un texte, qu'on
+//! compare aux écritures du **candidat**, lui qui existe et vient d'être
+//! vérifié. Une voisine orpheline, une icône absente, un emplacement dans le
+//! profil d'un autre compte, un lecteur réseau débranché : rien n'est lu, rien
+//! n'attend, rien ne rend le PC illisible.
 //!
 //! Deux protections :
 //!
 //! - **la famille** : une voisine est de la même famille qu'un nom si son nom nu
 //!   lui est égal, ou commence par lui suivi d'une espace (« Python 3.12.1
 //!   (64-bit) », « Python Launcher », « Unity Hub », la nouvelle version d'une
-//!   app mise à niveau pendant l'attente). La règle vaut **pour chaque nom
-//!   qui sert à chercher** (le nom nu, et le dernier nom de l'emplacement) ;
-//! - **ce qu'une voisine réclame** : un dossier est écarté si l'emplacement
-//!   d'une voisine est égal à lui ou dedans ; si l'emplacement d'une voisine le
-//!   contient (sauf si le garde refuse cet emplacement comme racine : une
-//!   inscription mal écrite, `C:\` par exemple, ne doit pas éteindre tous les
-//!   restes du PC) ; ou si le texte de son désinstalleur ou de son icône
-//!   **contient** le chemin du dossier suivi d'une barre inverse, où que ce soit
-//!   dans la ligne (`cmd /c "…\X\u.bat"`, `rundll32 "…\X\y.dll",Run`).
+//!   app mise à niveau pendant l'attente). La règle vaut **pour chaque nom qui
+//!   sert à chercher** (le nom nu, et le dernier nom de l'emplacement) ;
+//! - **ce qu'une voisine réclame**, voir [`Neighbours::claims`].
 //!
-//! **Une voisine qu'on ne sait pas lire ne protège rien, donc on le dit.** Une
-//! voisine écrite en nom court (`PROGRA~1`), en `\\?\…`, avec `.` ou `..`, est
-//! remise en forme longue et complète par la machine
-//! ([`AppsHost::long_path`]). Pour son emplacement : si la machine n'y arrive
-//! pas et que le chemin n'est pas **absent avec certitude**, on ne sait pas où
-//! vit cette voisine ; pour son désinstalleur ou son icône qui contiennent un
-//! nom court : si le fichier n'en est pas tiré en forme longue (le programme
-//! que lancerait [`crate::apps::launch::plan`], hors hôtes comme `cmd.exe`).
-//! Dans ces cas, les voisines sont **illisibles** ([`read`] rend `None`) : rien
-//! n'est proposé, rien n'est retiré, et la page le dit (`complete: false`).
-//! Conséquence assumée : sur un PC où une vieille app est inscrite d'une façon
-//! que Shinku ne sait pas lire, il ne propose aucun reste.
+//! Les **écritures d'un candidat** : chaque composant de son chemin a une
+//! écriture longue (celle du candidat) et, à côté, une écriture courte
+//! (`PROGRA~1`, rendue par [`AppsHost::short_path`]). Si la machine ne rend pas
+//! d'écriture courte, ou si elle n'a pas le même nombre de composants, elle est
+//! **inconnue**. Un composant d'un texte de voisine est admis s'il est l'une des
+//! écritures de celui de même rang. Les `.` et `..` d'un texte sont résolus
+//! **par le texte seul** (jamais plus haut que le lecteur).
+//!
+//! Une voisine réclame un candidat si :
+//!
+//! 1. **une ligne le mentionne** : le texte de son désinstalleur ou de son icône
+//!    (tel quel, et avec `.` et `..` résolus) porte, quelque part, le chemin du
+//!    candidat composant par composant, suivi d'une barre, de la fin du texte,
+//!    d'un guillemet, d'un blanc ou d'une virgule. `/dir="C:\…\Hades"` réclame
+//!    `Hades` ; `…\Foo2\x.exe` ne réclame pas `…\Foo` ;
+//! 2. **son emplacement** est le candidat, ou dedans, ou le contient (sauf si
+//!    le garde refuse cet emplacement comme racine : une inscription mal écrite
+//!    ne doit pas éteindre tous les restes du PC) ;
+//! 3. **le candidat n'a pas d'écriture courte connue** et qu'un texte de voisine
+//!    porte un nom court (`~` suivi d'un chiffre) : dans le doute, il est écarté
+//!    (ce candidat seul, jamais tout le PC).
+//!
+//! Limites assumées : une voisine inscrite à travers une jonction ou un `subst`
+//! n'est comparée que par son texte ; une app Windows Installer sans
+//! emplacement ni icône ne protège aucun dossier.
 
-use crate::apps::host::{AppsHost, Existence, RawRegistration};
-use crate::apps::launch::{Plan, plan};
-use crate::apps::paths::{is_absolute, is_inside, is_plain, is_same_or_inside, last_name, norm};
-use crate::apps::{Place, Source, names};
-use crate::startup::command::HOSTS;
+use crate::apps::host::{AppsHost, RawRegistration};
+use crate::apps::paths::{is_absolute, norm};
+use crate::apps::{Place, names};
 
-/// Ce que Shinku retient d'une voisine.
+/// Ce que Shinku retient d'une voisine : des textes, rien d'autre.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Neighbour {
     /// Son nom nu (vide si elle n'a pas de nom).
     bare: String,
-    /// Son emplacement d'installation, en forme longue et complète.
+    /// Son emplacement, développé, nettoyé, `.` et `..` résolus, plié ; `None`
+    /// s'il n'est pas de la forme `X:\…`.
     location: Option<String>,
-    /// Sa commande de désinstallation, développée et pliée.
-    uninstall: String,
-    /// Son icône, développée et pliée.
-    icon: String,
-    /// Les fichiers qu'on a pu tirer de sa commande ou de son icône quand ils
-    /// sont écrits en nom court, en forme longue et pliés.
-    files: Vec<String>,
+    /// Les textes de son désinstalleur et de son icône : chacun tel quel, et avec
+    /// `.` et `..` résolus (développés et pliés).
+    lines: Vec<String>,
+    /// L'un de ses textes porte un nom court (`~` suivi d'un chiffre).
+    short: bool,
 }
 
 /// Les voisines, lues dans les quatre places.
@@ -67,88 +78,59 @@ fn has_short_name(text: &str) -> bool {
     text.as_bytes().windows(2).any(|pair| pair[0] == b'~' && pair[1].is_ascii_digit())
 }
 
-/// Le fichier d'une icône : sans guillemets, sans l'indice final (`,0`).
-fn icon_file(text: &str) -> &str {
-    let text = text.trim();
-    if let Some(quoted) = text.strip_prefix('"') {
-        return quoted.split('"').next().unwrap_or_default().trim();
-    }
-    match text.rsplit_once(',') {
-        Some((file, index))
-            if index.trim().trim_start_matches('-').bytes().all(|b| b.is_ascii_digit()) =>
-        {
-            file.trim()
-        }
-        _ => text,
-    }
-}
-
-/// L'emplacement d'une voisine. `Ok(None)` : elle ne réclame aucun dossier de
-/// cette machine ; `Err` : on ne sait pas où elle vit.
-fn location_of(text: &str, host: &dyn AppsHost) -> Result<Option<String>, ()> {
-    let expanded = host.expand(text);
-    let mut text = expanded.trim();
-    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
-        text = text[1..text.len() - 1].trim();
-    }
-    let text = text.trim_end_matches(['\\', '/']);
-    // Sans lecteur (vide, réseau, relatif, variable inconnue) : rien d'ici.
-    let drive = text.strip_prefix(r"\\?\").unwrap_or(text);
-    if !is_absolute(drive) || text.contains('%') {
-        return Ok(None);
-    }
-    if let Some(long) = host.long_path(text)
-        && is_plain(&long)
-    {
-        return Ok(host.is_local_fixed(&long).then_some(long));
-    }
-    // La machine n'y arrive pas. Absent avec certitude, ou sur un disque qui
-    // n'est pas fixe : aucune réclamation. Sinon, on ne sait pas.
-    if !is_absolute(text) || !host.is_local_fixed(text) {
-        return Ok(None);
-    }
-    match host.existence(text) {
-        Existence::Absent => Ok(None),
-        _ => Err(()),
-    }
-}
-
-/// La voisine que décrit cette inscription, ou `None` si elle ne se lit pas.
-fn neighbour(raw: &RawRegistration, host: &dyn AppsHost) -> Option<Neighbour> {
-    let location = match raw.install_location.as_deref() {
-        Some(text) => location_of(text, host).ok()?,
-        None => None,
-    };
-    let mut files = Vec::new();
-    let uninstall_text = host.expand(raw.uninstall_string.as_deref().unwrap_or_default());
-    if has_short_name(&uninstall_text) {
-        match plan(raw, Source::Machine64, &raw.key, host) {
-            // Windows Installer : la ligne n'est pas ce qui se lance.
-            Plan::Run { installer: true, .. } => {}
-            Plan::Run { program, .. }
-                if !HOSTS.contains(&last_name(&program).to_lowercase().as_str()) =>
-            {
-                files.push(norm(&host.long_path(&program).filter(|long| is_plain(long))?));
+/// Résout `.` et `..` **par le texte seul** : un segment exactement `..` entre
+/// deux barres retire le précédent, un segment exactement `.` disparaît. On ne
+/// remonte jamais au-dessus d'un lecteur (un segment qui finit par `:`).
+fn resolve_dots(text: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    for part in text.split('\\') {
+        match part {
+            "." => {}
+            ".." => {
+                if kept.last().is_some_and(|last| last.len() > 1 && !last.ends_with(':')) {
+                    kept.pop();
+                }
             }
-            _ => return None,
+            other => kept.push(other),
         }
     }
-    let icon_text = host.expand(raw.display_icon.as_deref().unwrap_or_default());
-    if has_short_name(&icon_text) {
-        let file = icon_file(&icon_text);
-        files.push(norm(&host.long_path(file).filter(|long| is_plain(long))?));
+    kept.join("\\")
+}
+
+/// Une voisine, lue sans toucher au disque.
+fn neighbour(raw: &RawRegistration, host: &dyn AppsHost) -> Neighbour {
+    let expanded = |text: Option<&str>| host.expand(text.unwrap_or_default());
+    let location_text = expanded(raw.install_location.as_deref());
+    let uninstall = expanded(raw.uninstall_string.as_deref());
+    let icon = expanded(raw.display_icon.as_deref());
+    let short = [&location_text, &uninstall, &icon].iter().any(|text| has_short_name(text));
+
+    let trimmed = location_text.trim_matches(|c: char| c.is_whitespace() || c == '"');
+    let drive = trimmed.strip_prefix(r"\\?\").unwrap_or(trimmed);
+    let drive = drive.trim_end_matches(['\\', '/']);
+    let location = (!location_text.contains('%') && is_absolute(drive))
+        .then(|| norm(&resolve_dots(&drive.replace('/', "\\"))))
+        .filter(|text| is_absolute(text));
+
+    let mut lines = Vec::new();
+    for text in [&uninstall, &icon] {
+        let folded = norm(text.trim());
+        let resolved = resolve_dots(&folded);
+        if resolved != folded {
+            lines.push(resolved);
+        }
+        lines.push(folded);
     }
-    Some(Neighbour {
+    Neighbour {
         bare: raw.display_name.as_deref().map(names::bare_name).unwrap_or_default(),
         location,
-        uninstall: norm(uninstall_text.trim()),
-        icon: norm(icon_text.trim()),
-        files,
-    })
+        lines,
+        short,
+    }
 }
 
-/// Lit les voisines. `None` si une place est illisible ou incomplète, ou si une
-/// voisine est écrite d'une façon qu'on ne sait pas lire.
+/// Lit les voisines. `None` si une place est illisible, incomplète ou trop
+/// grande : c'est la seule cause. Aucun accès au disque.
 pub fn read(host: &dyn AppsHost) -> Option<Neighbours> {
     let mut list = Vec::new();
     for place in Place::ALL {
@@ -156,11 +138,82 @@ pub fn read(host: &dyn AppsHost) -> Option<Neighbours> {
         if !source.complete || source.entries.len() > crate::apps::MAX_KEYS {
             return None;
         }
-        for raw in &source.entries {
-            list.push(neighbour(raw, host)?);
-        }
+        list.extend(source.entries.iter().map(|raw| neighbour(raw, host)));
     }
     Some(Neighbours { list })
+}
+
+/// Les écritures admises de chaque composant d'un candidat.
+struct Writings {
+    /// Par rang : l'écriture longue, et la courte si elle est connue.
+    parts: Vec<Vec<String>>,
+    /// Vrai si l'écriture courte est connue (même nombre de composants).
+    short_known: bool,
+}
+
+impl Writings {
+    fn of(candidate: &str, host: &dyn AppsHost) -> Self {
+        let long: Vec<String> = norm(candidate).split('\\').map(str::to_owned).collect();
+        let short: Option<Vec<String>> = host
+            .short_path(candidate)
+            .map(|short| norm(&short).split('\\').map(str::to_owned).collect())
+            .filter(|short: &Vec<String>| short.len() == long.len());
+        let short_known = short.is_some();
+        let parts = long
+            .iter()
+            .enumerate()
+            .map(|(rank, part)| {
+                let mut writings = vec![part.clone()];
+                if let Some(other) = short.as_ref().map(|short| &short[rank])
+                    && other != part
+                {
+                    writings.push(other.clone());
+                }
+                writings
+            })
+            .collect();
+        Self { parts, short_known }
+    }
+
+    /// Ce texte mentionne-t-il le candidat, composant par composant ?
+    fn mentioned_in(&self, text: &str) -> bool {
+        let Some(drive) = self.parts.first().and_then(|writings| writings.first()) else {
+            return false;
+        };
+        let start = format!("{drive}\\");
+        text.match_indices(&start).any(|(at, _)| self.walk(&text[at..]))
+    }
+
+    fn walk(&self, mut rest: &str) -> bool {
+        for (rank, writings) in self.parts.iter().enumerate() {
+            let last = rank + 1 == self.parts.len();
+            let hit = writings.iter().find(|writing| {
+                rest.starts_with(writing.as_str()) && {
+                    let after = rest[writing.len()..].chars().next();
+                    if last {
+                        after.is_none_or(|c| matches!(c, '\\' | '"' | ',') || c.is_whitespace())
+                    } else {
+                        after == Some('\\')
+                    }
+                }
+            });
+            let Some(writing) = hit else { return false };
+            rest = &rest[(writing.len() + usize::from(!last)).min(rest.len())..];
+        }
+        true
+    }
+
+    /// Cet emplacement (déjà plié, de la forme `x:\…`) est-il le candidat, ou
+    /// dedans, ou le contient-il ? `Some(true)` : égal ou dedans ; `Some(false)` :
+    /// il contient le candidat, avec le nombre de composants en commun ; `None` :
+    /// sans rapport.
+    fn compare(&self, location: &str) -> Option<usize> {
+        let parts: Vec<&str> = location.split('\\').collect();
+        let common = parts.len().min(self.parts.len());
+        let same =
+            (0..common).all(|rank| self.parts[rank].iter().any(|writing| writing == parts[rank]));
+        same.then_some(parts.len())
+    }
 }
 
 impl Neighbours {
@@ -175,22 +228,35 @@ impl Neighbours {
             .any(|neighbour| neighbour.bare == bare || neighbour.bare.starts_with(&prefix))
     }
 
-    /// Vrai si une voisine réclame ce dossier ou ce fichier.
+    /// Vrai si une voisine réclame ce dossier ou ce fichier (voir l'en-tête du
+    /// module). Seul le candidat est interrogé sur le disque, pour son écriture
+    /// courte.
     pub fn claims(&self, candidate: &str, host: &dyn AppsHost) -> bool {
-        let candidate = norm(candidate);
-        let inside = format!("{candidate}\\");
+        let writings = Writings::of(candidate, host);
+        let original: Vec<&str> =
+            candidate.trim_end_matches(['\\', '/']).split(['\\', '/']).collect();
         self.list.iter().any(|neighbour| {
-            let by_location = neighbour.location.as_deref().is_some_and(|location| {
-                // Son emplacement est le candidat, ou dedans.
-                is_same_or_inside(location, &candidate)
-                    // Ou il le contient, sauf si le garde le refuse comme racine.
-                    || (is_inside(&candidate, location) && host.root_allowed(location))
-            });
-            by_location
-                // Le chemin du candidat, suivi d'une barre, où que ce soit dans la ligne.
-                || neighbour.uninstall.contains(&inside)
-                || neighbour.icon.contains(&inside)
-                || neighbour.files.iter().any(|file| file.starts_with(&inside))
+            // 3. Pas d'écriture courte connue, et une voisine en nom court.
+            if !writings.short_known && neighbour.short {
+                return true;
+            }
+            // 1. Une ligne qui le mentionne.
+            if neighbour.lines.iter().any(|line| writings.mentioned_in(line)) {
+                return true;
+            }
+            // 2. Son emplacement.
+            let Some(count) = neighbour.location.as_deref().and_then(|text| writings.compare(text))
+            else {
+                return false;
+            };
+            if count >= writings.parts.len() {
+                return true;
+            }
+            // Il contient le candidat : sauf si le garde le refuse comme racine.
+            // (Un emplacement `X:\` seul n'est jamais retenu : il a au moins
+            // deux composants.)
+            let prefix = original[..count].join("\\");
+            host.root_allowed(&prefix)
         })
     }
 }

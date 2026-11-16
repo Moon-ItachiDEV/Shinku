@@ -186,6 +186,16 @@ impl fmt::Display for RecycleError {
 
 impl std::error::Error for RecycleError {}
 
+/// Où est parti un élément que Windows a accepté de supprimer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sent {
+    /// Dans la corbeille : l'élément y est, restaurable.
+    InBin,
+    /// Windows l'a supprimé pour de bon : il n'est pas dans la corbeille (le
+    /// shell n'a rendu aucun élément de corbeille).
+    Destroyed,
+}
+
 /// La machine, vue par le moteur.
 ///
 /// Tous les chemins rendus sont absolus et sous forme interne

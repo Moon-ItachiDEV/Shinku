@@ -53,6 +53,8 @@ pub mod view;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_claims;
+#[cfg(test)]
 mod tests_follow;
 #[cfg(test)]
 mod tests_leftovers;

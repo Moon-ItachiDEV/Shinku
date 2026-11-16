@@ -288,6 +288,11 @@ export function leftoverSize(row: LeftoverRow): string | null {
   return files === undefined ? null : fr.uninstall.leftovers.files(files);
 }
 
+/** Les restes qu'on peut encore cocher : ceux que Windows a supprimés pour de bon n'ont plus rien à envoyer. */
+export function checkable(rows: readonly LeftoverRow[], failures: Readonly<Record<string, Failure>>): LeftoverRow[] {
+  return rows.filter((row) => failures[row.path] !== 'destroyed');
+}
+
 /** Les restes cochés, dans l'ordre de la liste : `checked` porte des chemins. */
 export function checkedRows(rows: readonly LeftoverRow[], checked: readonly string[]): LeftoverRow[] {
   return rows.filter((row) => checked.includes(row.path));
@@ -332,6 +337,8 @@ export function failureText(failure: Failure): string {
       return fr.uninstall.leftovers.refused;
     case 'partial':
       return fr.uninstall.leftovers.partial;
+    case 'destroyed':
+      return fr.uninstall.leftovers.destroyed;
     case 'other':
       return fr.uninstall.leftovers.other;
   }
@@ -344,13 +351,15 @@ export interface Removal {
   bytes: number;
   /** Les échecs, par chemin : ils restent dans la liste avec leur raison. */
   failures: Record<string, Failure>;
+  /** Supprimés pour de bon par Windows : ils ne sont plus là, la page les garde à l'écran, sans case. */
+  destroyed: LeftoverRow[];
   /** Les chemins qui ont eu un résultat (partis, déjà partis, échoués). */
   settled: string[];
 }
 
 /** `before` : les restes tels que la page les montrait quand elle a envoyé ses clés. */
 export function removalOf(before: readonly LeftoverRow[], answer: RemoveLeftovers): Removal {
-  const removal: Removal = { moved: 0, bytes: answer.bytes, failures: {}, settled: [] };
+  const removal: Removal = { moved: 0, bytes: answer.bytes, failures: {}, destroyed: [], settled: [] };
   for (const result of answer.results) {
     const row = before.find((one) => one.key === result.key);
     if (row === undefined) {
@@ -361,6 +370,9 @@ export function removalOf(before: readonly LeftoverRow[], answer: RemoveLeftover
       removal.moved += 1;
     } else if (result.outcome === 'failed' || result.outcome === 'refused') {
       removal.failures[row.path] = result.outcome === 'failed' ? (result.reason ?? 'other') : 'other';
+      if (result.outcome === 'failed' && result.reason === 'destroyed') {
+        removal.destroyed.push(row);
+      }
     }
   }
   return removal;

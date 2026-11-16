@@ -16,6 +16,7 @@ import { fr } from '../i18n/fr.ts';
 import {
   APPS_SORTS,
   type AppsSort,
+  checkable,
   checkedRows,
   chipOf,
   confirmExtras,
@@ -291,6 +292,20 @@ function leftoverRow(state: AppState, row: LeftoverRow, actions: Actions): Templ
   const failure = state.appsFailures[row.path];
   const size = leftoverSize(row);
   const base = `uninstall-left-${row.key}`;
+  if (failure === 'destroyed') {
+    // Windows l'a supprimé pour de bon : il n'y a plus rien à cocher ni à envoyer.
+    return html`<li>
+      <div class="row uleft static">
+        <span class="box ugone" aria-hidden="true"></span>
+        <span class="tx">
+          <span class="t1">${middlePath(row.path)}</span>
+          <span class="t2">${leftoverText(row)}</span>
+          <span class="t2 ufail">${failureText(failure)}</span>
+        </span>
+        ${size === null ? nothing : html`<span class="val usize">${size}</span>`}
+      </div>
+    </li>`;
+  }
   return html`<li>
     <label class="row uleft">
       <input
@@ -349,6 +364,8 @@ function leftoversScreen(state: AppState, follow: FollowView, actions: Actions):
   }
   const because = noneBecause(follow);
   const rows = proposed(follow);
+  // Ceux que Windows a supprimés pour de bon restent à l'écran, après ce qui est encore là.
+  const shown = [...rows, ...state.appsDestroyed.filter((gone) => !rows.some((row) => row.path === gone.path))];
   const text =
     because === 'family'
       ? fr.uninstall.leftovers.family
@@ -362,7 +379,7 @@ function leftoversScreen(state: AppState, follow: FollowView, actions: Actions):
   return html`<div class="scroll enter">
     <div class="page startup uninstall">
       ${leftoversHeader(follow.name, text)}
-      ${because === null ? leftoversCard(state, rows, actions) : nothing}
+      ${shown.length > 0 ? leftoversCard(state, shown, actions) : nothing}
     </div>
   </div>`;
 }
@@ -375,7 +392,7 @@ function leftoversDock(state: AppState, follow: FollowView, actions: Actions): C
   if (follow.phase !== 'removed') {
     return nothing;
   }
-  const rows = proposed(follow);
+  const rows = checkable(proposed(follow), state.appsFailures);
   const busy = isBusy(state);
   if (rows.length === 0) {
     return html`<div class="dock udock">

@@ -529,7 +529,8 @@ export type UninstallRefusal =
   | 'failed';
 
 export type RemoveOutcome = 'removed' | 'alreadyGone' | 'refused' | 'failed';
-export type RemoveReason = 'inUse' | 'refused' | 'partial';
+/** `destroyed` : Windows a supprimé l'élément pour de bon au lieu de le garder dans la corbeille ; il n'est plus là. */
+export type RemoveReason = 'inUse' | 'refused' | 'partial' | 'destroyed';
 
 export interface RemoveResult {
   key: number;

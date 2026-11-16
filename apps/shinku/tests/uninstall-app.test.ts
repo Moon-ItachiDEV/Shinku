@@ -476,3 +476,37 @@ test('plusieurs rafraîchissements pendant l’attente n’arment qu’une minut
   await flush();
   assert.equal(page.of('appsView').length, before + 1, 'une seule demande part');
 });
+
+test('« destroyed » : l’élément n’est plus là, la page le garde sans case, ne le renvoie pas, et le focus va à ce qui reste', async () => {
+  const A = left(0, 'C:\\a');
+  const B = left(1, 'C:\\b');
+  const buttons = [fakeButton(uninstallFocus.done), fakeButton(uninstallFocus.leftover(0))];
+  const page = start(buttons);
+  await page.open(view(removed([A, B])));
+  page.actions.toggleLeftover(A.path);
+  page.actions.toggleLeftover(B.path);
+  void page.actions.removeLeftovers();
+  assert.deepEqual(page.of('removeLeftovers')[0]?.args, [[0, 1]]);
+  page.of('removeLeftovers')[0]?.resolve({
+    view: view(removed([B])),
+    results: [
+      { key: 0, outcome: 'failed', reason: 'destroyed' },
+      { key: 1, outcome: 'failed', reason: 'inUse' },
+    ],
+    bytes: 0,
+  } satisfies RemoveLeftovers);
+  await flush();
+  assert.deepEqual(page.state().appsDestroyed.map((row) => row.path), [A.path]);
+  assert.equal(page.state().appsFailures[A.path], 'destroyed');
+  assert.equal(page.state().appsFailures[B.path], 'inUse');
+  // Une ligne détruite ne se coche plus, et ne repart pas.
+  page.actions.toggleLeftover(A.path);
+  assert.deepEqual(page.state().appsChecked, []);
+  page.actions.toggleLeftover(B.path);
+  void page.actions.removeLeftovers();
+  assert.deepEqual(page.of('removeLeftovers')[1]?.args, [[1]], 'seul ce qui reste part');
+  page.of('removeLeftovers')[1]?.resolve({ view: view(removed([])), results: [{ key: 1, outcome: 'removed' }], bytes: 10 } satisfies RemoveLeftovers);
+  await flush();
+  assert.deepEqual(page.state().appsDestroyed.map((row) => row.path), [A.path], 'elle reste à l’écran');
+  assert.ok((buttons[0]?.focus.mock.callCount() ?? 0) >= 1, 'le focus va à « Terminé »');
+});

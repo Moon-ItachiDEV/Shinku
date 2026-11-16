@@ -19,7 +19,7 @@ use crate::apps::host::{
 };
 use crate::apps::paths::{is_inside, is_same_or_inside, norm, parent};
 use crate::apps::{Place, Source};
-use crate::platform::RecycleError;
+use crate::platform::{RecycleError, Sent};
 
 /// Ce que la machine fabriquée répond à un lancement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +60,8 @@ pub enum FakeRecycle {
     Other,
     /// Elle dit oui, mais une partie reste sur le disque.
     LeavesSome,
+    /// Windows supprime pour de bon : rien n'entre dans la corbeille.
+    Destroys,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,7 +97,8 @@ struct Fake {
     recycled: Vec<String>,
     uptime: Duration,
     registration_reads: usize,
-    long_paths: HashMap<String, Option<String>>,
+    short_paths: HashMap<String, Option<String>>,
+    disk_calls: usize,
 }
 
 /// La machine fabriquée.
@@ -182,7 +185,8 @@ impl FakeAppsHost {
             recycled: Vec::new(),
             uptime: Duration::from_secs(10_000),
             registration_reads: 0,
-            long_paths: HashMap::new(),
+            short_paths: HashMap::new(),
+            disk_calls: 0,
         };
         for (name, value) in [
             ("APPDATA", ROAMING),
@@ -206,20 +210,13 @@ impl FakeAppsHost {
             fake.folders.insert(folder, path.to_owned());
         }
         let host = Self { inner: Mutex::new(fake), ended: Arc::new(AtomicBool::new(false)) };
-        for dir in [
-            r"C:\Windows\System32",
-            ROAMING,
-            LOCAL,
-            LOCAL_LOW,
-            START_MENU,
-            DESKTOP,
-            r"C:\Program Files\Shinku",
-        ] {
+        for dir in [r"C:\Windows\System32", ROAMING, LOCAL, LOCAL_LOW, START_MENU, DESKTOP] {
             host.add_dir(dir);
         }
-        host.add_file(r"C:\Windows\System32\msiexec.exe", 100);
-        host.add_file(r"C:\Windows\System32\rundll32.exe", 100);
-        host.add_file(r"C:\Windows\System32\cmd.exe", 100);
+        host.add_dir(r"C:\Program Files\Shinku");
+        for file in ["msiexec", "rundll32", "cmd"] {
+            host.add_file(&format!(r"C:\Windows\System32\{file}.exe"), 100);
+        }
         host.add_file(r"C:\Program Files\Shinku\shinku.exe", 100);
         host
     }
@@ -418,20 +415,21 @@ impl FakeAppsHost {
         self.state().recycled.clone()
     }
 
-    // --- Formes longues ---
-
-    /// La forme longue de ce chemin (`None` : la machine n'y arrive pas). Sans
-    /// table, un chemin propre est rendu tel quel, tout autre n'y arrive pas.
-    pub fn set_long_path(&self, path: &str, long: Option<&str>) {
-        self.state().long_paths.insert(norm(path), long.map(str::to_owned));
+    /// La forme courte de ce chemin (`None` : Windows ne la donne pas). Sans
+    /// table, le chemin est rendu tel quel (volume sans noms courts).
+    pub fn set_short_path(&self, path: &str, short: Option<&str>) {
+        self.state().short_paths.insert(norm(path), short.map(str::to_owned));
     }
 
-    // --- Horloge ---
+    /// Combien de fois la machine a été **interrogée sur le disque** (existence,
+    /// lecteur, dossier, mesure, forme courte) : lire les voisines n'en fait aucun.
+    pub fn disk_calls(&self) -> usize {
+        self.state().disk_calls
+    }
 
     /// Avance l'horloge.
     pub fn advance(&self, duration: Duration) {
-        let mut state = self.state();
-        state.uptime += duration;
+        self.state().uptime += duration;
     }
 }
 
@@ -491,13 +489,15 @@ impl AppsHost for FakeAppsHost {
     }
 
     fn is_local_fixed(&self, path: &str) -> bool {
+        self.state().disk_calls += 1;
         let letter = path.chars().next().map(|letter| letter.to_ascii_uppercase());
         crate::apps::paths::is_absolute(path)
             && !letter.is_some_and(|letter| self.state().remote_drives.contains(&letter))
     }
 
     fn existence(&self, path: &str) -> Existence {
-        let state = self.state();
+        let mut state = self.state();
+        state.disk_calls += 1;
         let key = norm(path);
         if state.denied.contains(&key) {
             return Existence::Unsure;
@@ -634,7 +634,7 @@ impl AppsHost for FakeAppsHost {
         }
     }
 
-    fn recycle(&self, path: &str) -> Result<(), RecycleError> {
+    fn recycle(&self, path: &str) -> Result<Sent, RecycleError> {
         let mut state = self.state();
         let key = norm(path);
         if !state.nodes.contains_key(&key) {
@@ -647,13 +647,17 @@ impl AppsHost for FakeAppsHost {
             Some(FakeRecycle::Other) => return Err(RecycleError::Failed("autre".to_owned())),
             Some(FakeRecycle::LeavesSome) => {
                 state.recycled.push(path.to_owned());
-                return Ok(());
+                return Ok(Sent::InBin);
+            }
+            Some(FakeRecycle::Destroys) => {
+                state.nodes.retain(|name, _| *name != key && !is_inside(name, &key));
+                return Ok(Sent::Destroyed);
             }
             None => {}
         }
         state.nodes.retain(|name, _| *name != key && !is_inside(name, &key));
         state.recycled.push(path.to_owned());
-        Ok(())
+        Ok(Sent::InBin)
     }
 
     fn uptime(&self) -> Duration {
@@ -685,10 +689,10 @@ impl AppsHost for FakeAppsHost {
         self.state().sync_roots.iter().any(|root| is_same_or_inside(path, root))
     }
 
-    fn long_path(&self, path: &str) -> Option<String> {
-        if let Some(known) = self.state().long_paths.get(&norm(path)) {
-            return known.clone();
-        }
-        crate::apps::paths::is_plain(path).then(|| path.trim_end_matches(['\\', '/']).to_owned())
+    fn short_path(&self, path: &str) -> Option<String> {
+        let mut state = self.state();
+        state.disk_calls += 1;
+        let known = state.short_paths.get(&norm(path));
+        known.cloned().unwrap_or_else(|| Some(path.to_owned()))
     }
 }

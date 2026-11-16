@@ -165,7 +165,8 @@
     "removeReason": [
       "inUse",
       "refused",
-      "partial"
+      "partial",
+      "destroyed"
     ],
     "risk": [
       "A",

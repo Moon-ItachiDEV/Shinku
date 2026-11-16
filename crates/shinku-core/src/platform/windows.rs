@@ -305,7 +305,10 @@ impl Environment for SystemEnvironment {
     }
 
     fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
-        shell::recycle(path)
+        // Le grand vide ne distingue pas « à la corbeille » de « supprimé pour
+        // de bon » : `Ok(())` dans les deux cas, comme avant. Seul le module
+        // « Désinstallation » lit ce que `shell::recycle` rend (`Sent`).
+        shell::recycle(path).map(|_| ())
     }
 }
 

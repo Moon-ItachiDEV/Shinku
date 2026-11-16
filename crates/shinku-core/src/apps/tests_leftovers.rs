@@ -16,7 +16,11 @@ use crate::apps::tests::reg;
 use crate::apps::{Place, Scope, Source, app_from};
 
 /// Installe l'app, prend sa photo, puis la désinstalle (son inscription part).
-fn snapshot_of(host: &Arc<FakeAppsHost>, raw: RawRegistration, source: Source) -> Snapshot {
+pub(super) fn snapshot_of(
+    host: &Arc<FakeAppsHost>,
+    raw: RawRegistration,
+    source: Source,
+) -> Snapshot {
     let key = raw.key.clone();
     host.add_registration(source.place(), raw.clone());
     let own = host.own_dir();
@@ -28,17 +32,17 @@ fn snapshot_of(host: &Arc<FakeAppsHost>, raw: RawRegistration, source: Source) -
     snapshot
 }
 
-fn find(host: &FakeAppsHost, snapshot: &Snapshot) -> Found {
+pub(super) fn find(host: &FakeAppsHost, snapshot: &Snapshot) -> Found {
     let mut next = 0;
     search(host, snapshot, &mut next)
 }
 
-fn paths(found: &Found) -> Vec<String> {
+pub(super) fn paths(found: &Found) -> Vec<String> {
     found.leftovers.iter().map(|leftover| leftover.path.clone()).collect()
 }
 
 /// Une app ordinaire de `D:\Jeux\Hades`, avec réglages dans `%APPDATA%`.
-fn hades() -> (Arc<FakeAppsHost>, Snapshot) {
+pub(super) fn hades() -> (Arc<FakeAppsHost>, Snapshot) {
     let host = Arc::new(FakeAppsHost::new());
     host.add_file(r"D:\Jeux\Hades\unins000.exe", 10);
     host.add_file(r"D:\Jeux\Hades\Hades.exe", 500);
@@ -393,13 +397,18 @@ fn through_the_desk_the_removed_phase_lists_and_shrinks() {
 // --- Les règles de sûreté, une par une (chacune tuait une mutation) ---
 
 /// Une voisine installée, avec ce qu'on veut qu'elle réclame.
-fn neighbour(host: &FakeAppsHost, key: &str, name: &str, edit: impl FnOnce(&mut RawRegistration)) {
+pub(super) fn neighbour(
+    host: &FakeAppsHost,
+    key: &str,
+    name: &str,
+    edit: impl FnOnce(&mut RawRegistration),
+) {
     let mut raw = reg(key, name, "x.exe");
     edit(&mut raw);
     host.add_registration(Place::Machine32, raw);
 }
 
-fn hades_folder(found: &Found) -> bool {
+pub(super) fn hades_folder(found: &Found) -> bool {
     paths(found).contains(&r"D:\Jeux\Hades".to_owned())
 }
 
@@ -544,84 +553,6 @@ fn settings_are_never_the_location_nor_around_it() {
 }
 
 #[test]
-fn a_neighbour_written_with_a_short_name_is_read_in_long_form() {
-    let (host, snapshot) = hades();
-    host.set_long_path(r"C:\JEUX~1\Hades\Dlc", Some(r"D:\Jeux\Hades\Dlc"));
-    neighbour(&host, "dlc", "Extension", |raw| {
-        raw.install_location = Some(r"C:\JEUX~1\Hades\Dlc".into());
-    });
-    host.add_dir(r"C:\JEUX~1\Hades\Dlc");
-    let found = find(&host, &snapshot);
-    assert!(found.complete);
-    assert!(!hades_folder(&found));
-}
-
-#[test]
-fn a_neighbour_that_cannot_be_put_in_long_form_makes_the_neighbours_unreadable() {
-    let (host, snapshot) = hades();
-    host.add_dir(r"C:\JEUX~1\Hades\Dlc");
-    neighbour(&host, "dlc", "Extension", |raw| {
-        raw.install_location = Some(r"C:\JEUX~1\Hades\Dlc".into());
-    });
-    host.set_long_path(r"C:\JEUX~1\Hades\Dlc", None);
-    let found = find(&host, &snapshot);
-    assert!(!found.complete, "on ne sait pas où vit cette voisine");
-    assert!(found.leftovers.is_empty());
-    // Et rien n'est retiré non plus.
-    let before = {
-        host.remove_registration(Place::Machine32, "dlc");
-        find(&host, &snapshot)
-    };
-    host.add_registration(Place::Machine32, reg("dlc", "Extension", "x.exe"));
-    neighbour(&host, "dlc2", "Autre", |raw| {
-        raw.install_location = Some(r"C:\JEUX~1\Hades\Dlc".into());
-    });
-    let (results, _) = remove(host.as_ref(), &snapshot, &before.leftovers, &[0, 1]);
-    assert!(results.iter().all(|result| result.outcome == RemoveOutcome::Refused));
-    assert!(host.recycled().is_empty());
-}
-
-#[test]
-fn a_short_neighbour_location_that_is_absent_claims_nothing() {
-    let (host, snapshot) = hades();
-    neighbour(&host, "vieille", "Vieille app", |raw| {
-        raw.install_location = Some(r"C:\ANCIEN~1\Hades".into());
-    });
-    host.set_long_path(r"C:\ANCIEN~1\Hades", None);
-    let found = find(&host, &snapshot);
-    assert!(found.complete, "absent avec certitude : rien à protéger");
-    assert!(hades_folder(&found));
-}
-
-#[test]
-fn a_short_uninstaller_or_icon_is_read_through_its_file() {
-    let (host, snapshot) = hades();
-    host.add_file(r"C:\PROGRA~1\Mods\rm.exe", 1);
-    host.set_long_path(r"C:\PROGRA~1\Mods\rm.exe", Some(r"D:\Jeux\Hades\Mods\rm.exe"));
-    neighbour(&host, "mod", "Outil de mods", |raw| {
-        raw.uninstall_string = Some(r#""C:\PROGRA~1\Mods\rm.exe" /S"#.into());
-    });
-    assert!(!hades_folder(&find(&host, &snapshot)));
-
-    let (host, snapshot) = hades();
-    host.set_long_path(r"C:\PROGRA~1\Mods\i.ico", Some(r"D:\Jeux\Hades\Mods\i.ico"));
-    neighbour(&host, "mod", "Outil de mods", |raw| {
-        raw.display_icon = Some(r#""C:\PROGRA~1\Mods\i.ico",0"#.into());
-    });
-    assert!(!hades_folder(&find(&host, &snapshot)));
-
-    // Sans forme longue, ou derrière un hôte : les voisines sont illisibles.
-    for line in [r#""C:\PROGRA~1\Mods\rm.exe" /S"#, r#"cmd.exe /c "C:\PROGRA~1\Mods\u.bat""#] {
-        let (host, snapshot) = hades();
-        host.add_file(r"C:\PROGRA~1\Mods\rm.exe", 1);
-        host.set_long_path(r"C:\PROGRA~1\Mods\rm.exe", None);
-        neighbour(&host, "mod", "Outil de mods", |raw| raw.uninstall_string = Some(line.into()));
-        let found = find(&host, &snapshot);
-        assert!(!found.complete && found.leftovers.is_empty(), "{line}");
-    }
-}
-
-#[test]
 fn more_than_sixty_four_keys_are_all_refused() {
     use crate::apps::view::FollowView;
     let host = Arc::new(FakeAppsHost::new());
@@ -654,4 +585,17 @@ fn more_than_sixty_four_keys_are_all_refused() {
     keys.pop();
     let done = desk.remove(&keys, &|| false).expect("rendu");
     assert_eq!(done.results[0].outcome, RemoveOutcome::Removed);
+}
+
+#[test]
+fn what_windows_destroyed_is_never_counted_as_sent_to_the_recycle_bin() {
+    let (host, snapshot) = hades();
+    let found = find(&host, &snapshot);
+    host.fail_recycle(r"D:\Jeux\Hades", FakeRecycle::Destroys);
+    let (results, bytes) = remove(host.as_ref(), &snapshot, &found.leftovers, &[0]);
+    assert_eq!(results[0].outcome, RemoveOutcome::Failed);
+    assert_eq!(results[0].reason, Some(RemoveReason::Destroyed));
+    assert_eq!(bytes, 0, "pas un octet à la corbeille");
+    assert!(host.recycled().is_empty());
+    assert_eq!(serde_json::to_value(RemoveReason::Destroyed).unwrap(), "destroyed");
 }

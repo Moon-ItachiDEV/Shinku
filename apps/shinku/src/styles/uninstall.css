@@ -210,6 +210,11 @@
   margin-top: 1px;
 }
 
+/* Pas de case : la place reste, pour que le texte s'aligne sur celui des autres restes. */
+.ugone {
+  visibility: hidden;
+}
+
 .uleft .t2 {
   line-height: 1.5;
   text-wrap: pretty;

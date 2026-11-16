@@ -15,6 +15,7 @@ import {
   askFor,
   BIN_NOTE_FROM,
   checkedRows,
+  checkable,
   chipOf,
   confirmExtras,
   detailParts,
@@ -45,7 +46,9 @@ import {
   tallyOf,
   uninstallFocus,
 } from '../src/model/uninstall.ts';
-import { fakeDocument, htmlOf, textOf } from './template.ts';
+import { DOM, EXPECTED } from '../scripts/essai-desinstallation-dom.mjs';
+import { type Node, parse, query, queryAll, textOfNode } from './html-tree.ts';
+import { fakeDocument, htmlOf, markupOf, textOf } from './template.ts';
 
 fakeDocument();
 const { uninstallDialog, uninstallView } = await import('../src/views/uninstall.ts');
@@ -300,18 +303,51 @@ test('la réponse du cœur : combien sont partis, ce qui reste avec sa raison, e
   assert.deepEqual(other.failures, { [FOLDER.path]: 'other' });
   assert.equal(other.moved, 0);
   assert.equal(removalToast(other), 'Rien n’a pu être mis à la corbeille.');
-  assert.equal(removalToast({ moved: 0, bytes: 0, failures: {}, settled: [] }), null);
+  assert.equal(removalToast({ moved: 0, bytes: 0, failures: {}, destroyed: [], settled: [] }), null);
   // Une clé que la page ne connaît pas est ignorée.
   assert.equal(removalOf([FOLDER], { view: view(), results: [{ key: 7, outcome: 'removed' }], bytes: 0 }).moved, 0);
 });
 
+test('« destroyed » : Windows a supprimé pour de bon, la ligne reste sans case, ne compte pas, et ne se renvoie pas', () => {
+  assert.equal(fr.uninstall.leftovers.destroyed, t('Windows l’a supprimé pour de bon : il n’est pas dans la Corbeille.'));
+  assert.equal(failureText('destroyed'), fr.uninstall.leftovers.destroyed);
+  const removal = removalOf([FOLDER, DATA], {
+    view: view(),
+    results: [
+      { key: 0, outcome: 'failed', reason: 'destroyed' },
+      { key: 1, outcome: 'removed' },
+    ],
+    bytes: 240 * 1024 ** 2,
+  });
+  assert.equal(removal.moved, 1, 'un élément détruit ne compte pas comme « envoyé à la corbeille »');
+  assert.deepEqual(removal.destroyed.map((row) => row.path), [FOLDER.path]);
+  assert.equal(removal.failures[FOLDER.path], 'destroyed');
+  assert.deepEqual(checkable([FOLDER, DATA], removal.failures), [DATA]);
+  // Seul « destroyed » : rien n'est parti à la corbeille.
+  const only = removalOf([FOLDER], { view: view(), results: [{ key: 0, outcome: 'failed', reason: 'destroyed' }], bytes: 0 });
+  assert.equal(removalToast(only), 'Rien n’a pu être mis à la corbeille.');
+
+  // La page : pas de case pour la ligne détruite, sa raison dite, et l'orbe devient « Terminé ».
+  const gone = page({
+    apps: view(ALL, { follow: removed({ leftovers: [] }) }),
+    appsDestroyed: [FOLDER],
+    appsFailures: { [FOLDER.path]: 'destroyed' },
+    appsEmptied: true,
+  });
+  assert.ok(gone.includes(fr.uninstall.leftovers.destroyed));
+  assert.ok(gone.includes(`title=${FOLDER.path}`));
+  assert.ok(!gone.includes('type="checkbox"'), 'plus de case');
+  assert.ok(gone.includes('Terminé') && !gone.includes('Mettre à la corbeille'));
+  assert.ok(gone.includes('Il ne reste plus rien à te proposer.'));
+});
+
 test('les échecs qui restent : les nouveaux, et ceux d’avant pour les restes qui n’ont pas été retentés', () => {
-  const removal = { moved: 0, bytes: 0, failures: { [DATA.path]: 'partial' as const }, settled: [DATA.path, FOLDER.path] };
+  const removal = { moved: 0, bytes: 0, failures: { [DATA.path]: 'partial' as const }, destroyed: [], settled: [DATA.path, FOLDER.path] };
   const merged = mergedFailures({ [DATA.path]: 'inUse', [FOLDER.path]: 'refused', [LINK.path]: 'other', 'C:\\parti': 'other' }, removal, [DATA, LINK]);
   // DATA : le nouvel échec remplace lt('ancien ; FOLDER est parti ; LINK n')a pas été retenté ; « parti » n'est plus dans la liste.
   assert.deepEqual(merged, { [DATA.path]: 'partial', [LINK.path]: 'other' });
   // Retenté et réussi : plus d'échec.
-  assert.deepEqual(mergedFailures({ [DATA.path]: 'inUse' }, { moved: 1, bytes: 1, failures: {}, settled: [DATA.path] }, [DATA]), {});
+  assert.deepEqual(mergedFailures({ [DATA.path]: 'inUse' }, { moved: 1, bytes: 1, failures: {}, destroyed: [], settled: [DATA.path] }, [DATA]), {});
 });
 
 test('les refus de « Désinstaller » : rien pour « cancelled », une phrase pour les autres, et la liste est relue', () => {
@@ -586,4 +622,90 @@ test('« Désinstallation » n’est plus un module à venir, et son texte ne pa
   assert.match(modules, /type SoonRoute = Extract<Route, 'privacy'>;/);
   assert.ok(!/registre/i.test(fr.soon.uninstall));
   assert.ok(!/registre/i.test(fr.uninstall.intro));
+});
+
+// ── L'essai de la fenêtre : ce qu'il cherche existe dans la page ───────────
+
+/** Les mêmes blancs et la même casse que `shows` dans `essai-fenetre.mjs` : blancs insécables lus comme des espaces. */
+const flat = (text: string): string => text.replace(/[\u00a0\u202f\s]+/g, ' ').trim().toLocaleLowerCase('fr');
+
+function tree(parts: Record<string, unknown> = {}): Node {
+  // La page est dans `<main class="main">` de la coque : l'essai y cherche aussi le titre.
+  return parse(`<main class="main">${markupOf(uninstallView({ ...initialState(NOW), route: 'uninstall', apps: view(), ...parts } as never, noActions))}</main>`);
+}
+
+function found(scope: Node, selector: string, what: string): Node[] {
+  const nodes = queryAll(scope, selector);
+  assert.ok(nodes.length > 0, `« ${what} » : le sélecteur ${selector} ne trouve rien dans la page`);
+  return nodes;
+}
+
+test('essai de la fenêtre : les sélecteurs de la liste trouvent la page (titre, phrase, recherche, lignes, boutons, avertissement)', () => {
+  const list = tree({ apps: view(ALL, { complete: false }) });
+  found(list, DOM.title, 'titre');
+  assert.ok(flat(textOfNode(found(list, DOM.lead, 'phrase')[0] as Node)).length > 0);
+  found(list, DOM.search, 'recherche');
+  const rows = found(list, DOM.row, 'lignes');
+  assert.equal(rows.length, ALL.length, 'une ligne par app');
+  const first = rows[0] as Node;
+  found(first, DOM.rowName, 'nom de la ligne');
+  found(first, DOM.rowDetail, 'seconde ligne');
+  const withButton = rows.find((row) => query(row, DOM.rowButton) !== null);
+  assert.ok(withButton !== undefined, 'une ligne a un bouton « Désinstaller »');
+  assert.ok(flat(query(withButton, DOM.rowButton)?.attrs['aria-label'] ?? '').startsWith(flat(EXPECTED.uninstallButton)));
+  assert.ok(rows.some((row) => query(row, DOM.rowEnd) !== null), 'une ligne dit pourquoi elle n’a pas de bouton');
+  assert.ok(found(list, DOM.rowButtons, 'boutons des lignes').some((button) => (button.attrs['aria-label'] ?? '').includes('Discord')));
+  assert.ok(flat(textOfNode(found(list, DOM.warning, 'avertissement « liste incomplète »')[0] as Node)).includes(flat(EXPECTED.incomplete)));
+  assert.ok(flat(textOfNode(list)).includes(flat(EXPECTED.store)));
+
+  // Pas d'app : le titre le dit. Pas encore de vue : la note de chargement.
+  assert.ok(flat(textOfNode(found(tree({ apps: view([]) }), DOM.title, 'titre sans app')[0] as Node)).includes(flat(EXPECTED.noApps)));
+  found(tree({ apps: null }), DOM.loading, 'note de chargement');
+});
+
+test('essai de la fenêtre : les sélecteurs des restes trouvent le bilan, les cases (chemin entier en aria-label), l’orbe et le pied', () => {
+  const page = tree({ apps: view(ALL, { follow: removed() }) });
+  assert.ok(flat(textOfNode(found(page, DOM.title, 'titre')[0] as Node)).includes(flat(EXPECTED.uninstalled)));
+  assert.ok(flat(textOfNode(found(page, DOM.lead, 'phrase du bilan')[0] as Node)).includes(flat(EXPECTED.nothingChecked)));
+  const items = found(page, DOM.leftover, 'restes');
+  assert.equal(items.length, 3);
+  assert.deepEqual(
+    items.map((item) => query(item, DOM.leftoverBox)?.attrs['aria-label']),
+    [FOLDER.path, DATA.path, LINK.path],
+    'l’aria-label de la case est le chemin entier : c’est là que l’essai le lit',
+  );
+  const kinds = items.map((item) => flat(textOfNode(query(item, DOM.leftoverText) as Node)));
+  assert.ok(kinds[0]?.startsWith(flat(EXPECTED.folder)) && kinds[1]?.startsWith(flat(EXPECTED.data)) && kinds[2]?.startsWith(flat(EXPECTED.shortcut)));
+  const orb = found(page, DOM.orb, 'orbe');
+  assert.ok(flat(textOfNode(orb[0] as Node)).startsWith(flat(EXPECTED.trash)));
+  const dock = found(page, DOM.dock, 'boutons du pied').map((button) => flat(textOfNode(button)));
+  assert.ok(dock.some((text) => text.startsWith(flat(EXPECTED.done))), 'un bouton « Terminé » dans le pied');
+
+  // Rien à proposer : l'orbe devient « Terminé » (dans le pied), et la famille a sa phrase.
+  const none = tree({ apps: view(ALL, { follow: removed({ leftovers: [] }) }) });
+  assert.ok(found(none, DOM.dock, 'pied').some((button) => flat(textOfNode(button)).startsWith(flat(EXPECTED.done))));
+  assert.equal(queryAll(none, DOM.orb).length, 0, 'pas d’orbe « corbeille » sans reste');
+  const family = tree({ apps: view(ALL, { follow: removed({ family: true }) }) });
+  assert.ok(flat(textOfNode(found(family, DOM.lead, 'phrase de la famille')[0] as Node)).includes(flat(EXPECTED.family)));
+  assert.equal(queryAll(family, DOM.leftover).length, 0);
+});
+
+test('essai de la fenêtre : la boîte de confirmation porte « Désinstaller », et ses textes sont ceux de fr.ts', () => {
+  const dialog = parse(markupOf(uninstallDialog({ ...initialState(NOW), route: 'uninstall', apps: view(), appsConfirm: askFor(DISCORD) } as never, noActions)));
+  const box = found(dialog, DOM.dialog, 'boîte de confirmation');
+  const buttons = found(box[0] as Node, DOM.dialogButton, 'boutons de la boîte').map((button) => flat(textOfNode(button)));
+  assert.ok(buttons.some((text) => text.startsWith(flat(EXPECTED.uninstallButton))));
+  // Chaque texte que l'essai attend est dans fr.ts, tel quel.
+  const words = [fr.uninstall.leftovers.folder, fr.uninstall.leftovers.data, fr.uninstall.leftovers.shortcut, fr.uninstall.leftovers.family, fr.uninstall.leftovers.found(3), fr.uninstall.store, fr.uninstall.title(0), fr.uninstall.incomplete, fr.uninstall.leftovers.title('X'), fr.uninstall.leftovers.trash, fr.uninstall.leftovers.done, fr.uninstall.uninstall].map(flat);
+  for (const [name, expected] of Object.entries(EXPECTED)) {
+    assert.ok(words.some((text) => text.includes(flat(expected))), `EXPECTED.${name} (« ${expected} ») n’est dans aucun texte de fr.ts`);
+  }
+  assert.ok(flat(fr.uninstall.toast.removed(3, 1000)).includes('à la corbeille') && flat(fr.uninstall.toast.removed(3, 1000)).includes('3 éléments'), 'le toast que l’essai attend');
+});
+
+test('essai de la fenêtre : les sélecteurs de la page savent lire un sélecteur cassé (le test n’est pas complaisant)', () => {
+  const page = tree({ apps: view(ALL, { follow: removed() }) });
+  assert.equal(queryAll(page, '.mid').length, 0, 'l’ancienne classe des chemins n’existe plus');
+  assert.equal(queryAll(page, '.page.uninstall li:has(input[type="radio"])').length, 0);
+  assert.throws(() => queryAll(page, 'li + li'), /non pris en charge/);
 });

@@ -1026,23 +1026,33 @@ places (dont `HKCU\Software\Wow6432Node`) sont relues sans le filtre de la
 liste : si l'une est illisible ou incomplète, rien n'est proposé non plus, et la
 page le dit (`complete: false`).
 
-### Une voisine qu'on ne sait pas lire ne protège rien, donc on le dit
+### Les voisines se lisent par le texte, jamais par le disque
 
-Une voisine écrite en nom court (`PROGRA~1`), en `\\?\…`, avec `.` ou `..`,
-n'est pas comparable à un chemin propre. L'hôte la remet en forme longue et
-complète (sous Windows : `GetFullPathNameW` puis `GetLongPathNameW`, préfixe
-retiré). Pour l'emplacement d'une voisine : si l'hôte n'y arrive pas et que le
-chemin n'est pas **absent avec certitude**, on ne sait pas où elle vit ; s'il
-est absent avec certitude, il ne réclame rien. Pour un désinstalleur ou une
-icône qui contiennent un nom court (`~` suivi d'un chiffre) : on en tire le
-fichier (le programme que lancerait Shinku, hors hôtes comme `cmd.exe` ;
-l'icône sans guillemets ni `,indice`), on le remet en forme longue, et la
-réclamation se juge sur ce chemin. Si le fichier ne s'obtient pas, les voisines
-sont **illisibles** : `complete` est faux, rien n'est proposé, rien n'est
-retiré. Conséquence assumée : **sur un PC où une vieille app est inscrite d'une
-façon que Shinku ne sait pas lire, il ne propose aucun reste**, et la page le
-dit. (La photo de l'app désinstallée ne change pas : un emplacement en `~`
-est absent, donc rien n'est cherché dedans.)
+Pour une voisine, **Shinku ne touche jamais au disque** : ce qu'elle écrit
+(emplacement, désinstalleur, icône) est un texte, comparé aux **écritures du
+candidat**, lui qui existe et vient d'être vérifié. Chaque composant du chemin
+du candidat a une écriture longue et, à côté, une écriture courte
+(`GetShortPathNameW`, lecteur fixe vérifié avant l'appel). Une voisine réclame
+le candidat si :
+
+- **3a** une ligne (désinstalleur, icône) le mentionne composant par composant,
+  suivi d'une barre, de la fin du texte, d'un guillemet, d'un blanc ou d'une
+  virgule (aussi avec `.` et `..` résolus par le texte seul, jamais au-dessus du
+  lecteur) ;
+- **3b** son emplacement est le candidat, dedans, ou le contient (sauf si le
+  garde refuse ce préfixe comme racine) ;
+- **3c** le candidat n'a pas d'écriture courte connue et un texte de voisine
+  porte un nom court (`~` suivi d'un chiffre) : dans le doute, ce candidat seul
+  est écarté.
+
+Une voisine orpheline, une icône absente, un lecteur réseau débranché ne
+rendent donc rien illisible. **Les voisines ne sont illisibles que si une place
+du registre l'est** (illisible, incomplète, plus de 4096 inscriptions) : la page
+le dit (`complete: false`), rien n'est proposé ni retiré.
+
+Limites assumées : une voisine inscrite à travers une jonction ou un `subst`
+n'est comparée que par son texte ; une app Windows Installer sans emplacement
+ni icône ne protège aucun dossier.
 
 ### La mise à la corbeille
 
@@ -1056,10 +1066,23 @@ est **revérifié à l'instant** : il existe, aucun lien, le garde l'accepte, au
 voisine ne le réclame, aucune app de la même famille n'est apparue, et un
 raccourci mène encore dans l'emplacement et nulle part. Seule la corbeille est
 utilisée, jamais une suppression définitive ; si elle refuse, l'élément reste et
-la page le dit (`inUse`, `refused`, `partial`). Un dossier entre à la corbeille
+la page le dit (`inUse`, `refused`, `partial`, `destroyed`). Un dossier entre à la corbeille
 comme **un seul élément** (`FOF_ALLOWUNDO`, sans suivre les liens), jamais fichier
 par fichier ; si Windows répond oui mais que le chemin est encore là, c'est
 `failed/partial`, jamais « parti ».
+
+**La corbeille a-t-elle vraiment reçu l'élément ?** `shell::recycle` rend
+`Sent::InBin` ou `Sent::Destroyed` : le puits de l'opération note, à
+`PostDeleteItem`, si Windows a donné un élément de corbeille (absent : la
+suppression est définitive). `Destroyed` devient `failed/destroyed`, sans octet
+compté. Avant de demander à Windows, un garde en lecture seule refuse si la
+corbeille est désactivée (`NukeOnDelete`, global ou du volume) ou si l'élément
+dépasse `MaxCapacity` (en Mo) du volume (clé `…\BitBucket\Volume\{GUID}`).
+Les essais sur la vraie corbeille ne tournent qu'en série, derrière
+`SHINKU_ESSAI_CORBEILLE`, et remettent toujours les réglages ; ce que fait
+Windows seul avec une corbeille trop petite, et `FOF_WANTNUKEWARNING` (dans un
+processus fils, 30 s au plus), sont **observés** et imprimés (`FAIT :`), sans
+faire échouer.
 
 ### Limites connues
 
@@ -1076,7 +1099,8 @@ par fichier ; si Windows répond oui mais que le chemin est encore là, c'est
   prix du nom exact. D'où : jamais coché, une phrase d'avertissement, et la
   corbeille.
 - Un registre qui change pendant la lecture d'une place (une sous-clé retirée
-  entre deux énumérations) rend cette place **incomplète** : rien n'est proposé.
+  entre deux énumérations, ou un nom de sous-clé qui diffère entre deux lectures)
+  rend cette place **incomplète** : rien n'est proposé.
 - Pendant l'attente (`settling`), le contenu du dossier de l'app (4096 noms au
   plus) est lu sous le verrou du suivi : un seul dossier, borné, donc court.
 - Les indices `runtime` et `driver` sont des **noms**, des ressemblances, jamais
@@ -1094,7 +1118,8 @@ par fichier ; si Windows répond oui mais que le chemin est encore là, c'est
 - Ce que les essais ne prouvent pas : le dossier de la corbeille réelle
   (`the_real_recycle_bin_receives_a_whole_folder_or_nothing`, et le refus d'une
   corbeille désactivée ou trop petite,
-  `a_disabled_or_too_small_recycle_bin_refuses_and_never_deletes`, qui pose
+  `a_disabled_recycle_bin_refuses_and_never_deletes` et
+  `a_too_small_recycle_bin_is_refused_by_the_guard`, qui posent
   `NukeOnDelete` et `MaxCapacity` du compte et les remet ; tous derrière
   `SHINKU_ESSAI_CORBEILLE`, donc seulement sur la machine jetable de la CI.
   Où Windows 11 range ce réglage pour un volume n'est pas établi avec

@@ -14,6 +14,7 @@ import type {
   KeepChoice,
   JunkReport,
   LargeFilesPage,
+  LeftoverRow,
   OpenApp,
   Overview,
   SessionView,
@@ -123,6 +124,8 @@ export interface AppState {
   appsChecked: readonly string[];
   /** Les restes que la corbeille n'a pas pris, par chemin, avec leur raison. */
   appsFailures: Readonly<Record<string, Failure>>;
+  /** Supprimés pour de bon par Windows : plus là, mais gardés à l'écran avec leur raison, sans case. */
+  appsDestroyed: readonly LeftoverRow[];
   /** Tout ce qui était proposé est parti : la page ne dit plus « rien trouvé ». */
   appsEmptied: boolean;
   /** La phrase de la région vivante : un changement de phase, annoncé une fois. */
@@ -178,6 +181,7 @@ export function initialState(now: number): AppState {
     appsConfirm: null,
     appsChecked: [],
     appsFailures: {},
+    appsDestroyed: [],
     appsEmptied: false,
     appsAnnounce: '',
     now,

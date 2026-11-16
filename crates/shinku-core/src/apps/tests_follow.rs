@@ -182,3 +182,59 @@ fn stop_goes_back_to_the_list_and_drops_a_late_search() {
     assert_eq!(host.launches().len(), 2);
     let _ = ROAMING;
 }
+
+#[test]
+fn a_search_that_arrives_after_going_back_to_the_list_is_thrown_away() {
+    use crate::apps::fake::FakeAppsHost;
+    use crate::apps::follow::{Follow, Step, Tracked};
+    use crate::apps::host::{AppsHost, Launch};
+    use crate::apps::leftovers::{Found, Leftover, LeftoverKind, Snapshot};
+    use crate::apps::{AppId, Scope};
+
+    let host = FakeAppsHost::new();
+    let mut follow = Follow::new();
+    let tracked = |name: &str| Tracked {
+        id: AppId::new(Source::Account, name),
+        name: name.to_owned(),
+        snapshot: Snapshot {
+            name: name.to_owned(),
+            bare: name.to_lowercase(),
+            publisher: None,
+            scope: Scope::Account,
+            location: None,
+        },
+        installer: false,
+        since: host.uptime(),
+    };
+    // Lance, désinstalle, et attend la recherche des restes.
+    let searching = |follow: &mut Follow, name: &str| {
+        let generation = follow.begin(tracked(name)).expect("libre");
+        follow.launched(generation, Launch::Started(None), host.uptime()).expect("lancé");
+        let _ = follow.poll(&host);
+        host.advance(secs(6));
+        let Step::Search { generation, .. } = follow.poll(&host) else {
+            panic!("la recherche aurait dû partir");
+        };
+        generation
+    };
+    let first = searching(&mut follow, "Une");
+    follow.stop();
+    let second = searching(&mut follow, "Deux");
+    // Le résultat de la première arrive pendant la recherche de la seconde.
+    let stale = Found {
+        leftovers: vec![Leftover {
+            key: 1,
+            kind: LeftoverKind::Data,
+            path: r"C:\Une".into(),
+            bytes: None,
+            files: None,
+        }],
+        family: false,
+        complete: true,
+    };
+    follow.apply_search(first, stale, 2);
+    assert!(matches!(follow.view(host.uptime()), FollowView::Settling { .. }));
+    let fresh = Found { leftovers: Vec::new(), family: false, complete: true };
+    follow.apply_search(second, fresh, 2);
+    assert!(matches!(follow.view(host.uptime()), FollowView::Removed { .. }));
+}

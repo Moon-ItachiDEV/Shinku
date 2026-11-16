@@ -26,7 +26,7 @@ use windows::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, HANDLE,
     WAIT_OBJECT_0,
 };
-use windows::Win32::Storage::FileSystem::{GetFullPathNameW, GetLongPathNameW};
+use windows::Win32::Storage::FileSystem::GetShortPathNameW;
 use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
 };
@@ -52,13 +52,14 @@ use crate::apps::host::{
     AccountFolder, AppsHost, Child, Existence, Launch, Measure, RawNumber, RawRegistration,
     RawSource, Shortcut, SystemDirs, Watch,
 };
+use crate::apps::paths::is_absolute;
 use crate::apps::{MAX_KEYS, Place, Source};
 use crate::fs::{
     DirReader, EntryFlags, EntryKind, PathState, fold_path, inspect_dir_chain, to_display_path,
     to_internal_path,
 };
 use crate::guard::Guard;
-use crate::platform::RecycleError;
+use crate::platform::{RecycleError, Sent};
 use crate::startup::host::StartupHost;
 
 use super::startup::SystemStartupHost;
@@ -240,7 +241,7 @@ fn text(key: &Key, name: &str, trimmed: &mut bool) -> io::Result<Option<String>>
     })
 }
 
-fn dword(key: &Key, name: &str, trimmed: &mut bool) -> io::Result<Option<u32>> {
+pub(super) fn dword(key: &Key, name: &str, trimmed: &mut bool) -> io::Result<Option<u32>> {
     Ok(match read_value(key, name, trimmed)? {
         Some(Value::Dword(number)) => Some(number),
         _ => None,
@@ -385,8 +386,15 @@ fn shell_launch(
         .unwrap_or(Launch::Failed(0))
 }
 
-/// Le nombre de sous-clés d'une clé ouverte.
-fn subkey_count(key: &Key) -> io::Result<u32> {
+/// Les noms des sous-clés d'une clé ouverte, triés.
+struct KeyNames {
+    names: Vec<String>,
+    /// Faux si une borne a coupé la liste ou si un nom n'a pas pu être lu
+    /// (plus de 255 unités, UTF-16 invalide, énumération qui échoue).
+    whole: bool,
+}
+
+fn key_names(key: &Key) -> io::Result<KeyNames> {
     let mut subkeys = 0u32;
     // SAFETY: la clé est ouverte pour `key` ; `subkeys` est une variable
     // locale où Windows écrit un nombre ; les autres sorties sont ignorées.
@@ -409,7 +417,45 @@ fn subkey_count(key: &Key) -> io::Result<u32> {
     if result != ERROR_SUCCESS {
         return Err(os_error(result));
     }
-    Ok(subkeys)
+    let wanted = subkeys.min(MAX_KEYS as u32);
+    let mut whole = subkeys as usize <= MAX_KEYS;
+    let mut names = Vec::new();
+    let mut buffer = vec![0u16; MAX_KEY_NAME + 1];
+    let mut visited = 0u32;
+    for index in 0..wanted {
+        let mut length = buffer.len() as u32;
+        // SAFETY: la clé est ouverte pour `key` ; `buffer` est un tampon local
+        // et `length` annonce sa taille en caractères, zéro final compris.
+        let result = unsafe {
+            RegEnumKeyExW(
+                key.0,
+                index,
+                Some(PWSTR(buffer.as_mut_ptr())),
+                &raw mut length,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        if result == ERROR_NO_MORE_ITEMS {
+            break;
+        }
+        visited += 1;
+        // Un nom de plus de 255 unités, ou une énumération qui échoue : sauté, et dit.
+        if result != ERROR_SUCCESS {
+            whole = false;
+            continue;
+        }
+        match String::from_utf16(&buffer[..(length as usize).min(buffer.len())]) {
+            Ok(text) => names.push(text),
+            Err(_) => whole = false,
+        }
+    }
+    // Moins de noms que de sous-clés annoncées : le registre a changé en route.
+    whole &= visited == wanted;
+    names.sort();
+    Ok(KeyNames { names, whole })
 }
 
 /// Remplit un tampon par un appel de Windows qui rend la longueur écrite (ou,
@@ -460,45 +506,14 @@ impl AppsHost for SystemAppsHost {
         let Some(key) = open_key(hive, base, KEY_READ | REG_SAM_FLAGS(view))? else {
             return Ok(RawSource::complete(Vec::new()));
         };
-        let subkeys = subkey_count(&key)?;
+        let before = key_names(&key)?;
         // Une borne atteinte est dite : jamais une liste présentée complète
         // alors qu'elle ne l'est pas.
-        let mut complete = subkeys as usize <= MAX_KEYS;
+        let mut complete = before.whole;
         let mut entries = Vec::new();
-        let mut name = vec![0u16; MAX_KEY_NAME + 1];
-        let wanted = subkeys.min(MAX_KEYS as u32);
-        let mut visited = 0u32;
-        for index in 0..wanted {
-            let mut length = name.len() as u32;
-            // SAFETY: la clé est ouverte pour `key` ; `name` est un tampon local
-            // et `length` annonce sa taille en caractères, zéro final compris.
-            let result = unsafe {
-                RegEnumKeyExW(
-                    key.0,
-                    index,
-                    Some(PWSTR(name.as_mut_ptr())),
-                    &raw mut length,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-            };
-            if result == ERROR_NO_MORE_ITEMS {
-                break;
-            }
-            visited += 1;
-            // Un nom de plus de 255 unités, ou une énumération qui échoue : sauté, et dit.
-            if result != ERROR_SUCCESS {
-                complete = false;
-                continue;
-            }
-            let Ok(text) = String::from_utf16(&name[..(length as usize).min(name.len())]) else {
-                complete = false;
-                continue;
-            };
+        for text in &before.names {
             let mut trimmed = false;
-            match self.read_registration(place, &text, &mut trimmed) {
+            match self.read_registration(place, text, &mut trimmed) {
                 Ok(Some(raw)) => {
                     complete &= !trimmed;
                     entries.push(raw);
@@ -508,9 +523,12 @@ impl AppsHost for SystemAppsHost {
                 Err(_) => complete = false,
             }
         }
-        // Le registre a changé pendant la lecture : des indices ont glissé, une
-        // clé a pu être sautée. La liste est dite incomplète.
-        if visited != wanted || subkey_count(&key)? != subkeys {
+        // Le registre a changé pendant la lecture (une clé retirée et une autre
+        // ajoutée laissent le même nombre) : les **noms** sont relus et
+        // comparés. Des indices ont pu glisser, une clé a pu être sautée : la
+        // liste est dite incomplète.
+        let after = key_names(&key)?;
+        if after.names != before.names {
             complete = false;
         }
         Ok(RawSource { entries, complete })
@@ -684,7 +702,7 @@ impl AppsHost for SystemAppsHost {
         Some(total)
     }
 
-    fn recycle(&self, path: &str) -> Result<(), RecycleError> {
+    fn recycle(&self, path: &str) -> Result<Sent, RecycleError> {
         let path = internal(path).map_err(|error| RecycleError::Failed(error.to_string()))?;
         shell::recycle(&path)
     }
@@ -704,20 +722,20 @@ impl AppsHost for SystemAppsHost {
         internal(path).is_ok_and(|path| guard.check_rule_root(&path).is_ok())
     }
 
-    fn long_path(&self, path: &str) -> Option<String> {
+    fn short_path(&self, path: &str) -> Option<String> {
+        // La règle du module : rien n'est lu hors d'un lecteur fixe, donc le
+        // lecteur est vérifié **avant** l'appel.
+        if !is_absolute(path) || !self.base.is_local_fixed(path) {
+            return None;
+        }
         let wanted = HSTRING::from(path);
-        let full = grow(|buffer| {
+        let short = grow(|buffer| {
             // SAFETY: `wanted` est une chaîne terminée par zéro ; `buffer` est un
             // tampon local dont Windows ne dépasse pas la taille.
-            unsafe { GetFullPathNameW(&wanted, Some(buffer), None) }
+            unsafe { GetShortPathNameW(&wanted, Some(buffer)) }
         })?;
-        let full = HSTRING::from(full);
-        let long = grow(|buffer| {
-            // SAFETY: comme ci-dessus ; `full` est terminée par zéro.
-            unsafe { GetLongPathNameW(&full, Some(buffer)) }
-        })?;
-        let shown = displayed(Path::new(&long))?;
-        Some(shown.trim_end_matches(['\\', '/']).to_owned()).filter(|text| !text.is_empty())
+        Some(displayed(Path::new(&short))?.trim_end_matches(['\\', '/']).to_owned())
+            .filter(|text| !text.is_empty())
     }
 
     fn in_sync_root(&self, path: &str) -> bool {
@@ -986,16 +1004,13 @@ mod tests {
     }
 
     #[test]
-    fn a_path_is_put_back_in_long_form_or_not_at_all() {
+    fn a_path_is_given_in_short_form_or_not_at_all() {
         let sandbox = Sandbox::new();
         let own = sandbox.host.own_dir().expect("dossier du programme");
-        assert_eq!(sandbox.host.long_path(&format!(r"{own}\.")).as_deref(), Some(own.as_str()));
-        assert_eq!(
-            sandbox.host.long_path(&format!(r"\\?\{own}")).as_deref(),
-            Some(own.as_str()),
-            "le préfixe de chemin long est retiré"
-        );
-        assert_eq!(sandbox.host.long_path(r"C:\ce dossier\n'existe\pas"), None);
+        let short = sandbox.host.short_path(&own).expect("écriture courte");
+        assert!(!short.is_empty());
+        assert_eq!(sandbox.host.short_path(r"C:\ce dossier\n'existe\pas"), None);
+        assert_eq!(sandbox.host.short_path(r"\\serveur\partage\dossier"), None);
     }
 
     #[test]

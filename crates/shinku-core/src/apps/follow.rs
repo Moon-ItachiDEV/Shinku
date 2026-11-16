@@ -291,21 +291,21 @@ impl Follow {
     }
 
     /// De quoi retirer des restes (phase `Removed` seulement).
-    pub fn removal_input(&self) -> Option<(u64, Snapshot, Vec<Leftover>)> {
+    pub fn removal_input(&self) -> Option<(Snapshot, Vec<Leftover>)> {
         match &self.phase {
             Phase::Removed { app, leftovers, .. } => {
-                Some((self.generation, app.snapshot.clone(), leftovers.clone()))
+                Some((app.snapshot.clone(), leftovers.clone()))
             }
             _ => None,
         }
     }
 
     /// Ce qui est parti (ou n'existait plus) quitte la liste ; le reste y reste,
-    /// pour que la personne voie ce qui reste.
-    pub fn apply_removal(&mut self, generation: u64, results: &[RemoveResult]) {
-        if self.generation != generation {
-            return;
-        }
+    /// pour que la personne voie ce qui reste. Pas de numéro de génération ici :
+    /// les clés des restes ne sont **jamais réutilisées** (le compteur survit à
+    /// « Revenir à la liste »), un résultat d'avant ne peut donc retirer aucun
+    /// reste d'une autre app.
+    pub fn apply_removal(&mut self, results: &[RemoveResult]) {
         if let Phase::Removed { leftovers, .. } = &mut self.phase {
             leftovers.retain(|leftover| {
                 !results.iter().any(|result| {
