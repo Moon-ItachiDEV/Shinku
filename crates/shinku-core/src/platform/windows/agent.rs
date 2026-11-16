@@ -596,7 +596,7 @@ fn shell_open(uri: &'static str) -> io::Result<()> {
     // l'appartement est libéré plus bas, une fois, si l'initialisation a réussi.
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     // SAFETY: les trois chaînes sont terminées par zéro et valides pendant
-    // l'appel ; l'adresse est l'une des trois constantes de `WindowsPage`.
+    // l'appel ; l'adresse est l'une des sept constantes de `WindowsPage`.
     let result = unsafe {
         ShellExecuteW(
             None,

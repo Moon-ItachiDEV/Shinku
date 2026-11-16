@@ -9,6 +9,10 @@
 pub(super) mod agent;
 mod apps;
 mod game;
+mod helper_host;
+mod launcher;
+mod privacy;
+mod security;
 mod shell;
 mod startup;
 
@@ -57,8 +61,11 @@ use super::{Desktop, Environment, KnownFolder, RecycleBin, RecycleError, Rights,
 use crate::apps::host::AppsHost;
 use crate::fs::{fold_path, to_internal_path};
 use crate::game::host::GameHost;
+use crate::helper::startup::MachineStartup;
 use crate::model::Timestamp;
+use crate::privacy::host::PrivacyHost;
 use crate::startup::host::StartupHost;
+use crate::startup::launcher::ElevatedHelper;
 
 /// Valeur de `GetDriveTypeW` pour un disque interne.
 const DRIVE_FIXED: u32 = 3;
@@ -304,11 +311,9 @@ impl Environment for SystemEnvironment {
         shell::empty_bins(fixed_drive_roots())
     }
 
-    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
-        // Le grand vide ne distingue pas « à la corbeille » de « supprimé pour
-        // de bon » : `Ok(())` dans les deux cas, comme avant. Seul le module
-        // « Désinstallation » lit ce que `shell::recycle` rend (`Sent`).
-        shell::recycle(path).map(|_| ())
+    fn recycle(&self, path: &Path) -> Result<crate::platform::Sent, RecycleError> {
+        // Ce que Windows a fait : à la corbeille, ou supprimé pour de bon.
+        shell::recycle(path)
     }
 }
 
@@ -317,9 +322,34 @@ pub(super) fn game_host() -> Arc<dyn GameHost> {
     Arc::new(game::SystemHost::new())
 }
 
+/// L'assistant élevé, vu de `shinku.exe`.
+pub(super) fn elevated_helper() -> Arc<dyn ElevatedHelper> {
+    Arc::new(launcher::SystemHelper::new())
+}
+
+/// Ce que fait l'assistant élevé sur cette machine.
+pub(super) fn machine_startup() -> Option<Box<dyn MachineStartup>> {
+    Some(Box::new(helper_host::SystemMachineStartup))
+}
+
+/// Durcit le processus de l'assistant : bibliothèques depuis `System32` seulement.
+pub(super) fn harden_helper_process() -> bool {
+    helper_host::harden()
+}
+
+/// Les arguments de la ligne de commande de l'assistant, sans le nom du programme.
+pub(super) fn helper_arguments() -> Vec<OsString> {
+    helper_host::arguments()
+}
+
 /// Le module « Désinstallation » sur cette machine.
 pub(super) fn apps_host() -> Arc<dyn AppsHost> {
     Arc::new(apps::SystemAppsHost::new())
+}
+
+/// Le module « Confidentialité » sur cette machine.
+pub(super) fn privacy_host() -> Arc<dyn PrivacyHost> {
+    Arc::new(privacy::SystemPrivacyHost::new())
 }
 
 /// Le module « Démarrage » sur cette machine.
@@ -364,28 +394,40 @@ fn token_number(token: &OwnedHandle, class: TOKEN_INFORMATION_CLASS) -> Option<u
     (written as usize == size_of::<u32>()).then_some(value)
 }
 
-/// Les droits que porte un jeton.
-fn rights_of(token: &OwnedHandle) -> Rights {
+/// Les droits que porte un jeton, ou `None` si Windows ne dit pas s'il est
+/// élevé (ni le type d'élévation, ni l'indicateur).
+fn rights_known(token: &OwnedHandle) -> Option<Rights> {
     let kind = token_number(token, TokenElevationType);
     if kind == Some(TokenElevationTypeFull.0 as u32) {
-        return Rights::Elevated;
+        return Some(Rights::Elevated);
     }
     if kind == Some(TokenElevationTypeLimited.0 as u32) {
-        return Rights::Standard;
+        return Some(Rights::Standard);
     }
-    // Pas de paire de jetons : seul l'indicateur d'élévation renseigne. Sans
-    // réponse de Windows, on ne bloque personne.
-    match token_number(token, TokenElevation) {
-        Some(0) | None => Rights::Standard,
-        Some(_) => Rights::Unrestricted,
+    // Pas de paire de jetons : seul l'indicateur d'élévation renseigne.
+    match token_number(token, TokenElevation)? {
+        0 => Some(Rights::Standard),
+        _ => Some(Rights::Unrestricted),
     }
 }
 
+/// Les droits que porte un jeton. Sans réponse de Windows, on ne bloque
+/// personne : c'est le choix de la fenêtre (voir [`rights_known`] pour qui veut
+/// distinguer l'inconnu).
+fn rights_of(token: &OwnedHandle) -> Rights {
+    rights_known(token).unwrap_or(Rights::Standard)
+}
+
 pub(super) fn own_rights() -> Rights {
+    own_rights_known().unwrap_or(Rights::Standard)
+}
+
+/// Les droits de ce processus, ou `None` si Windows ne les a pas dits.
+pub(super) fn own_rights_known() -> Option<Rights> {
     // SAFETY: `GetCurrentProcess` rend un pseudo-handle toujours valide, qui
     // ne se ferme pas.
     let process = unsafe { GetCurrentProcess() };
-    token_of(process).map_or(Rights::Standard, |token| rights_of(&token))
+    token_of(process).and_then(|token| rights_known(&token))
 }
 
 pub(super) fn desktop_rights() -> Desktop {
@@ -430,6 +472,7 @@ mod tests {
         // seulement que les deux lectures aboutissent, et deux fois de suite
         // à la même réponse.
         assert_eq!(own_rights(), own_rights());
+        assert_eq!(own_rights_known(), own_rights_known());
         assert_eq!(desktop_rights(), desktop_rights());
     }
 

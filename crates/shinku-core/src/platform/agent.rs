@@ -63,7 +63,9 @@ pub enum Autostart {
     DisabledInWindows,
 }
 
-/// Une page des réglages de Windows. Quatre seulement, à adresses fixes.
+/// Une page des réglages de Windows. Sept seulement, à adresses fixes (les trois
+/// dernières sont celles de la « Confidentialité » : Shinku n'y efface rien, il
+/// ouvre la page de Windows qui le fait mieux).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WindowsPage {
@@ -75,9 +77,27 @@ pub enum WindowsPage {
     StartupApps,
     /// Apps installées (là où Windows retire aussi les apps du Microsoft Store).
     Apps,
+    /// Historique d'activité.
+    ActivityHistory,
+    /// Historique de recherche (autorisations de recherche).
+    SearchPermissions,
+    /// Diagnostics et commentaires. Le bouton de suppression des données de
+    /// diagnostic dépend de l'édition de Windows : la page ne le promet pas.
+    Diagnostics,
 }
 
 impl WindowsPage {
+    /// Les sept pages, la liste fermée de ce que Shinku ouvre dans les réglages de Windows.
+    pub const ALL: [Self; 7] = [
+        Self::GameMode,
+        Self::Power,
+        Self::StartupApps,
+        Self::Apps,
+        Self::ActivityHistory,
+        Self::SearchPermissions,
+        Self::Diagnostics,
+    ];
+
     /// L'adresse `ms-settings:` de cette page.
     pub const fn uri(self) -> &'static str {
         match self {
@@ -85,6 +105,9 @@ impl WindowsPage {
             Self::Power => "ms-settings:powersleep",
             Self::StartupApps => "ms-settings:startupapps",
             Self::Apps => "ms-settings:appsfeatures",
+            Self::ActivityHistory => "ms-settings:privacy-activityhistory",
+            Self::SearchPermissions => "ms-settings:search-permissions",
+            Self::Diagnostics => "ms-settings:privacy-feedback",
         }
     }
 }
@@ -221,6 +244,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_closed_list_of_windows_pages_is_seven_distinct_fixed_addresses() {
+        // Le `match` cesse de compiler si une page est ajoutée sans entrer dans `ALL`.
+        fn listed(page: WindowsPage) -> bool {
+            match page {
+                WindowsPage::GameMode
+                | WindowsPage::Power
+                | WindowsPage::StartupApps
+                | WindowsPage::Apps
+                | WindowsPage::ActivityHistory
+                | WindowsPage::SearchPermissions
+                | WindowsPage::Diagnostics => WindowsPage::ALL.contains(&page),
+            }
+        }
+        assert!(WindowsPage::ALL.into_iter().all(listed));
+        let mut addresses: Vec<&str> = WindowsPage::ALL.iter().map(|page| page.uri()).collect();
+        for address in &addresses {
+            let page = address.strip_prefix("ms-settings:").expect("une adresse de réglages");
+            assert!(
+                !page.is_empty() && page.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
+                "{address}"
+            );
+        }
+        addresses.sort_unstable();
+        addresses.dedup();
+        assert_eq!(addresses.len(), 7);
+    }
+
+    #[test]
     fn windows_pages_have_fixed_addresses() {
         assert_eq!(WindowsPage::GameMode.uri(), "ms-settings:gaming-gamemode");
         assert_eq!(WindowsPage::Power.uri(), "ms-settings:powersleep");
@@ -230,6 +281,15 @@ mod tests {
         assert_eq!(serde_json::to_value(WindowsPage::Power).unwrap(), "power");
         assert_eq!(serde_json::to_value(WindowsPage::StartupApps).unwrap(), "startupApps");
         assert_eq!(serde_json::to_value(WindowsPage::Apps).unwrap(), "apps");
+        assert_eq!(WindowsPage::ActivityHistory.uri(), "ms-settings:privacy-activityhistory");
+        assert_eq!(WindowsPage::SearchPermissions.uri(), "ms-settings:search-permissions");
+        assert_eq!(WindowsPage::Diagnostics.uri(), "ms-settings:privacy-feedback");
+        assert_eq!(serde_json::to_value(WindowsPage::ActivityHistory).unwrap(), "activityHistory");
+        assert_eq!(
+            serde_json::to_value(WindowsPage::SearchPermissions).unwrap(),
+            "searchPermissions"
+        );
+        assert_eq!(serde_json::to_value(WindowsPage::Diagnostics).unwrap(), "diagnostics");
         assert_eq!(serde_json::to_value(AgentState::Missing).unwrap(), "missing");
     }
 

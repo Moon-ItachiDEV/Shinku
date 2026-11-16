@@ -25,6 +25,7 @@ import type {
   AppsView,
   FollowView,
   BackendError,
+  BrowserApp,
   CategoryState,
   CategorySummary,
   CleanOutcome,
@@ -46,6 +47,8 @@ import type {
   Phase,
   PowerOutcome,
   PowerSupport,
+  PrivacyGroup,
+  PrivacyRefusal,
   RemoveOutcome,
   RemoveReason,
   RunState,
@@ -54,6 +57,7 @@ import type {
   StartupEntry,
   StartupMark,
   StartupOrigin,
+  StartupPc,
   StartupRefusal,
   StartupScope,
   StartupState,
@@ -61,6 +65,9 @@ import type {
   StepState,
   StopReason,
   Theme,
+  TraceItem,
+  TraceKind,
+  TraceOutcome,
   UninstallRefusal,
   WindowsPage,
 } from '../src/backend/types.ts';
@@ -124,6 +131,7 @@ const enums: Record<string, readonly string[]> = {
     'gameRefused',
     'startupRefused',
     'uninstallRefused',
+    'privacyRefused',
   ]),
   agentState: allOf<AgentState>()(['running', 'stopped', 'missing']),
   powerOutcome: allOf<PowerOutcome>()([
@@ -138,7 +146,15 @@ const enums: Record<string, readonly string[]> = {
   ]),
   powerSupport: allOf<PowerSupport>()(['available', 'unavailable', 'unsuited']),
   gameSource: allOf<GameSource>()(['added', 'library']),
-  windowsPage: allOf<WindowsPage>()(['gameMode', 'power', 'startupApps', 'apps']),
+  windowsPage: allOf<WindowsPage>()([
+    'gameMode',
+    'power',
+    'startupApps',
+    'apps',
+    'activityHistory',
+    'searchPermissions',
+    'diagnostics',
+  ]),
   gameStatus: allOf<GameStatus>()(['notGame', 'forgotten']),
   gameOption: allOf<GameOption>()(['auto', 'power', 'quietApps']),
   gameRefusal: allOf<GameRefusal>()(['unknownApp', 'unknownGame', 'notAGame', 'protectedApp', 'listFull']),
@@ -149,7 +165,8 @@ const enums: Record<string, readonly string[]> = {
   startupOrigin: allOf<StartupOrigin>()(['registry', 'folder']),
   startupMark: allOf<StartupMark['kind']>()(['cutByShinku', 'cameBack']),
   startupHint: allOf<NonNullable<StartupEntry['hint']>>()(['sync']),
-  startupRefusal: allOf<StartupRefusal>()(['unknownEntry', 'notAdjustable', 'busy', 'failed']),
+  startupRefusal: allOf<StartupRefusal>()(['unknownEntry', 'notAdjustable', 'busy', 'failed', 'cancelled', 'needsAdmin']),
+  startupAccess: allOf<StartupPc>()(['consent', 'password', 'direct', 'unavailable']),
   appsScope: allOf<AppScope>()(['account', 'machine']),
   appsKind: allOf<AppKind>()(['plain', 'runtime', 'driver']),
   appsRemoval: allOf<AppRemoval>()(['offered', 'refused', 'own', 'needed']),
@@ -159,6 +176,13 @@ const enums: Record<string, readonly string[]> = {
   removeReason: allOf<RemoveReason>()(['inUse', 'refused', 'partial', 'destroyed']),
   uninstallRefusal: allOf<UninstallRefusal>()(['busy', 'vanished', 'unreadable', 'notOffered', 'broken', 'cancelled', 'failed']),
   followPhase: allOf<FollowView['phase']>()(['idle', 'launching', 'waiting', 'settling', 'removed']),
+  // La confidentialité : les noms de ces clés sont ceux que le cœur donnera à ses énumérations.
+  traceKind: allOf<TraceKind>()(['history', 'recent', 'typed', 'clipboard']),
+  traceOutcome: allOf<TraceOutcome>()(['erased', 'nothing', 'inUse', 'changed', 'partial', 'failed']),
+  traceState: allOf<TraceItem['state']>()(['present', 'empty', 'unreadable']),
+  browserApp: allOf<BrowserApp>()(['chrome', 'edge', 'brave', 'vivaldi']),
+  privacyGroupKind: allOf<PrivacyGroup['kind']>()(['browser', 'windows']),
+  privacyRefusal: allOf<PrivacyRefusal>()(['busy', 'tooMany']),
 };
 
 test('les énumérations de l’interface sont celles du cœur', () => {
@@ -248,8 +272,9 @@ const OPTIONS: MockOptions = {
   clean: 'rough',
   interrupted: true,
   game: { state: 'playing', agent: 'running', power: 'available', startup: 'enabled' },
-  boot: { data: 'few', fail: false, read: 'all', load: 'ok', shinku: 'on' },
+  boot: { data: 'few', fail: false, read: 'all', load: 'ok', shinku: 'on', pc: 'consent', pcflow: 'wait' },
   apps: { data: 'few', load: 'ok', flow: 'idle', fail: 'none' },
+  privacy: { data: 'many', flow: 'done' },
 };
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -381,12 +406,26 @@ async function samples(): Promise<Record<string, unknown>> {
   const startupView = await booting.startupView();
   assert.ok(startupView.entries.some((entry) => entry.mark?.kind === 'cutByShinku'));
   assert.ok(startupView.entries.some((entry) => entry.mark?.kind === 'cameBack'));
+  // Une vue relue pendant l'attente d'une entrée du PC : son champ `pending`.
+  const machineEntry = startupView.entries.find((entry) => entry.scope === 'machine' && entry.adjustable);
+  assert.ok(machineEntry !== undefined);
+  const changing = mockBackend(OPTIONS);
+  const waiting = changing.setStartupEntry(machineEntry.id, false);
+  const startupPending = (await changing.startupView()).pending;
+  assert.ok(startupPending !== null);
+  await waiting;
   const unreadableBoot = await mockBackend({ ...OPTIONS, boot: { ...OPTIONS.boot, read: 'user' } }).startupView();
   assert.deepEqual(unreadableBoot.unreadable, ['user']);
   const startupRefusal: unknown = await booting.setStartupEntry('ur-0000000000000000', false).then(
     () => null,
     (error: unknown) => error,
   );
+
+  // La confidentialité : la vue (une trace de chaque sorte), un effacement partiel, et un refus.
+  const privacy = mockBackend(OPTIONS);
+  const privacyView = await privacy.privacyView();
+  const traceIds = privacyView.groups.flatMap((group) => group.items.filter((item) => item.state === 'present').map((item) => item.id));
+  const erased = await mockBackend({ ...OPTIONS, privacy: { ...OPTIONS.privacy, flow: 'partial' } }).eraseTraces(traceIds);
 
   const unreadable = (await mockBackend({ ...OPTIONS, issue: 'unreadable' }).overview()).settingsIssue;
   const partial = (await mockBackend({ ...OPTIONS, issue: 'partial' }).overview()).settingsIssue;
@@ -402,6 +441,7 @@ async function samples(): Promise<Record<string, unknown>> {
     gameRefused: { kind: 'gameRefused', reason: 'unknownGame' },
     startupRefused: { kind: 'startupRefused', reason: 'unknownEntry' },
     uninstallRefused: { kind: 'uninstallRefused', reason: 'vanished' },
+    privacyRefused: { kind: 'privacyRefused', reason: 'busy' },
   };
   assert.deepEqual(refusal, errors.gameRefused, 'le faux cœur refuse un jeu inconnu comme le cœur');
   assert.deepEqual(startupRefusal, errors.startupRefused, 'le faux cœur refuse une entrée inconnue comme le cœur');
@@ -431,8 +471,12 @@ async function samples(): Promise<Record<string, unknown>> {
     'error.cleanNotStarted': errors.cleanNotStarted,
     'error.gameRefused': errors.gameRefused,
     startupView,
+    startupPending,
     'error.startupRefused': errors.startupRefused,
     'error.uninstallRefused': errors.uninstallRefused,
+    privacyView,
+    eraseTraces: erased,
+    'error.privacyRefused': errors.privacyRefused,
     ...(await appsSamples()),
   };
 }

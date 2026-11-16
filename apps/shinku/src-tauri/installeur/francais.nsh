@@ -40,6 +40,13 @@ LangString webview2InstallError ${LANG_FRENCH} "Erreur : l'installation de WebV
 LangString webview2InstallSuccess ${LANG_FRENCH} "WebView2 est installé."
 LangString deleteAppData ${LANG_FRENCH} "Supprimer aussi mes réglages"
 
+; --- Texte du désinstalleur (oublier.nsh) ---
+; Montré quand `shinku.exe --oublier` n'a pas fini, avec /SD IDOK : un
+; désinstalleur silencieux ou passif ne s'arrête pas dessus. Jamais de repli sur
+; un effacement avec les droits d'administrateur. Pas de chaîne de Tauri : le
+; modèle ne la connaît pas.
+LangString shinkuOublierEchec ${LANG_FRENCH} "Shinku n'a pas pu supprimer tes réglages. Ils sont dans %APPDATA%\Shinku et %LOCALAPPDATA%\Shinku : tu peux les supprimer à la main."
+
 ; --- Textes fixés par commande ---
 MiscButtonText "&Précédent" "&Suivant" "Annuler" "&Fermer"
 InstallButtonText "&Installer"

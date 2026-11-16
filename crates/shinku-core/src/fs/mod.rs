@@ -11,6 +11,10 @@
 //! - une suppression porte sur une entrée ouverte et revérifiée ([`Removal`]),
 //!   jamais sur un simple chemin : ce qui part est ce que le parcours a vu.
 //!
+//! Trois suppressions toutes faites s'appuient sur ces règles pour
+//! `shinku.exe --oublier` : un fichier nommé, un dossier vide, une arborescence
+//! (`remove_plain_file`, `remove_empty_dir`, `remove_tree`).
+//!
 //! Sous Windows, l'implémentation ouvre chaque dossier par un handle et le lit
 //! par blocs. L'implémentation Unix sert au développement et aux tests : elle
 //! n'est pas livrée.
@@ -24,6 +28,9 @@ use std::path::{Path, PathBuf};
 use crate::model::{FileId, Timestamp};
 
 mod attributes;
+mod tree;
+
+pub use tree::{Removed, TreeLimits, TreeReport, remove_empty_dir, remove_plain_file, remove_tree};
 
 #[cfg(unix)]
 mod unix;
@@ -415,10 +422,30 @@ pub struct Removal {
     inner: imp::Removal,
 }
 
+/// Ce que l'entrée **ouverte** dit d'elle-même, relu sur le handle : de quoi
+/// refuser ce qu'on ne doit pas supprimer à la place d'un fichier ordinaire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemovalFacts {
+    /// Nombre de noms que porte l'entrée. Plus d'un : un lien physique, et
+    /// supprimer ce nom ne détruirait pas les données.
+    pub links: u32,
+    /// Contenu absent du disque (« en ligne uniquement ») : jamais ouvert.
+    pub online_only: bool,
+    /// Un fichier ordinaire : ni lien, ni dossier, ni point d'analyse inconnu.
+    pub regular: bool,
+}
+
 impl Removal {
     /// Ouvre `path` pour le supprimer, s'il correspond à `expected`.
     pub fn open(path: &Path, expected: &Expected) -> Result<Self, RemoveError> {
         Ok(Self { inner: imp::Removal::open(path, expected)? })
+    }
+
+    /// Nombre de noms, « en ligne uniquement » et nature de l'entrée ouverte,
+    /// relus à l'instant sur le handle. Ajouté pour le module « Confidentialité » :
+    /// les appelants du grand vide ne s'en servent pas, leur comportement est inchangé.
+    pub fn facts(&self) -> Result<RemovalFacts, RemoveError> {
+        self.inner.facts()
     }
 
     /// Date de dernière modification de l'entrée ouverte, relue à l'instant.

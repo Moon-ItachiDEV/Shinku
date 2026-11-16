@@ -39,7 +39,7 @@ use crate::settings::write_replacing;
 /// Version du format de `game.json`.
 pub const GAME_VERSION: u32 = 1;
 /// Nom du fichier.
-const FILE_NAME: &str = "game.json";
+pub(crate) const FILE_NAME: &str = "game.json";
 /// Dossier de Shinku dans `AppData\Local`.
 pub(crate) const APP_DIR: &str = "Shinku";
 /// Nombre de jeux de bibliothèque gardés dans « déjà joués ».

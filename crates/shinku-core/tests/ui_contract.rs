@@ -42,14 +42,19 @@ use shinku_core::hash::MemoryCache;
 use shinku_core::model::{Lot, ModuleId, RiskLevel, Timestamp, Trigger};
 use shinku_core::platform::agent::{AgentState, OpenProgram, WindowsPage};
 use shinku_core::platform::{Environment, KnownFolder, RecycleBin, StaticEnvironment, Volume};
+use shinku_core::privacy::fake::FakePrivacyHost;
+use shinku_core::privacy::host::{ClipboardClear, CurrentClear, HistoryClear};
+use shinku_core::privacy::rules::{Browser, TypedKey};
+use shinku_core::privacy::view::{GroupKind, PrivacyRefusal, TraceKind, TraceOutcome, TraceState};
 use shinku_core::rules::JunkCategory;
 use shinku_core::scan::report::{CategoryState, DuplicatesState, KeepChoice};
 use shinku_core::scan::{Phase, ScanOptions};
 use shinku_core::session::SessionState;
 use shinku_core::settings::{AutoScan, Language, LoadIssue, SettingsStore, Theme};
+use shinku_core::startup::access::PcAccess;
 use shinku_core::startup::host::{FakeStartupHost, StartupHost};
 use shinku_core::startup::store::{StartupFile, StartupStore};
-use shinku_core::startup::view::StartupRefusal;
+use shinku_core::startup::view::{StartupPending, StartupRefusal};
 use shinku_core::startup::{EntryId, Hint, Mark, Origin, Place, Scope, State, TargetKind};
 
 /// Le contrat connu, lu à la compilation : le test ne dépend d'aucun chemin
@@ -158,6 +163,43 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     fs::write(profile.join("Documents").join("photo.jpg"), [3u8; 8000]).expect("photo");
     fs::write(profile.join("Pictures").join("photo.jpg"), [3u8; 8000]).expect("photo");
     fs::write(profile.join("Videos").join("film.mkv"), [9u8; 70_000]).expect("vidéo");
+    // La confidentialité : Chrome (deux profils, dont un nommé par `Local State`) et
+    // Edge, avec des historiques à effacer et ce qui ne doit jamais l'être.
+    let chrome_data = local.join("Google").join("Chrome").join("User Data");
+    let edge_data = local.join("Microsoft").join("Edge").join("User Data");
+    for folder in [chrome_data.join("Profile 2"), edge_data.join("Default")] {
+        fs::create_dir_all(folder).expect("profil du faux navigateur");
+    }
+    fs::write(
+        chrome_data.join("Local State"),
+        r#"{"profile":{"info_cache":{"Default":{"name":"Léa"},"Profile 2":{"name":"Travail"}}}}"#,
+    )
+    .expect("Local State");
+    for (folder, file, size) in [
+        (chrome_data.join("Default"), "History", 40_000usize),
+        (chrome_data.join("Default"), "History-wal", 3_000),
+        (chrome_data.join("Default"), "Favicons", 12_000),
+        (chrome_data.join("Default"), "Bookmarks", 500),
+        (chrome_data.join("Profile 2"), "History", 8_000),
+        (edge_data.join("Default"), "History", 20_000),
+    ] {
+        fs::write(folder.join(file), vec![1u8; size]).expect("fichier du faux profil");
+    }
+
+    let privacy_host = Arc::new(FakePrivacyHost::new(Some(local.clone())));
+    privacy_host.set_firefox(true);
+    privacy_host.set_recent(12, shinku_core::privacy::fake::RecentClear::All);
+    privacy_host.set_values(TypedKey::RunMru, &["a", "b", "MRUList"]);
+    privacy_host.set_values(TypedKey::TypedPaths, &["url1"]);
+    privacy_host.set_clipboard(
+        true,
+        ClipboardClear { history: HistoryClear::Cleared, current: CurrentClear::Emptied },
+    );
+    // Brave aussi, mais ouvert : sa ligne est inerte (`running`).
+    let brave_data = local.join("BraveSoftware").join("Brave-Browser").join("User Data");
+    fs::create_dir_all(brave_data.join("Default")).expect("profil de Brave");
+    fs::write(brave_data.join("Default").join("History"), [1u8; 100]).expect("historique de Brave");
+    privacy_host.set_processes(Some(&["brave.exe"]));
 
     let month = Duration::from_secs(30 * 24 * 3600);
     let environment = StaticEnvironment::new()
@@ -304,7 +346,8 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             Some(StartupStore::at(startup_store.path())),
             Some(own_command.to_owned()),
         )
-        .with_apps_parts(apps_host.clone());
+        .with_apps_parts(apps_host.clone())
+        .with_privacy_parts(privacy_host.clone());
 
     let mut samples: BTreeMap<&str, Value> = BTreeMap::new();
     samples.insert("sessionView.idle", to_json(&backend.view()));
@@ -317,8 +360,12 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         .and_then(|entry| entry["id"].as_str())
         .expect("l'entrée Steam")
         .to_owned();
-    let view = backend.set_startup_entry(&steam, false).expect("Steam est coupée");
+    let view = backend.set_startup_entry(&steam, false, 0).expect("Steam est coupée");
     samples.insert("startupView", to_json(&view));
+    samples.insert(
+        "startupPending",
+        to_json(&StartupPending { id: EntryId::new(Place::MachineRun, "Essai"), enabled: false }),
+    );
 
     // La désinstallation : la liste, puis chaque phase, puis les restes.
     samples.insert("appsView.idle", to_json(&backend.apps_view()));
@@ -361,6 +408,59 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     apps_host.end_process();
     let _ = backend.apps_view();
     samples.insert("appsView.kept", to_json(&backend.apps_view()));
+
+    // La confidentialité : la vue (un profil nommé, un profil sans nom, un navigateur
+    // ouvert, Windows), puis l'effacement de l'historique d'un profil, des récents et
+    // de ce qui a été tapé. Les noms et les poids viennent des faux fichiers.
+    let privacy = backend.privacy_view();
+    assert!(privacy.firefox && privacy.edge_imports_chrome);
+    let kinds: Vec<(Option<Browser>, Option<u32>, bool)> =
+        privacy.groups.iter().map(|group| (group.app, group.slot, group.running)).collect();
+    assert_eq!(
+        kinds,
+        [
+            (Some(Browser::Chrome), Some(0), false),
+            (Some(Browser::Chrome), Some(2), false),
+            (Some(Browser::Edge), Some(0), false),
+            (Some(Browser::Brave), Some(0), true),
+            (None, None, false),
+        ]
+    );
+    assert_eq!(privacy.groups[0].profile.as_deref(), Some("Léa"));
+    assert_eq!(privacy.groups[2].profile, None);
+    assert!(privacy.groups.iter().all(|group| {
+        group.items.iter().all(|item| (item.kind == TraceKind::History) == (item.bytes.is_some()))
+    }));
+    assert_eq!(privacy.groups[0].items[0].bytes, Some(55_000));
+    assert_eq!(privacy.groups[4].items.len(), 3);
+    assert!(privacy.groups[4].items.iter().all(|item| item.state == TraceState::Present));
+    // `profile` (et `app`, `slot`) peut valoir `null` : un profil sans nom lisible, le bloc
+    // Windows. La forme du contrat réunit les deux (une valeur nulle n'apprend rien), donc le
+    // fichier note `"string"` ; la nullité est tenue ici, par l'échantillon lui-même, qui
+    // doit porter les deux cas, et par les types de la page (`string | null`).
+    let sent = to_json(&privacy);
+    let profiles: Vec<&Value> = sent["groups"]
+        .as_array()
+        .expect("des blocs")
+        .iter()
+        .map(|group| &group["profile"])
+        .collect();
+    assert!(profiles.iter().any(|profile| profile.is_string()), "un profil nommé");
+    assert!(profiles.iter().any(|profile| profile.is_null()), "un profil sans nom : null");
+    samples.insert("privacyView", sent);
+    let ids: Vec<String> = [&privacy.groups[0], &privacy.groups[4]]
+        .iter()
+        .flat_map(|group| group.items.iter().map(|item| item.id.to_string()))
+        .collect();
+    let erased = backend.erase_traces(&ids, 0).expect("traces effacées");
+    let outcomes: Vec<TraceOutcome> = erased.results.iter().map(|result| result.outcome).collect();
+    assert_eq!(outcomes, [TraceOutcome::Erased; 4]);
+    assert_eq!(erased.view.groups[0].items[0].state, TraceState::Empty);
+    samples.insert("eraseTraces", to_json(&erased));
+    samples.insert(
+        "error.privacyRefused",
+        to_json(&BackendError::PrivacyRefused { reason: PrivacyRefusal::Busy }),
+    );
 
     // Le mode jeu : des listes pleines, pour que ni les réglages ni la page
     // n'aient de liste vide dans leurs échantillons.
@@ -565,7 +665,22 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     );
     enums.insert("powerSupport", variants!(PowerSupport: Available, Unavailable, Unsuited));
     enums.insert("gameSource", variants!(Source: Added, Library));
-    enums.insert("windowsPage", variants!(WindowsPage: GameMode, Power, StartupApps, Apps));
+    enums.insert(
+        "windowsPage",
+        variants!(
+            WindowsPage: GameMode, Power, StartupApps, Apps, ActivityHistory, SearchPermissions,
+            Diagnostics
+        ),
+    );
+    enums.insert("traceKind", variants!(TraceKind: History, Recent, Typed, Clipboard));
+    enums.insert(
+        "traceOutcome",
+        variants!(TraceOutcome: Erased, Nothing, InUse, Changed, Partial, Failed),
+    );
+    enums.insert("traceState", variants!(TraceState: Present, Empty, Unreadable));
+    enums.insert("browserApp", variants!(Browser: Chrome, Edge, Brave, Vivaldi));
+    enums.insert("privacyGroupKind", variants!(GroupKind: Browser, Windows));
+    enums.insert("privacyRefusal", variants!(PrivacyRefusal: Busy, TooMany));
     enums.insert("appsScope", variants!(AppsScope: Account, Machine));
     enums.insert("appsKind", variants!(Kind: Plain, Runtime, Driver));
     enums.insert("appsRemoval", variants!(Removal: Offered, Refused, Own, Needed));
@@ -607,9 +722,10 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     enums.insert("startupTarget", variants!(TargetKind: Found, Missing, Hosted, Unknown));
     enums.insert("startupOrigin", variants!(Origin: Registry, Folder));
     enums.insert("startupHint", variants!(Hint: Sync));
+    enums.insert("startupAccess", variants!(PcAccess: Consent, Password, Direct, Unavailable));
     enums.insert(
         "startupRefusal",
-        variants!(StartupRefusal: UnknownEntry, NotAdjustable, Busy, Failed),
+        variants!(StartupRefusal: UnknownEntry, NotAdjustable, Busy, Failed, Cancelled, NeedsAdmin),
     );
     // Les marques portent des champs : le `match` veille à ce qu'il n'en manque pas.
     fn every_mark_has_a_name(mark: Mark) {
@@ -644,7 +760,8 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             | BackendError::CleanNotStarted { .. }
             | BackendError::GameRefused { .. }
             | BackendError::StartupRefused { .. }
-            | BackendError::UninstallRefused { .. } => {}
+            | BackendError::UninstallRefused { .. }
+            | BackendError::PrivacyRefused { .. } => {}
         }
     }
     fn every_issue_has_a_sample(issue: LoadIssue) {

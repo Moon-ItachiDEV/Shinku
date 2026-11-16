@@ -21,6 +21,8 @@ import type {
   GameRefusal,
   GameSession,
   GameStatus,
+  ErasedTraces,
+  EraseResult,
   GameView,
   JunkReport,
   KnownGame,
@@ -32,6 +34,9 @@ import type {
   OpenApp,
   Overview,
   PowerOutcome,
+  PrivacyGroup,
+  PrivacyRefusal,
+  PrivacyView,
   Phase,
   Progress,
   QuietApp,
@@ -39,12 +44,17 @@ import type {
   SessionView,
   Settings,
   StartupEntry,
+  StartupPc,
+  StartupPending,
   StartupRefusal,
   StartupScope,
   StartupView,
   StepState,
   Summary,
   Theme,
+  TraceItem,
+  TraceKind,
+  TraceOutcome,
 } from './types.ts';
 
 import { keepIn } from '../model/duplicates.ts';
@@ -75,7 +85,22 @@ export interface BootDemo {
   load: 'ok' | 'fail';
   /** Shinku est coupé dans Windows (`?bootshinku=off`). */
   shinku: 'on' | 'off';
+  /** Ce que Windows laisse faire sur le PC (`?bootpc=consent|password|direct|none`) ; `none` : rien (`unavailable`). */
+  pc: StartupPc;
+  /** Comment finit un changement du PC (`?bootpcflow=wait|cancel|admin|fail`) : toujours après une attente. */
+  pcflow: 'wait' | 'cancel' | 'admin' | 'fail';
 }
+
+/** Ce que la démo montre de la confidentialité (`?privacy=few|many|none|running&privacyflow=done|inuse|changed|partial|fail`). */
+export interface PrivacyDemo {
+  /** Les traces : quelques-unes, beaucoup de profils, rien à effacer, ou des navigateurs ouverts. */
+  data: 'few' | 'many' | 'none' | 'running';
+  /** Comment finit un effacement : tout effacé, navigateur en cours d'utilisation, profil changé, registre effacé en partie, échec. */
+  flow: 'done' | 'inuse' | 'changed' | 'partial' | 'fail';
+}
+
+/** Combien de temps la démo laisse la petite fenêtre « Shinku » attendre, avant `?speed`. */
+export const PC_WAIT = 4500;
 
 export interface MockOptions {
   /** Accélère l'analyse simulée (1 : durée normale, environ 7 secondes). */
@@ -100,6 +125,8 @@ export interface MockOptions {
   boot: BootDemo;
   /** Ce que la démo montre de la désinstallation (voir mock-apps.ts). */
   apps: AppsDemo;
+  /** Ce que la démo montre de la confidentialité. */
+  privacy: PrivacyDemo;
 }
 
 /**
@@ -108,6 +135,7 @@ export interface MockOptions {
  * Le mode jeu : `?game=off|idle|playing|released|pending`, `?agent=missing|stopped`,
  * `?power=unavailable|unsuited|battery`, `?startup=disabled`.
  * Le démarrage : `?boot=few|many|empty`, `?bootfail=1`, `?bootread=user|machine`, `?bootload=fail`, `?bootshinku=off`.
+ * La confidentialité : `?privacy=few|many|none|running`, `?privacyflow=done|inuse|changed|partial|fail`.
  * La désinstallation : `?apps=few|many|empty|partial`, `?appsload=fail`,
  * `?appsflow=launching|waiting|stuck|leftovers|none|family|unsure`, `?appsfail=broken|cancelled|bin|kept`.
  */
@@ -122,6 +150,10 @@ export function demoOptions(search: string): MockOptions {
   const power = query.get('power');
   const boot = query.get('boot');
   const read = query.get('bootread');
+  const pc = query.get('bootpc');
+  const pcflow = query.get('bootpcflow');
+  const privacy = query.get('privacy');
+  const privacyFlow = query.get('privacyflow');
   return {
     speed: Number.isFinite(speed) && speed > 0 ? speed : 1,
     issue: issue === 'unreadable' || issue === 'partial' ? issue : 'none',
@@ -142,8 +174,17 @@ export function demoOptions(search: string): MockOptions {
       read: read === 'user' || read === 'machine' ? read : 'all',
       load: query.get('bootload') === 'fail' ? 'fail' : 'ok',
       shinku: query.get('bootshinku') === 'off' ? 'off' : 'on',
+      pc: pc === 'password' || pc === 'direct' ? pc : pc === 'none' ? 'unavailable' : 'consent',
+      pcflow: pcflow === 'cancel' || pcflow === 'admin' || pcflow === 'fail' ? pcflow : 'wait',
     },
     apps: appsDemoOptions(query),
+    privacy: {
+      data: privacy === 'many' || privacy === 'none' || privacy === 'running' ? privacy : 'few',
+      flow:
+        privacyFlow === 'inuse' || privacyFlow === 'changed' || privacyFlow === 'partial' || privacyFlow === 'fail'
+          ? privacyFlow
+          : 'done',
+    },
   };
 }
 
@@ -237,7 +278,58 @@ interface BootSeed {
   own?: boolean | undefined;
 }
 
-function bootEntry(seed: BootSeed, now: number): StartupEntry {
+/** Les signes courants que le cœur garde tels quels, en plus des lettres, des chiffres et de l'ASCII imprimable. */
+const KEPT_SIGNS = '«»’‘“”–—·…®©™°€£';
+/** Les quatre lettres invisibles que le cœur montre comme le reste. */
+const INVISIBLE_LETTERS = [0x115f, 0x1160, 0x3164, 0xffa0];
+
+/**
+ * Le nom d'inscription tel que le cœur le montre (`startup::shown_name`) : rien n'est retiré, ce qui n'est pas
+ * sûr à lire est montré `⟨U+00A0⟩` ; 80 caractères au plus, puis « … ».
+ */
+export function shownName(name: string): string {
+  const limit = 80;
+  let text = '';
+  let width = 0;
+  for (const character of name) {
+    const code = character.codePointAt(0) ?? 0;
+    // `char::is_alphanumeric` de Rust : Alphabetic, ou chiffre (Nd, Nl, No).
+    const plain =
+      !INVISIBLE_LETTERS.includes(code) &&
+      (/^[\p{Alphabetic}\p{Nd}\p{Nl}\p{No}]$/u.test(character) ||
+        (code >= 0x20 && code <= 0x7e) ||
+        KEPT_SIGNS.includes(character));
+    const piece = plain ? character : `⟨U+${code.toString(16).toUpperCase().padStart(4, '0')}⟩`;
+    const size = [...piece].length;
+    // Un signe montré n'est jamais coupé en deux : on s'arrête avant celui qui déborde.
+    if (width + size > limit) {
+      return `${text}…`;
+    }
+    width += size;
+    text += piece;
+  }
+  return text;
+}
+
+/** `clean_text` du cœur, en gros : les blancs deviennent des espaces, les contrôles et caractères de forme disparaissent. */
+function cleanText(text: string): string {
+  return text
+    .replace(/\s/gu, ' ')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
+    .split(/\s+/u)
+    .filter((word) => word !== '')
+    .join(' ')
+    .trimEnd();
+}
+
+/** Comme le cœur (`raw_label`) : le nom brut nettoyé, sans `.lnk` pour un raccourci, s'il diffère du nom montré. */
+function machineAlias(seed: BootSeed): string | null {
+  const raw = seed.place.endsWith('f') ? seed.raw.replace(/\.lnk$/iu, '') : seed.raw;
+  const label = cleanText(raw);
+  return label !== '' && label.toLowerCase() !== seed.name.toLowerCase() ? label : null;
+}
+
+function bootEntry(seed: BootSeed, now: number, pc: StartupPc = 'consent'): StartupEntry {
   const machine = seed.place.startsWith('m');
   const state = seed.state ?? 'enabled';
   const cutAt =
@@ -249,7 +341,7 @@ function bootEntry(seed: BootSeed, now: number): StartupEntry {
   return {
     id: startupId(seed.place, seed.raw),
     name: seed.name,
-    alias: seed.alias ?? null,
+    alias: seed.alias ?? (machine ? machineAlias(seed) : null),
     // Le cœur ne lit l'éditeur que dans le fichier qu'il a trouvé.
     publisher: (seed.target ?? 'found') === 'found' ? (seed.publisher ?? null) : null,
     scope: machine ? 'machine' : 'user',
@@ -266,7 +358,8 @@ function bootEntry(seed: BootSeed, now: number): StartupEntry {
     host: seed.host ?? null,
     hint: seed.sync === true && (seed.target ?? 'found') === 'found' ? 'sync' : null,
     own: seed.own === true,
-    adjustable: !machine && state !== 'unknown' && seed.own !== true,
+    adjustable: (machine ? pc !== 'unavailable' : true) && state !== 'unknown' && seed.own !== true,
+    registered: machine ? shownName(seed.raw) : null,
   };
 }
 
@@ -280,7 +373,7 @@ const FEW_BOOT: readonly BootSeed[] = [
   { place: 'ur', raw: 'Shinku', name: 'Shinku', publisher: 'Shinku', own: true },
   { place: 'ur', raw: 'Ancien outil', name: 'Ancien outil', state: 'unknown' },
   { place: 'mr', raw: 'SecurityHealth', name: 'Sécurité Windows', alias: 'SecurityHealth', publisher: 'Microsoft Corporation' },
-  { place: 'mr', raw: 'RtkAudUService', name: 'Realtek HD Audio Universal Service', publisher: 'Realtek Semiconductor' },
+  { place: 'mr', raw: 'RtkAud\u00A0UService', name: 'Realtek HD Audio Universal Service', publisher: 'Realtek Semiconductor' },
   { place: 'mr', raw: 'LGHUB', name: 'Logitech G HUB', publisher: 'Logitech, Inc.', state: 'disabled', cutOn: { month: 10, day: 2, yearsAgo: 1 } },
   { place: 'mw', raw: 'SunJavaUpdateSched', name: 'Java Update Scheduler', publisher: 'Oracle Corporation' },
 ];
@@ -322,6 +415,115 @@ function manyBoot(): BootSeed[] {
       sync: index % 6 === 0,
     };
   });
+}
+
+// ── La confidentialité de la démo ──────────────────────────────────────────
+
+/** Combien de traces le cœur accepte d'effacer d'un seul coup. */
+export const MAX_ERASE = 64;
+
+const privacyRefused = (reason: PrivacyRefusal): Promise<never> => Promise.reject({ kind: 'privacyRefused', reason });
+
+/** Un identifiant opaque, à la forme de ceux du cœur : stable pour une même trace, sans rien dire de son contenu. */
+function traceId(key: string, kind: TraceKind): string {
+  let hash = 0x811c9dc5;
+  for (const letter of `${key}/${kind}`) {
+    hash = Math.imul(hash ^ letter.charCodeAt(0), 0x01000193) >>> 0;
+  }
+  return `tr-${hash.toString(16).padStart(8, '0')}`;
+}
+
+type TraceSeed = Partial<Pick<TraceItem, 'state' | 'bytes' | 'count'>>;
+
+function trace(key: string, kind: TraceKind, seed: TraceSeed): TraceItem {
+  return { id: traceId(key, kind), kind, state: 'present', bytes: null, count: null, ...seed };
+}
+
+function browserGroup(
+  app: NonNullable<PrivacyGroup['app']>,
+  slot: number,
+  profile: string | null,
+  history: TraceSeed,
+  running = false,
+): PrivacyGroup {
+  const key = `${app}:${slot}`;
+  return { key, kind: 'browser', app, profile, slot, running, items: [trace(key, 'history', history)] };
+}
+
+function windowsGroup(seeds: Record<Exclude<TraceKind, 'history'>, TraceSeed>): PrivacyGroup {
+  return {
+    key: 'windows',
+    kind: 'windows',
+    app: null,
+    profile: null,
+    slot: null,
+    running: false,
+    items: [trace('windows', 'recent', seeds.recent), trace('windows', 'typed', seeds.typed), trace('windows', 'clipboard', seeds.clipboard)],
+  };
+}
+
+const NOTHING: TraceSeed = { state: 'empty' };
+
+/** Les blocs de départ de la démo, dans l'ordre du cœur : les navigateurs par profil, puis Windows. */
+function privacyGroups(data: PrivacyDemo['data']): PrivacyGroup[] {
+  const windows = windowsGroup({
+    recent: { count: 23 },
+    typed: { count: 14 },
+    clipboard: {},
+  });
+  switch (data) {
+    case 'none':
+      return [windowsGroup({ recent: NOTHING, typed: NOTHING, clipboard: NOTHING })];
+    case 'running':
+      return [
+        browserGroup('chrome', 0, 'Léa', { bytes: 48.3 * MB }, true),
+        browserGroup('chrome', 2, null, { bytes: 3.1 * MB }, true),
+        browserGroup('edge', 0, null, { bytes: 12.6 * MB }),
+        windows,
+      ];
+    case 'many':
+      return [
+        browserGroup('chrome', 0, 'Léa', { bytes: 148.3 * MB }),
+        browserGroup('chrome', 1, null, { bytes: 9.4 * MB }),
+        browserGroup('chrome', 3, 'Travail', { bytes: 71.8 * MB }),
+        browserGroup('chrome', 4, null, NOTHING),
+        browserGroup('edge', 0, null, { bytes: 12.6 * MB }),
+        browserGroup('edge', 1, 'Perso', { bytes: 410 * 1024 }),
+        browserGroup('brave', 0, null, { state: 'unreadable' }),
+        browserGroup('vivaldi', 0, null, { bytes: 22.9 * MB }),
+        windows,
+      ];
+    case 'few':
+      return [
+        browserGroup('chrome', 0, 'Léa', { bytes: 48.3 * MB }),
+        browserGroup('chrome', 2, null, NOTHING),
+        browserGroup('edge', 0, null, { bytes: 12.6 * MB }),
+        windows,
+      ];
+  }
+}
+
+/** Ce que le cœur rend pour une trace, selon le scénario de la démo (`?privacyflow=`). */
+function eraseOutcome(group: PrivacyGroup, item: TraceItem, flow: PrivacyDemo['flow']): TraceOutcome {
+  if (item.state !== 'present') {
+    return 'nothing';
+  }
+  if (group.running) {
+    // Le navigateur s'est ouvert entre la vue et le clic : rien n'est touché.
+    return 'inUse';
+  }
+  switch (flow) {
+    case 'inuse':
+      return group.kind === 'browser' ? 'inUse' : 'erased';
+    case 'changed':
+      return group.kind === 'browser' ? 'changed' : 'erased';
+    case 'partial':
+      return item.kind === 'typed' || item.kind === 'recent' ? 'partial' : 'erased';
+    case 'fail':
+      return 'failed';
+    case 'done':
+      return 'erased';
+  }
 }
 
 const gameRefused = (reason: GameRefusal): Promise<never> => Promise.reject({ kind: 'gameRefused', reason });
@@ -534,12 +736,17 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
           ? { ...seed, state: 'disabled', cutDaysAgo: 2 }
           : seed,
         Date.now(),
+        options.boot.pc,
       ),
     ),
   );
+  /** Le changement du PC que la petite fenêtre attend : la vue le dit tant qu'il est là, comme le cœur. */
+  let bootPending: StartupPending | null = null;
   const bootView = (): StartupView => ({
     entries: structuredClone(bootEntries),
     unreadable: options.boot.read === 'all' ? [] : [options.boot.read],
+    pc: options.boot.pc,
+    pending: bootPending === null ? null : { ...bootPending },
   });
   let issue: LoadIssue | null =
     options.issue === 'unreadable'
@@ -565,6 +772,14 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
   /** Le nombre d'apps actives, lu à la fin de la dernière analyse. */
   let startupCount: number | null = null;
   let bootLoadFails = options.boot.load === 'fail';
+  let traces: PrivacyGroup[] = privacyGroups(options.privacy.data);
+  /** Un effacement est en vol : un second est refusé, comme par le cœur. */
+  let erasing = false;
+  const privacyView = (): PrivacyView => ({
+    groups: structuredClone(traces),
+    firefox: options.privacy.data === 'many' || options.privacy.data === 'running',
+    edgeImportsChrome: traces.some((group) => group.app === 'chrome') && traces.some((group) => group.app === 'edge'),
+  });
   let cleaning: Cleaning | null = null;
 
   /** L'app que le scénario `rough` laisse ouverte : ses fichiers ne partent pas. */
@@ -1361,8 +1576,31 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
       if (!entry.adjustable) {
         return startupRefused('notAdjustable');
       }
+      // Un changement du PC attend : le cœur n'en accepte pas d'autre, du compte ou du PC.
+      if (bootPending !== null) {
+        return startupRefused('busy');
+      }
       if (options.boot.fail) {
         return startupRefused('failed');
+      }
+      if ((entry.state === 'enabled') === enabled) {
+        // Déjà dans l'état voulu : le cœur rend la vue tout de suite, sans accord ni `pending`.
+        return bootView();
+      }
+      if (entry.scope === 'machine') {
+        // Le cœur rend la main à la fin de l'assistant ; la vue, relue pendant ce temps, dit `pending`.
+        bootPending = { id, enabled };
+        await delay(PC_WAIT / options.speed);
+        bootPending = null;
+        if (options.boot.pcflow === 'cancel') {
+          return startupRefused('cancelled');
+        }
+        if (options.boot.pcflow === 'admin') {
+          return startupRefused('needsAdmin');
+        }
+        if (options.boot.pcflow === 'fail') {
+          return startupRefused('failed');
+        }
       }
       if ((entry.state === 'enabled') !== enabled) {
         const now = Date.now();
@@ -1378,6 +1616,47 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
       return bootView();
     },
     ...appsBackend(options.apps),
+    privacyView: async () => privacyView(),
+    eraseTraces: async (ids): Promise<ErasedTraces> => {
+      // Le même ordre que le cœur, pour ce que la démo sait : un grand vide ou un autre effacement en cours est refusé (`busy`) avant le nombre (`tooMany`). Elle ne connaît pas la mise à la corbeille de restes.
+      if (erasing || cleanRunning()) {
+        return privacyRefused('busy');
+      }
+      if (ids.length > MAX_ERASE) {
+        return privacyRefused('tooMany');
+      }
+      erasing = true;
+      try {
+        await delay(900 / options.speed);
+        const results: EraseResult[] = [];
+        const done = new Set<string>();
+        for (const id of ids) {
+          if (done.has(id)) {
+            continue;
+          }
+          done.add(id);
+          const group = traces.find((one) => one.items.some((item) => item.id === id));
+          const item = group?.items.find((one) => one.id === id);
+          if (group === undefined || item === undefined) {
+            // Un identifiant que le cœur n'a pas fabriqué : refusé, rien n'est touché.
+            results.push({ id, outcome: 'changed' });
+            continue;
+          }
+          const outcome = eraseOutcome(group, item, options.privacy.flow);
+          results.push({ id, outcome });
+          if (outcome === 'erased') {
+            item.state = 'empty';
+            item.bytes = null;
+            item.count = null;
+          } else if (outcome === 'partial') {
+            item.count = Math.min(item.count ?? 2, 2);
+          }
+        }
+        return { view: privacyView(), results };
+      } finally {
+        erasing = false;
+      }
+    },
     openWindowsSettings: async () => {},
     minimizeWindow: async () => {},
     toggleMaximizeWindow: async () => {},

@@ -335,7 +335,14 @@ export type PowerOutcome =
   | 'off';
 export type PowerSupport = 'available' | 'unavailable' | 'unsuited';
 export type GameSource = 'added' | 'library';
-export type WindowsPage = 'gameMode' | 'power' | 'startupApps' | 'apps';
+export type WindowsPage =
+  | 'gameMode'
+  | 'power'
+  | 'startupApps'
+  | 'apps'
+  | 'activityHistory'
+  | 'searchPermissions'
+  | 'diagnostics';
 export type GameStatus = 'notGame' | 'forgotten';
 
 /** La partie en cours, telle que l'agent l'a notée. */
@@ -415,7 +422,8 @@ export type BackendError =
   | { kind: 'cleanNotStarted'; reason: string }
   | { kind: 'gameRefused'; reason: GameRefusal }
   | { kind: 'startupRefused'; reason: StartupRefusal }
-  | { kind: 'uninstallRefused'; reason: UninstallRefusal };
+  | { kind: 'uninstallRefused'; reason: UninstallRefusal }
+  | { kind: 'privacyRefused'; reason: PrivacyRefusal };
 
 // ── Le démarrage ───────────────────────────────────────────────────────────
 
@@ -451,7 +459,25 @@ export interface StartupEntry {
   hint: 'sync' | null;
   /** L'entrée de Shinku lui-même (mode jeu automatique). */
   own: boolean;
+  /** Pour une entrée du PC, vrai si Shinku peut la régler (`StartupView.pc` n'est pas `unavailable`, et la ligne s'y prête). */
   adjustable: boolean;
+  /**
+   * Pour une entrée du PC : le nom sous lequel elle est inscrite, déjà mis en forme par le cœur (les caractères
+   * douteux y sont montrés `⟨U+00A0⟩`, jamais retirés) ; la page l'affiche tel quel. `null` pour une entrée du compte.
+   */
+  registered: string | null;
+}
+
+/**
+ * Comment Windows laisse Shinku régler le PC : `consent` (une fenêtre d'accord), `password` (le mot de passe d'un
+ * administrateur), `direct` (Windows ne demande rien : Shinku fait confirmer), `unavailable` (aucun moyen).
+ */
+export type StartupPc = 'consent' | 'password' | 'direct' | 'unavailable';
+
+/** Le changement du PC que l'assistant attend : la page relit la vue tant qu'il est là. */
+export interface StartupPending {
+  id: string;
+  enabled: boolean;
 }
 
 export interface StartupView {
@@ -459,9 +485,11 @@ export interface StartupView {
   entries: StartupEntry[];
   /** Les portées dont une place n'a pas pu être lue. */
   unreadable: StartupScope[];
+  pc: StartupPc;
+  pending: StartupPending | null;
 }
 
-export type StartupRefusal = 'unknownEntry' | 'notAdjustable' | 'busy' | 'failed';
+export type StartupRefusal = 'unknownEntry' | 'notAdjustable' | 'busy' | 'failed' | 'cancelled' | 'needsAdmin';
 
 // ── La désinstallation ─────────────────────────────────────────────────────
 
@@ -545,6 +573,63 @@ export interface RemoveLeftovers {
   bytes: number;
 }
 
+// ── La confidentialité ─────────────────────────────────────────────────────
+
+/** Ce que Shinku sait effacer : l'historique d'un profil de navigateur, ou une trace de Windows. */
+export type TraceKind = 'history' | 'recent' | 'typed' | 'clipboard';
+/** Ce qui est arrivé à une trace que la personne avait cochée. */
+export type TraceOutcome = 'erased' | 'nothing' | 'inUse' | 'changed' | 'partial' | 'failed';
+export type TraceState = 'present' | 'empty' | 'unreadable';
+export type BrowserApp = 'chrome' | 'edge' | 'brave' | 'vivaldi';
+
+/** Une trace : jamais son contenu, seulement qu'elle existe, son poids ou son nombre d'éléments. */
+export interface TraceItem {
+  /** Fabriqué par le cœur, opaque pour la page : c'est la seule chose qu'elle lui renvoie. */
+  id: string;
+  kind: TraceKind;
+  state: TraceState;
+  /** Le poids des fichiers, sinon `null`. */
+  bytes: number | null;
+  /** Le nombre de valeurs ou de raccourcis, sinon `null`. */
+  count: number | null;
+}
+
+/** Un navigateur et son profil, ou le bloc « Windows ». */
+export interface PrivacyGroup {
+  key: string;
+  kind: 'browser' | 'windows';
+  app: BrowserApp | null;
+  /** Le nom du profil lu par le cœur, déjà nettoyé : à montrer tel quel. */
+  profile: string | null;
+  /** `null` : le bloc Windows ; `0` : le profil `Default` ; `N` : `Profile N`. */
+  slot: number | null;
+  /** Le navigateur est ouvert : ses traces ne s'effacent pas. */
+  running: boolean;
+  items: TraceItem[];
+}
+
+export interface PrivacyView {
+  groups: PrivacyGroup[];
+  /** Un dossier de profils Firefox existe : une ligne d'aide. */
+  firefox: boolean;
+  /** Chrome et Edge sont tous deux là : Edge peut réimporter l'historique de Chrome. */
+  edgeImportsChrome: boolean;
+}
+
+export interface EraseResult {
+  id: string;
+  outcome: TraceOutcome;
+}
+
+/** Ce que rend `erase_traces` : la vue relue, et ce qui est arrivé à chaque trace demandée. */
+export interface ErasedTraces {
+  view: PrivacyView;
+  results: EraseResult[];
+}
+
+/** `busy` : un grand vide ou un autre effacement est en cours ; `tooMany` : plus de 64 traces d'un coup. */
+export type PrivacyRefusal = 'busy' | 'tooMany';
+
 /** Ce que l'interface peut demander. Deux réalisations : Tauri, et la démo. */
 export interface Backend {
   overview(): Promise<Overview>;
@@ -594,6 +679,10 @@ export interface Backend {
   rescanLeftovers(): Promise<AppsView>;
   /** Met des restes à la corbeille, jamais plus loin. `keys` : les clés que le cœur a données. */
   removeLeftovers(keys: number[]): Promise<RemoveLeftovers>;
+  /** Les traces effaçables : navigateurs par profil, puis Windows. Rien n'est lu au-delà de leur existence et de leur poids. */
+  privacyView(): Promise<PrivacyView>;
+  /** `ids` : seulement ceux que le cœur a fabriqués. Il refuse au-delà de 64, ou pendant un grand vide. */
+  eraseTraces(ids: string[]): Promise<ErasedTraces>;
   openWindowsSettings(page: WindowsPage): Promise<void>;
   minimizeWindow(): Promise<void>;
   toggleMaximizeWindow(): Promise<void>;

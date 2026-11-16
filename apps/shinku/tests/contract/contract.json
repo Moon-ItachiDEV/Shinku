@@ -34,11 +34,18 @@
       "cleanRunning",
       "folderRefused",
       "gameRefused",
+      "privacyRefused",
       "scanNotStarted",
       "settingsNotSaved",
       "settingsUnchecked",
       "startupRefused",
       "uninstallRefused"
+    ],
+    "browserApp": [
+      "chrome",
+      "edge",
+      "brave",
+      "vivaldi"
     ],
     "categoryState": [
       "ready",
@@ -156,6 +163,14 @@
       "unavailable",
       "unsuited"
     ],
+    "privacyGroupKind": [
+      "browser",
+      "windows"
+    ],
+    "privacyRefusal": [
+      "busy",
+      "tooMany"
+    ],
     "removeOutcome": [
       "removed",
       "alreadyGone",
@@ -188,6 +203,12 @@
       "cleaning",
       "cleaned"
     ],
+    "startupAccess": [
+      "consent",
+      "password",
+      "direct",
+      "unavailable"
+    ],
     "startupHint": [
       "sync"
     ],
@@ -203,7 +224,9 @@
       "unknownEntry",
       "notAdjustable",
       "busy",
-      "failed"
+      "failed",
+      "cancelled",
+      "needsAdmin"
     ],
     "startupScope": [
       "user",
@@ -235,6 +258,25 @@
       "light",
       "dark"
     ],
+    "traceKind": [
+      "history",
+      "recent",
+      "typed",
+      "clipboard"
+    ],
+    "traceOutcome": [
+      "erased",
+      "nothing",
+      "inUse",
+      "changed",
+      "partial",
+      "failed"
+    ],
+    "traceState": [
+      "present",
+      "empty",
+      "unreadable"
+    ],
     "uninstallRefusal": [
       "busy",
       "vanished",
@@ -248,7 +290,10 @@
       "gameMode",
       "power",
       "startupApps",
-      "apps"
+      "apps",
+      "activityHistory",
+      "searchPermissions",
+      "diagnostics"
     ]
   },
   "shapes": {
@@ -478,6 +523,37 @@
       "skippedFiles": "number",
       "state": "string"
     },
+    "eraseTraces": {
+      "results": [
+        {
+          "id": "string",
+          "outcome": "string"
+        }
+      ],
+      "view": {
+        "edgeImportsChrome": "boolean",
+        "firefox": "boolean",
+        "groups": [
+          {
+            "app": "string",
+            "items": [
+              {
+                "bytes": "number",
+                "count": "number",
+                "id": "string",
+                "kind": "string",
+                "state": "string"
+              }
+            ],
+            "key": "string",
+            "kind": "string",
+            "profile": "string",
+            "running": "boolean",
+            "slot": "number"
+          }
+        ]
+      }
+    },
     "error.cleanNotStarted": {
       "kind": "string",
       "reason": "string"
@@ -494,6 +570,10 @@
       "reason": "string"
     },
     "error.gameRefused": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "error.privacyRefused": {
       "kind": "string",
       "reason": "string"
     },
@@ -727,6 +807,29 @@
         }
       ]
     },
+    "privacyView": {
+      "edgeImportsChrome": "boolean",
+      "firefox": "boolean",
+      "groups": [
+        {
+          "app": "string",
+          "items": [
+            {
+              "bytes": "number",
+              "count": "number",
+              "id": "string",
+              "kind": "string",
+              "state": "string"
+            }
+          ],
+          "key": "string",
+          "kind": "string",
+          "profile": "string",
+          "running": "boolean",
+          "slot": "number"
+        }
+      ]
+    },
     "removeLeftovers": {
       "bytes": "number",
       "results": [
@@ -919,6 +1022,10 @@
       "useRecycleBin": "boolean",
       "version": "number"
     },
+    "startupPending": {
+      "enabled": "boolean",
+      "id": "string"
+    },
     "startupView": {
       "entries": [
         {
@@ -937,11 +1044,14 @@
           "origin": "string",
           "own": "boolean",
           "publisher": "string",
+          "registered": "string",
           "scope": "string",
           "state": "string",
           "target": "string"
         }
       ],
+      "pc": "string",
+      "pending": "null",
       "unreadable": [
         "string"
       ]

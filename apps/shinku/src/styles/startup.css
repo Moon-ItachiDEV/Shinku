@@ -180,3 +180,30 @@
 .startup .row .t2 {
   color: var(--text-2);
 }
+
+/* La ligne qui attend la personne : un texte à lire en entier, il passe à la ligne. */
+.startup .row .t2.wait {
+  white-space: normal;
+  text-wrap: pretty;
+}
+
+/* La phrase de prudence de la carte du PC, sous la phrase d'accès. */
+.startup .pcaut {
+  margin: -6px 4px 12px;
+  max-width: 620px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+/* Le nom d'inscription n'est jamais coupé par des points de suspension : sa fin distingue souvent deux entrées. */
+.startup .row .t2.reg {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
+/* Une attente peut durer des minutes : les interrupteurs inertes se voient (même opacité que les cartes en retrait du Mode jeu). */
+.startup .sw[aria-disabled='true'] {
+  opacity: 0.6;
+}

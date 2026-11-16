@@ -12,7 +12,9 @@ use crate::apps::host::{AppsHost, InertAppsHost};
 use crate::fs::to_internal_path;
 use crate::game::host::{GameHost, InertHost};
 use crate::model::Timestamp;
+use crate::privacy::host::{InertPrivacyHost, PrivacyHost};
 use crate::startup::host::{InertStartupHost, StartupHost};
+use crate::startup::launcher::ElevatedHelper;
 
 #[derive(Debug)]
 pub(super) struct SystemEnvironment {
@@ -87,6 +89,10 @@ pub(super) fn own_rights() -> Rights {
     Rights::Standard
 }
 
+pub(super) fn own_rights_known() -> Option<Rights> {
+    Some(Rights::Standard)
+}
+
 pub(super) fn desktop_rights() -> Desktop {
     Desktop::Absent
 }
@@ -100,6 +106,31 @@ pub(super) fn game_host() -> Arc<dyn GameHost> {
 /// Hors de Windows, le module « Démarrage » ne voit rien : aucune entrée.
 pub(super) fn startup_host() -> Arc<dyn StartupHost> {
     Arc::new(InertStartupHost)
+}
+
+/// Hors de Windows, le module « Confidentialité » ne voit rien et n'efface rien.
+pub(super) fn privacy_host() -> Arc<dyn PrivacyHost> {
+    Arc::new(InertPrivacyHost)
+}
+
+/// Hors de Windows, l'assistant n'a pas de machine.
+pub(super) fn machine_startup() -> Option<Box<dyn crate::helper::startup::MachineStartup>> {
+    None
+}
+
+/// Hors de Windows, il n'y a rien à durcir.
+pub(super) fn harden_helper_process() -> bool {
+    true
+}
+
+/// Hors de Windows, les arguments de la ligne de commande.
+pub(super) fn helper_arguments() -> Vec<std::ffi::OsString> {
+    std::env::args_os().skip(1).collect()
+}
+
+/// Hors de Windows, aucune entrée du PC ne se règle.
+pub(super) fn elevated_helper() -> Arc<dyn ElevatedHelper> {
+    Arc::new(crate::startup::launcher::InertHelper)
 }
 
 /// Hors de Windows, le module « Désinstallation » ne voit rien : aucune app, et

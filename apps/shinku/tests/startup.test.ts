@@ -18,6 +18,7 @@ import {
   focusAfter,
   focusTarget,
   initialOf,
+  isWaiting,
   labelRanks,
   machineChip,
   MAX_TAGS,
@@ -26,17 +27,22 @@ import {
   sayDone,
   sayRefused,
   sayStale,
+  shouldPoll,
   showsScope,
   startupCounts,
   startupFocus,
   startupSummary,
+  STARTUP_POLL_DELAY,
   TITLE_KEY,
+  waitingText,
   withEntry,
   withEntryEnabled,
 } from '../src/model/startup.ts';
 import { readFileSync } from 'node:fs';
 
-import { fakeDocument, htmlOf, textOf } from './template.ts';
+import { DOM, EXPECTED } from '../scripts/essai-demarrage-dom.mjs';
+import { type Node, parse, query, queryAll, textOfNode } from './html-tree.ts';
+import { clicksOf, fakeDocument, htmlOf, markupOf, textOf } from './template.ts';
 
 fakeDocument();
 const { startupView } = await import('../src/views/startup.ts');
@@ -63,12 +69,17 @@ function entry(parts: Partial<StartupEntry> = {}): StartupEntry {
     hint: null,
     own: false,
     adjustable: true,
+    registered: null,
     ...parts,
   };
 }
 
-function view(entries: StartupEntry[], unreadable: StartupView['unreadable'] = []): StartupView {
-  return { entries, unreadable };
+function view(
+  entries: StartupEntry[],
+  unreadable: StartupView['unreadable'] = [],
+  more: Partial<StartupView> = {},
+): StartupView {
+  return { entries, unreadable, pc: 'unavailable', pending: null, ...more };
 }
 
 // ── L'en-tête ──────────────────────────────────────────────────────────────
@@ -200,9 +211,10 @@ test('la fin de la ligne : un interrupteur, ou la raison de son absence', () => 
   assert.equal(rowEnd(entry({ state: 'unknown', adjustable: false })), 'unknown');
   assert.equal(rowEnd(entry({ adjustable: false })), 'unadjustable');
   assert.equal(rowEnd(entry({ state: 'disabled', adjustable: false })), 'unadjustable');
-  // Le PC : jamais d'interrupteur, même pour une entrée que le cœur dirait réglable.
+  // Le PC : seulement l'état, sauf si Shinku peut régler la ligne (le cœur dit `adjustable`) : alors l'interrupteur.
   assert.equal(rowEnd(entry({ scope: 'machine', adjustable: false })), 'machine');
-  assert.equal(rowEnd(entry({ scope: 'machine', adjustable: true })), 'machine');
+  assert.equal(rowEnd(entry({ scope: 'machine', adjustable: true })), 'switch');
+  assert.equal(rowEnd(entry({ scope: 'machine', adjustable: true, state: 'unknown' })), 'machine');
   // Une seule pastille d'état sur le PC : « Active », « Coupée le … » ou « Coupée ».
   assert.equal(machineChip(entry({ scope: 'machine' }), NOW), 'Active');
   assert.equal(machineChip(entry({ scope: 'machine', state: 'disabled' }), NOW), 'Coupée');
@@ -212,9 +224,9 @@ test('la fin de la ligne : un interrupteur, ou la raison de son absence', () => 
   );
   assert.equal(machineChip(entry({ scope: 'machine', state: 'unknown' }), NOW), null);
   // Elle ne se répète pas parmi les pastilles de gauche ; les autres y restent.
-  const cutMachine = entry({ scope: 'machine', state: 'disabled', disabledAt: at(2025, 11, 2), target: 'missing' });
+  const cutMachine = entry({ scope: 'machine', adjustable: false, state: 'disabled', disabledAt: at(2025, 11, 2), target: 'missing' });
   assert.deepEqual(rowTags(cutMachine, NOW), ['Semble désinstallée']);
-  assert.deepEqual(rowTags(entry({ scope: 'machine', hint: 'sync' }), NOW), ['Synchronise tes fichiers']);
+  assert.deepEqual(rowTags(entry({ scope: 'machine', adjustable: false, hint: 'sync' }), NOW), ['Synchronise tes fichiers']);
 });
 
 test('au plus deux pastilles par ligne, pastille de la fin de ligne comprise', () => {
@@ -671,4 +683,285 @@ test('les règles de défilement qui gardent la ligne hors de la barre sont dans
   assert.match(css, /\.startup \.row \.t2\s*\{[^}]*color:\s*var\(--text-2\)/);
   // Aucune couleur écrite en dur dans cette feuille.
   assert.doesNotMatch(css, /rgba?\(\s*\d/);
+});
+
+// ── Le PC avec l'accord de Windows (lot 2) ─────────────────────────────────
+
+/** Les espaces insécables que le texte met à l'intérieur des guillemets français. */
+const guillemets = (text: string): string => text.replaceAll('« ', `«${NBSP}`).replaceAll(' »', `${NBSP}»`);
+
+const REALTEK = entry({
+  id: 'mr-realtek',
+  name: 'Realtek HD Audio',
+  scope: 'machine',
+  registered: 'RtkAud⟨U+00A0⟩UService',
+  adjustable: true,
+});
+const MACHINE_ONLY = (more: Partial<StartupView>, entries: StartupEntry[] = [REALTEK]): StartupView =>
+  view(entries, [], { pc: 'consent', ...more });
+
+test('chaque valeur de `pc` dit sa phrase sous le titre de la carte du PC, mot pour mot', () => {
+  const sentence = (pc: StartupView['pc']): string => textOf(startupView({ ...initialState(NOW), startup: MACHINE_ONLY({ pc }) }, noActions));
+  const consent = sentence('consent');
+  assert.ok(consent.includes('Windows te demande ton accord à chaque changement, puis Shinku te redit quelle app il règle.'), consent);
+  const password = sentence('password');
+  assert.ok(password.includes('Windows demandera le mot de passe d’un administrateur à chaque changement, puis Shinku redira quelle app il règle.'), password);
+  const direct = sentence('direct');
+  assert.ok(direct.includes('Shinku te demandera de confirmer chaque changement.'), direct);
+  for (const text of [consent, password, direct]) {
+    // Avec un accès : la phrase de prudence, et plus la phrase du lot 1 ni son bouton.
+    assert.ok(text.includes('Certaines servent au son, au pavé tactile ou aux alertes de sécurité. Si quelque chose te manque après, remets l’app.'), text);
+    assert.ok(!text.includes('Ces apps se règlent dans Windows pour l’instant'), text);
+    assert.equal(text.split('Apps de démarrage de Windows').length - 1, 1, 'seul le bouton de la phrase sous le titre de la page reste');
+  }
+});
+
+test('`unavailable` garde l’affichage du lot 1 : sa phrase, son bouton, une pastille, ni interrupteur ni prudence', () => {
+  const lot1 = entry({ id: 'mr-realtek', name: 'Realtek HD Audio', scope: 'machine', registered: 'RtkAudUService', adjustable: false });
+  const written = page(MACHINE_ONLY({ pc: 'unavailable' }, [lot1]));
+  assert.ok(!written.includes('role="switch"'));
+  assert.ok(written.includes('Ces apps se règlent dans Windows pour l’instant'));
+  assert.ok(written.includes('<span class="tag" title=Active>Active</span>'));
+  assert.ok(!written.includes('Certaines servent au son'));
+  assert.ok(!written.includes('Windows te demande ton accord'));
+  assert.equal(textOf(startupView({ ...initialState(NOW), startup: MACHINE_ONLY({ pc: 'unavailable' }, [lot1]) }, noActions)).split('Apps de démarrage de Windows').length - 1, 2);
+});
+
+test('une ligne du PC dit « Inscrite sous « … » » tel que le cœur l’a écrit, et a l’interrupteur du compte', () => {
+  const written = page(MACHINE_ONLY({}));
+  assert.ok(textOf(startupView({ ...initialState(NOW), startup: MACHINE_ONLY({}) }, noActions)).includes(guillemets('Inscrite sous « RtkAud⟨U+00A0⟩UService »')));
+  assert.equal(written.match(/role="switch"/g)?.length, 1);
+  assert.ok(!written.includes('title=Active'), 'l’interrupteur dit l’état : pas de pastille en plus');
+  // Elle est citée par l'interrupteur, avec les détails.
+  assert.ok(written.includes('aria-describedby=startup-mr-realtek-r'), written);
+  // Une ligne du compte n'en a pas.
+  assert.ok(!page(view([entry({ id: 'ur-1' })])).includes('Inscrite sous'));
+  // L'alias du lot 1 n'est pas répété quand la ligne dit son nom d'inscription.
+  assert.deepEqual(detailParts(entry({ scope: 'machine', alias: 'RtkAud', registered: 'RtkAud', publisher: 'Realtek' })), ['Realtek']);
+});
+
+test('une entrée du PC que Shinku ne règle pas garde sa pastille, même avec un accès ailleurs', () => {
+  const stuck = entry({ id: 'mr-stuck', name: 'Autre', scope: 'machine', registered: 'Autre', adjustable: false });
+  const written = page(MACHINE_ONLY({}, [REALTEK, stuck]));
+  assert.equal(written.match(/role="switch"/g)?.length, 1);
+  assert.equal(written.match(/title=Active/g)?.length, 1);
+});
+
+test('pendant l’attente, la ligne dit la phrase exacte, et tous les interrupteurs sont inertes', () => {
+  const waiting = MACHINE_ONLY({ pending: { id: 'mr-realtek', enabled: false } }, [entry({ id: 'ur-1', name: 'Discord' }), REALTEK]);
+  const written = page(waiting);
+  const text = textOf(startupView({ ...initialState(NOW), startup: waiting }, noActions));
+  const sentence =
+    'En attente de ta réponse… Une petite fenêtre « Shinku » te demandera de confirmer « RtkAud⟨U+00A0⟩UService ». Si tu ne la vois pas, regarde dans la barre des tâches.';
+  assert.ok(text.includes(guillemets(sentence)), text);
+  // Une fois dans la ligne, une fois dans la région vivante.
+  assert.equal(text.split('En attente de ta réponse').length - 1, 2);
+  // Deux interrupteurs, tous deux inertes (jamais `disabled`), alors qu'aucun geste local n'est en vol.
+  assert.equal(written.match(/role="switch"/g)?.length, 2);
+  assert.equal(written.match(/aria-disabled=true/g)?.length, 2);
+  assert.doesNotMatch(written, /\?disabled=|\sdisabled[\s>=]/);
+  // La ligne qui attend ne montre plus « Inscrite sous » : la phrase le dit déjà.
+  assert.ok(!text.includes('Inscrite sous'));
+  // Sans attente : rien de tout cela.
+  const calm = page(MACHINE_ONLY({}, [entry({ id: 'ur-1', name: 'Discord' }), REALTEK]));
+  assert.ok(!calm.includes('En attente') && !calm.includes('aria-disabled=true'));
+});
+
+test('les deux refus du PC ont leur phrase, sans bouton « Annuler »', () => {
+  assert.deepEqual(sayRefused({ kind: 'startupRefused', reason: 'cancelled' }), { text: 'Rien n’a changé.', undo: null });
+  assert.deepEqual(sayRefused({ kind: 'startupRefused', reason: 'needsAdmin' }), {
+    text: 'Il faut un administrateur pour régler cette app.',
+    undo: null,
+  });
+});
+
+test('la relecture n’a lieu que tant que le cœur attend, et pas pour le geste qui attend lui-même', () => {
+  const idle = MACHINE_ONLY({});
+  const waiting = MACHINE_ONLY({ pending: { id: 'mr-realtek', enabled: false } });
+  assert.equal(shouldPoll(null, false), false);
+  assert.equal(shouldPoll(idle, false), false);
+  assert.equal(shouldPoll(waiting, false), true);
+  assert.equal(shouldPoll(waiting, true), false);
+  assert.equal(STARTUP_POLL_DELAY, 2000);
+  assert.deepEqual(waitingText(waiting)?.id, 'mr-realtek');
+  // La ligne a disparu de la liste : l'attente existe, mais il n'y a pas de ligne pour la dire.
+  assert.equal(waitingText({ ...waiting, entries: [] }), null);
+  assert.equal(isWaiting({ ...waiting, entries: [] }), true);
+});
+
+// ── L'essai de la fenêtre : ce qu'il cherche existe dans la page ───────────
+
+/** Les mêmes blancs et la même casse que `shows` dans `essai-fenetre.mjs` : blancs insécables lus comme des espaces. */
+const flat = (text: string): string => text.replace(/[\u00a0\u202f\s]+/g, ' ').trim().toLocaleLowerCase('fr');
+
+function tree(parts: Partial<import('../src/state.ts').AppState> = {}): Node {
+  // La page est dans `<main class="main">` de la coque : l'essai y cherche aussi le titre.
+  return parse(`<main class="main">${markupOf(startupView({ ...initialState(NOW), route: 'startup', ...parts } as never, noActions))}</main>`);
+}
+
+function found(scope: Node, selector: string, what: string): Node[] {
+  const nodes = queryAll(scope, selector);
+  assert.ok(nodes.length > 0, `« ${what} » : le sélecteur ${selector} ne trouve rien dans la page`);
+  return nodes;
+}
+
+const contains = (node: Node | undefined, expected: string): boolean =>
+  node !== undefined && flat(textOfNode(node)).includes(flat(expected));
+
+test('essai de la fenêtre : les sélecteurs du Démarrage trouvent la carte du PC avec un accès, sa ligne, son attente et la zone de retour', () => {
+  const account = entry({ id: 'ur-1', name: 'Discord', state: 'disabled', disabledAt: NOW - 3 * DAY });
+  const waiting = view([account, REALTEK], [], { pc: 'password', pending: { id: 'mr-realtek', enabled: false } });
+  const say = { text: 'Discord est coupée.', undo: { id: 'ur-1', enabled: true } };
+  const page = tree({ startup: waiting, startupSay: say });
+  assert.ok(contains(found(page, DOM.title, 'titre')[0], 'inscrites'));
+  const sections = found(page, DOM.section, 'cartes');
+  assert.ok(sections.some((one) => contains(query(one, DOM.sectionTitle) ?? undefined, EXPECTED.userCard)));
+  const machine = sections.find((one) => contains(query(one, DOM.sectionTitle) ?? undefined, EXPECTED.machineCard));
+  assert.ok(machine !== undefined);
+  assert.ok(found(machine, DOM.access, 'phrase d’accès').some((node) => contains(node, EXPECTED.password)));
+  assert.ok(contains(found(machine, DOM.caution, 'phrase de prudence')[0], EXPECTED.caution));
+  assert.equal(queryAll(machine, DOM.windowsButton).length, 0, 'avec un accès, pas de bouton vers Windows dans la carte');
+  const rows = found(page, DOM.row, 'lignes');
+  const line = rows.find((one) => queryAll(one, DOM.waiting).length > 0);
+  assert.ok(line !== undefined, 'la ligne qui attend porte la phrase d’attente');
+  assert.ok(contains(query(line, DOM.waiting) ?? undefined, 'En attente de ta réponse'));
+  found(line, DOM.rowName, 'nom');
+  found(line, DOM.rowSwitch, 'interrupteur');
+  assert.ok(rows.some((one) => queryAll(one, DOM.tag).length > 0), 'une pastille');
+  assert.ok(contains(found(page, `${DOM.say} ${DOM.sayText}`, 'phrase de la zone de retour')[0], 'est coupée'));
+  found(page, `${DOM.say} ${DOM.sayButton}`, '« Annuler »');
+  // Sans attente : la ligne dit « Inscrite sous », et la phrase d'attente n'est pas là.
+  const calm = tree({ startup: view([REALTEK], [], { pc: 'consent' }) });
+  assert.ok(contains(found(calm, DOM.registered, 'ligne « Inscrite sous »')[0], EXPECTED.registered));
+  assert.equal(queryAll(calm, DOM.waiting).length, 0);
+  assert.ok(found(calm, DOM.access, 'phrase').some((node) => contains(node, EXPECTED.consent)));
+  assert.ok(found(tree({ startup: view([REALTEK], [], { pc: 'direct' }) }), DOM.access, 'phrase').some((node) => contains(node, EXPECTED.direct)));
+  assert.ok(found(tree({ startup: null }), DOM.loading, 'note de chargement').length > 0);
+});
+
+test('essai de la fenêtre : sans accès, la carte du PC a la phrase et le bouton du lot 1, sans interrupteur ni prudence', () => {
+  const lot1 = entry({ id: 'mr-realtek', name: 'Realtek', scope: 'machine', registered: 'Essai', adjustable: false });
+  const page = tree({ startup: view([lot1], [], { pc: 'unavailable' }) });
+  const machine = found(page, DOM.section, 'carte')[0] as Node;
+  assert.ok(found(machine, DOM.access, 'phrase').some((node) => contains(node, EXPECTED.unavailable)));
+  assert.ok(found(machine, DOM.windowsButton, 'bouton').some((node) => contains(node, EXPECTED.openWindows)));
+  assert.equal(queryAll(machine, DOM.caution).length, 0);
+  assert.equal(queryAll(machine, DOM.rowSwitch).length, 0);
+  assert.ok(found(machine, DOM.tag, 'pastille').some((node) => contains(node, EXPECTED.active)));
+});
+
+test('essai de la fenêtre : chaque texte attendu est dans fr.ts, tel quel', () => {
+  const words = [
+    fr.startup.user,
+    fr.startup.machine,
+    fr.startup.registered('X'),
+    fr.startup.pc.consent,
+    fr.startup.pc.password,
+    fr.startup.pc.direct,
+    fr.startup.machineHint,
+    fr.startup.pc.caution,
+    fr.startup.openWindows,
+    fr.startup.waiting('X'),
+    fr.startup.say.cut('X', false),
+    fr.startup.say.restored('X'),
+    fr.startup.say.cancelled,
+    fr.startup.say.needsAdmin,
+    fr.startup.say.failed,
+    fr.startup.active,
+  ].map(flat);
+  for (const [name, expected] of Object.entries(EXPECTED)) {
+    assert.ok(words.some((text) => text.includes(flat(expected))), `EXPECTED.${name} (« ${expected} ») n’est dans aucun texte de fr.ts`);
+  }
+});
+
+// ── Relecture 1 du lot 2 ───────────────────────────────────────────────────
+
+test('I1 : le nom d’inscription n’est jamais retouché par la typographie, caractère pour caractère', () => {
+  const tricky = 'Mise à jour : Java !';
+  const named = entry({ id: 'mr-java', name: 'Java', scope: 'machine', registered: tricky, adjustable: true });
+  // Les espaces ordinaires du nom restent ordinaires ; celles du texte autour restent insécables.
+  assert.equal(fr.startup.registered(tricky), `Inscrite sous${' '}«${NBSP}${tricky}${NBSP}»`);
+  assert.equal(
+    fr.startup.waiting(tricky),
+    `En attente de ta réponse… Une petite fenêtre «${NBSP}Shinku${NBSP}» te demandera de confirmer «${NBSP}${tricky}${NBSP}». Si tu ne la vois pas, regarde dans la barre des tâches.`,
+  );
+  assert.equal(fr.startup.switchLabel('Java', 'alias', 1, tricky), `Lancer Java à l’ouverture de session (${tricky})`);
+  // Dans la page : la ligne, son `title`, la phrase d'attente et la région vivante.
+  const idle = htmlOf(startupView({ ...initialState(NOW), startup: view([named], [], { pc: 'consent' }) }, noActions));
+  assert.ok(idle.includes(`Inscrite sous «${NBSP}${tricky}${NBSP}»`), idle);
+  assert.ok(!idle.includes(`Mise à${NBSP}`) && !idle.includes('jour\u00a0:') && !idle.includes('jour\u202f'), 'aucune espace du nom n’est devenue insécable');
+  const waiting = htmlOf(startupView({ ...initialState(NOW), startup: view([named], [], { pc: 'consent', pending: { id: 'mr-java', enabled: false } }) }, noActions));
+  assert.equal(waiting.split(`«${NBSP}${tricky}${NBSP}».`).length - 1, 2, 'la ligne et la région vivante');
+  // Le nom reste tel quel même quand il ressemble à ce que la typographie transformerait.
+  for (const name of ['Alerte !', 'a ; b', 'Pourquoi ?', 'x : y']) {
+    assert.ok(fr.startup.registered(name).includes(`«${NBSP}${name}${NBSP}»`), name);
+    assert.ok(fr.startup.waiting(name).includes(`«${NBSP}${name}${NBSP}»`), name);
+  }
+});
+
+test('I3 : avec un accès, des lignes du PC sans interrupteur gardent leur pastille, une phrase et le bouton vers Windows', () => {
+  const stuck = entry({ id: 'mr-stuck', name: 'Autre', scope: 'machine', registered: 'Autre', adjustable: false });
+  const some = textOf(startupView({ ...initialState(NOW), startup: MACHINE_ONLY({}, [REALTEK, stuck]) }, noActions));
+  assert.ok(some.includes('Shinku ne sait pas régler celles qui n’ont pas d’interrupteur'), some);
+  // Le bouton de l'en-tête de page, et celui de la carte.
+  assert.equal(some.split('Apps de démarrage de Windows').length - 1, 2);
+  const none = textOf(startupView({ ...initialState(NOW), startup: MACHINE_ONLY({}) }, noActions));
+  assert.ok(!none.includes('celles qui n’ont pas d’interrupteur'));
+  assert.equal(none.split('Apps de démarrage de Windows').length - 1, 1);
+});
+
+test('m1 : pendant l’attente, l’interrupteur cite la phrase d’attente, et aucun clic n’atteint le cœur', () => {
+  const waitingView = MACHINE_ONLY({ pending: { id: 'mr-realtek', enabled: false } }, [entry({ id: 'ur-1', name: 'Discord' }), REALTEK]);
+  const written = page(waitingView);
+  assert.ok(written.includes('aria-describedby=startup-mr-realtek-d'), 'la description est la phrase d’attente, qui est dans la page');
+  assert.ok(!written.includes('startup-mr-realtek-r'));
+  const calls: string[] = [];
+  const spy = new Proxy({}, { get: (_t, name: string) => () => void calls.push(name) }) as import('../src/state.ts').Actions;
+  const say = { text: 'Discord est coupée.', undo: { id: 'ur-1', enabled: true } };
+  const clicks = (state: Partial<import('../src/state.ts').AppState>) =>
+    clicksOf(startupView({ ...initialState(NOW), route: 'startup', ...state } as never, spy));
+  for (const click of clicks({ startup: waitingView, startupSay: say })) {
+    click.fn();
+  }
+  assert.ok(!calls.includes('setStartupEntry') && !calls.includes('undoStartup'), `appelés pendant l’attente : ${calls.join(', ')}`);
+  // Le même essai au repos : les clics atteignent bien le cœur (l'essai n'est pas vide).
+  calls.length = 0;
+  for (const click of clicks({ startup: MACHINE_ONLY({}, [entry({ id: 'ur-1', name: 'Discord' }), REALTEK]), startupSay: say })) {
+    click.fn();
+  }
+  assert.equal(calls.filter((name) => name === 'setStartupEntry').length, 2);
+  assert.equal(calls.filter((name) => name === 'undoStartup').length, 1);
+  // Un geste en vol du compte rend aussi les clics inertes.
+  calls.length = 0;
+  for (const click of clicks({ startup: FEW, startupSay: say, startupBusy: 'ur-discord' })) {
+    click.fn();
+  }
+  assert.ok(!calls.includes('setStartupEntry') && !calls.includes('undoStartup'));
+});
+
+test('m5 : le nom accessible de l’interrupteur d’une ligne du PC cite son nom d’inscription, pas l’alias', () => {
+  const line = entry({ id: 'mr-r', name: 'Realtek', alias: 'RtkAud UService', scope: 'machine', registered: 'RtkAud⟨U+00A0⟩UService', adjustable: true });
+  const written = page(MACHINE_ONLY({}, [line]));
+  assert.ok(written.includes('aria-label=Lancer Realtek à l’ouverture de session (RtkAud⟨U+00A0⟩UService)'), written);
+  assert.ok(!written.includes('RtkAud UService'));
+  // Une ligne du compte garde l'alias.
+  assert.equal(fr.startup.switchLabel('Microsoft OneDrive', 'OneDrive'), 'Lancer Microsoft OneDrive à l’ouverture de session (OneDrive)');
+});
+
+test('m7 : une app de tous les comptes ne parle pas de « ta » session', () => {
+  const machine = entry({ id: 'mr-1', name: 'Realtek', scope: 'machine', registered: 'R', adjustable: true });
+  assert.ok(!sayDone(machine, false).text.includes('ta '), sayDone(machine, false).text);
+  assert.ok(sayDone(machine, false).text.includes('aucun compte de ce PC'));
+  assert.ok(sayDone(machine, true).text.includes('chaque compte'));
+  assert.ok(sayDone(entry(), true).text.includes('ta session'));
+  assert.ok(sayDone(entry(), false).text.includes('ta prochaine ouverture'));
+  // Le refus `unknownEntry` garde son texte.
+  assert.equal(sayRefused({ kind: 'startupRefused', reason: 'unknownEntry' })?.text, 'Cette entrée n’existe plus.');
+});
+
+test('m4 et m6 : la feuille de style montre l’inertie et ne coupe pas le nom d’inscription', () => {
+  const css = readFileSync(new URL('../src/styles/startup.css', import.meta.url), 'utf8');
+  assert.match(css, /\.startup \.sw\[aria-disabled='true'\]\s*\{\s*opacity: 0\.6;/);
+  assert.match(css, /\.startup \.row \.t2\.reg\s*\{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
+  assert.ok(!/#[0-9a-f]{3,8}\b|rgb\(\s*\d/i.test(css.slice(css.indexOf('.t2.reg'))), 'aucune couleur hors tokens');
 });

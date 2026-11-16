@@ -31,11 +31,11 @@ use crate::platform::{Environment, KnownFolder};
 pub const SETTINGS_VERSION: u32 = 1;
 
 /// Dossier de Shinku dans `AppData\Roaming`.
-const APP_DIR: &str = "Shinku";
+pub(crate) const APP_DIR: &str = "Shinku";
 /// Nom du fichier des réglages.
-const FILE_NAME: &str = "settings.json";
+pub(crate) const FILE_NAME: &str = "settings.json";
 /// Nom sous lequel un fichier illisible est mis de côté avant d'être remplacé.
-const UNREADABLE_NAME: &str = "settings.illisible.json";
+pub(crate) const UNREADABLE_NAME: &str = "settings.illisible.json";
 
 /// Seuils proposés, en Go : « Me prévenir à partir de » et l'alerte corbeille.
 pub const THRESHOLDS_GB: [u32; 4] = [2, 5, 10, 20];
@@ -512,13 +512,19 @@ pub(crate) fn app_dir(environment: &dyn Environment) -> Option<PathBuf> {
     Some(environment.known_folder(KnownFolder::RoamingAppData)?.join(APP_DIR))
 }
 
+/// Le nom du fichier écrit à côté avant d'être mis en place. Une seule source :
+/// `forget` s'en sert pour effacer ce que l'écriture aurait laissé.
+pub(crate) fn temporary_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
+    let mut temporary = name.to_os_string();
+    temporary.push(".tmp");
+    temporary
+}
+
 /// Écrit un petit fichier de Shinku d'un seul geste : le contenu est écrit à
 /// côté, puis mis en place. Une coupure de courant laisse l'ancien fichier ou
 /// le nouveau, jamais un mélange.
 pub(crate) fn write_replacing(path: &Path, content: &[u8]) -> io::Result<()> {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
-    let temporary = path.with_file_name(name);
+    let temporary = path.with_file_name(temporary_name(path.file_name().unwrap_or_default()));
     let written = (|| {
         let mut file = fs::File::create(&temporary)?;
         file.write_all(content)?;

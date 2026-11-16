@@ -11,7 +11,8 @@ import { closeIcon, hole, type IconName, mark, maximizeIcon, minimizeIcon, navIc
 import { confirmDialog } from './clean.ts';
 import { gameView, pickerDialog } from './game.ts';
 import { homeView, shownPane } from './home.ts';
-import { binView, duplicatesView, junkView, largeView, soonView } from './modules.ts';
+import { binView, duplicatesView, junkView, largeView } from './modules.ts';
+import { privacyDialog, privacyView } from './privacy.ts';
 import { settingsView } from './settings.ts';
 import { startupView } from './startup.ts';
 import { styles } from './style.ts';
@@ -131,7 +132,7 @@ function page(state: AppState, actions: Actions): TemplateResult {
     case 'uninstall':
       return uninstallView(state, actions);
     case 'privacy':
-      return soonView(state.route);
+      return privacyView(state, actions);
     case 'settings':
       return settingsView(state, actions);
   }
@@ -161,7 +162,8 @@ export function appView(state: AppState, actions: Actions): TemplateResult {
     ${ready
       ? html`${sidebar(state, actions)}
           <main class="main">${keyed(`${state.route}:${shownPane(state)}`, page(state, actions))}</main>
-          ${confirmDialog(state, actions)} ${pickerDialog(state, actions)} ${uninstallDialog(state, actions)}`
+          ${confirmDialog(state, actions)} ${pickerDialog(state, actions)} ${uninstallDialog(state, actions)}
+          ${privacyDialog(state, actions)}`
       : bootScreen(state)}
     <div class="toast ${state.toastShown ? 'show' : ''}" role="status">${state.toast}</div>
   </div>`;

@@ -629,7 +629,8 @@ test('la page n’envoie jamais un chemin ni une commande : seulement des identi
 
 test('« Désinstallation » n’est plus un module à venir, et son texte ne parle plus du registre', () => {
   const modules = readFileSync(new URL('../src/views/modules.ts', import.meta.url), 'utf8');
-  assert.match(modules, /type SoonRoute = Extract<Route, 'privacy'>;/);
+  // Plus aucun module n'est « à venir » : la page « bientôt » a disparu avec Confidentialité.
+  assert.doesNotMatch(modules, /SoonRoute|soonView/);
   assert.ok(!/registre/i.test(fr.soon.uninstall));
   assert.ok(!/registre/i.test(fr.uninstall.intro));
 });

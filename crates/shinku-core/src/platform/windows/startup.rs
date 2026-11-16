@@ -30,8 +30,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-    CoTaskMemFree, CoUninitialize, IPersistFile, STGM_READ,
+    CLSCTX_INPROC_SERVER, COINIT, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IPersistFile, STGM_READ,
 };
 use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
 use windows::Win32::System::Registry::{
@@ -59,7 +59,7 @@ const DRIVE_FIXED: u32 = 3;
 /// Nombre maximal d'entrées lues par place.
 const MAX_ENTRIES: usize = crate::startup::MAX_ENTRIES;
 /// Longueur maximale d'un nom d'entrée, en caractères.
-const MAX_NAME: usize = 255;
+const MAX_NAME: usize = crate::startup::MAX_NAME;
 /// Longueur maximale d'une commande, en caractères.
 const MAX_COMMAND: usize = 2048;
 /// Nombre de valeurs examinées au plus dans une clé `Run`.
@@ -488,9 +488,19 @@ pub(super) struct ComScope {
 
 impl ComScope {
     pub(super) fn enter() -> Self {
+        Self::with(COINIT_APARTMENTTHREADED)
+    }
+
+    /// Pour appeler `ShellExecuteExW` : mêmes drapeaux que la Désinstallation
+    /// (`COINIT_DISABLE_OLE1DDE` en plus), comme le recommande sa documentation.
+    pub(super) fn enter_for_shell() -> Self {
+        Self::with(COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+    }
+
+    fn with(flags: COINIT) -> Self {
         // SAFETY: appel sans pointeur. Si le fil a déjà un appartement d'un
         // autre type, l'appel échoue et COM reste utilisable tel qu'il est.
-        let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let result = unsafe { CoInitializeEx(None, flags) };
         Self { initialized: result.is_ok() }
     }
 }
@@ -562,7 +572,7 @@ fn target_from_buffer(buffer: &[u16]) -> Shortcut {
 }
 
 /// Demande à Windows le chemin d'un dossier connu, sans le créer.
-fn known_folder(id: &GUID) -> Option<PathBuf> {
+pub(super) fn known_folder(id: &GUID) -> Option<PathBuf> {
     // SAFETY: `id` pointe vers un GUID valide pendant l'appel. Sans jeton
     // (`None`), Windows répond pour l'utilisateur courant.
     let raw = unsafe { SHGetKnownFolderPath(id, KF_FLAG_DONT_VERIFY, None) }.ok()?;
@@ -1508,7 +1518,7 @@ mod tests {
         sandbox.put_text(Place::UserRun, "Essai Shinku Compte", REG_SZ, r"C:\Essai\essai.exe");
         sandbox.put_text(Place::MachineRun, "Essai Shinku PC", REG_SZ, r"C:\Essai\pc.exe");
         // Le PC aussi est lisible, sans interrupteur.
-        let listing = startup::enumerate(host, None, None);
+        let listing = startup::enumerate(host, None, None, crate::startup::MachineRules::CLOSED);
         assert!(listing.unreadable.is_empty());
         let user =
             listing.entries.iter().find(|entry| entry.raw_name == "Essai Shinku Compte").unwrap();
@@ -1521,7 +1531,7 @@ mod tests {
         assert!(change.changed);
         let read = host.approval(Place::UserRun, "Essai Shinku Compte").unwrap().unwrap();
         assert_eq!(read.bytes, cut_bytes(change.file_time));
-        let listing = startup::enumerate(host, None, None);
+        let listing = startup::enumerate(host, None, None, crate::startup::MachineRules::CLOSED);
         let user =
             listing.entries.iter().find(|entry| entry.raw_name == "Essai Shinku Compte").unwrap();
         assert_eq!(user.state, State::Disabled);
@@ -1543,7 +1553,7 @@ mod tests {
         sandbox.put_text(Place::UserRun, "Bizarre", REG_SZ, r"C:\Essai\essai.exe");
         let strange = [6u8, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
         sandbox.approve(Place::UserRun, "Bizarre", REG_BINARY, &strange);
-        let listing = startup::enumerate(host, None, None);
+        let listing = startup::enumerate(host, None, None, crate::startup::MachineRules::CLOSED);
         let entry = &listing.entries[0];
         assert_eq!(entry.state, State::Unknown);
         assert_eq!(startup::toggle(host, None, entry.id, false), Err(ToggleError::NotAdjustable));

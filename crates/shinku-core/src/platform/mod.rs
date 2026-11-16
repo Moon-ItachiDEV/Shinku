@@ -20,10 +20,13 @@ use serde::Serialize;
 use crate::apps::host::AppsHost;
 use crate::game::host::GameHost;
 use crate::model::Timestamp;
+use crate::privacy::host::PrivacyHost;
 use crate::startup::host::StartupHost;
+use crate::startup::launcher::ElevatedHelper;
 
 pub mod agent;
 mod bin_rule;
+pub mod forget;
 
 #[cfg(unix)]
 mod unix;
@@ -254,15 +257,13 @@ pub trait Environment: Send + Sync + fmt::Debug {
     ///
     /// Ce qui est garanti : la garde de la corbeille (réglages lus avant
     /// l'envoi, voir [`RecycleError::Refused`]) refuse ce que la corbeille ne
-    /// recevrait pas, et l'élément reste alors à sa place. **Ce qui ne l'est
-    /// pas** : si Windows supprime quand même pour de bon (réglage que la garde
-    /// ne voit pas), `Ok(())` est rendu ici comme pour un envoi réussi, car ce
-    /// trait ne distingue pas [`Sent::Destroyed`] de [`Sent::InBin`]. Limite
-    /// connue, à traiter dans le chantier du nettoyage ; l'appelant qui doit le
-    /// savoir (le module « Désinstallation ») passe par l'hôte, qui le dit. Les
-    /// essais de la vraie corbeille (`SHINKU_ESSAI_CORBEILLE`, machine jetable)
-    /// prouvent la garde, et ce que Windows fait seul sans elle.
-    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
+    /// recevrait pas, et l'élément reste alors à sa place. Si Windows supprime
+    /// quand même pour de bon (réglage que la garde ne voit pas), la réponse est
+    /// [`Sent::Destroyed`], **jamais** [`Sent::InBin`] : l'appelant ne doit pas
+    /// compter l'élément comme récupérable. Les essais de la vraie corbeille
+    /// (`SHINKU_ESSAI_CORBEILLE`, machine jetable) prouvent la garde, et ce que
+    /// Windows fait seul sans elle.
+    fn recycle(&self, path: &Path) -> Result<Sent, RecycleError> {
         let _ = path;
         Err(RecycleError::Unavailable)
     }
@@ -271,6 +272,12 @@ pub trait Environment: Send + Sync + fmt::Debug {
 /// La vraie machine.
 pub fn system() -> impl Environment {
     imp::SystemEnvironment::new()
+}
+
+/// La machine de `shinku.exe --oublier` : la vraie, sous Windows comme ailleurs
+/// (ses suppressions passent par [`crate::fs`]).
+pub fn forget_host() -> forget::SystemForget {
+    forget::SystemForget::new()
 }
 
 /// La machine du mode jeu : la vraie sous Windows, une machine qui ne voit
@@ -283,6 +290,36 @@ pub fn game_host() -> Arc<dyn GameHost> {
 /// ne voit rien ailleurs.
 pub fn startup_host() -> Arc<dyn StartupHost> {
     imp::startup_host()
+}
+
+/// La machine du module « Confidentialité » : la vraie sous Windows, une machine
+/// qui ne voit rien et n'efface rien ailleurs.
+pub fn privacy_host() -> Arc<dyn PrivacyHost> {
+    imp::privacy_host()
+}
+
+/// L'assistant élevé, vu de `shinku.exe` : le vrai lanceur sous Windows, un
+/// lanceur qui ne règle rien ailleurs.
+pub fn elevated_helper() -> Arc<dyn ElevatedHelper> {
+    imp::elevated_helper()
+}
+
+/// Ce que l'assistant élevé fait sur cette machine : sous Windows, la vraie ;
+/// ailleurs, rien (`None`).
+pub fn machine_startup() -> Option<Box<dyn crate::helper::startup::MachineStartup>> {
+    imp::machine_startup()
+}
+
+/// Durcit le processus de l'assistant (bibliothèques depuis `System32` seulement).
+/// À appeler **avant tout** autre chose. Faux si Windows refuse : l'assistant
+/// sort alors avec le code 8.
+pub fn harden_helper_process() -> bool {
+    imp::harden_helper_process()
+}
+
+/// Les arguments de la ligne de commande de l'assistant, sans le nom du programme.
+pub fn helper_arguments() -> Vec<std::ffi::OsString> {
+    imp::helper_arguments()
 }
 
 /// La machine du module « Désinstallation » : la vraie sous Windows, une machine
@@ -306,6 +343,21 @@ pub fn apps_host() -> Arc<dyn AppsHost> {
 /// il n'y existe aucune autre façon de lancer Shinku.
 pub fn runs_elevated() -> bool {
     elevated_launch(imp::own_rights(), imp::desktop_rights)
+}
+
+/// Comme [`runs_elevated`], mais qui **refuse dans le doute** : vrai aussi quand
+/// Windows ne dit pas les droits de ce processus (le jeton ne se lit pas). Pour
+/// qui efface dans un profil (`--oublier`) : un processus peut être élevé sous
+/// un autre compte sans qu'on le sache, et se tromper viserait les réglages de
+/// cet autre compte. La fenêtre, elle, garde le choix de ne bloquer personne.
+pub fn elevated_or_unknown() -> bool {
+    elevated_or_unknown_with(imp::own_rights_known(), imp::desktop_rights)
+}
+
+/// La décision de [`elevated_or_unknown`] : l'inconnu refuse, le connu passe par
+/// [`elevated_launch`], la décision de la fenêtre.
+fn elevated_or_unknown_with(own: Option<Rights>, desktop: impl FnOnce() -> Desktop) -> bool {
+    own.is_none_or(|own| elevated_launch(own, desktop))
 }
 
 /// Les droits d'un processus, tels que Windows les décrit dans son jeton.
@@ -393,6 +445,7 @@ pub struct StaticEnvironment {
     processes_unknown: bool,
     recycle_folder: Option<PathBuf>,
     recycle_limit: Option<u64>,
+    recycle_destroys: bool,
     bin: Arc<Mutex<StaticBin>>,
 }
 
@@ -498,6 +551,14 @@ impl StaticEnvironment {
         self
     }
 
+    /// La corbeille supprime pour de bon ce qu'on lui envoie, et le dit
+    /// ([`Sent::Destroyed`]), comme Windows quand elle est trop petite et que
+    /// la garde ne l'a pas vu. Rien n'est rangé dans le dossier de la corbeille.
+    pub fn with_recycle_destroying(mut self) -> Self {
+        self.recycle_destroys = true;
+        self
+    }
+
     fn bin(&self) -> std::sync::MutexGuard<'_, StaticBin> {
         self.bin.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -567,7 +628,7 @@ impl Environment for StaticEnvironment {
         failure.map_or(Ok(()), Err)
     }
 
-    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
+    fn recycle(&self, path: &Path) -> Result<Sent, RecycleError> {
         let Some(folder) = &self.recycle_folder else { return Err(RecycleError::Unavailable) };
         let metadata = std::fs::symlink_metadata(path)
             .map_err(|error| RecycleError::Failed(error.to_string()))?;
@@ -579,13 +640,22 @@ impl Environment for StaticEnvironment {
         if self.recycle_limit.is_some_and(|limit| bytes > limit) {
             return Err(RecycleError::Refused);
         }
+        if self.recycle_destroys {
+            let gone = if metadata.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
+            gone.map_err(|error| RecycleError::Failed(error.to_string()))?;
+            return Ok(Sent::Destroyed);
+        }
         let mut bin = self.bin();
         bin.received += 1;
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let kept = folder.join(format!("{:06}-{name}", bin.received));
         std::fs::rename(path, &kept).map_err(|error| RecycleError::Failed(error.to_string()))?;
         bin.held.push((kept, bytes));
-        Ok(())
+        Ok(Sent::InBin)
     }
 }
 
@@ -631,6 +701,29 @@ mod tests {
     }
 
     #[test]
+    fn unknown_rights_refuse_and_known_rights_follow_the_window_decision() {
+        let never = || -> Desktop { panic!("le bureau n'a pas à être consulté") };
+        // Inconnu : on refuse, sans même regarder le bureau.
+        assert!(elevated_or_unknown_with(None, never));
+        // Connu : exactement la décision de la fenêtre.
+        assert!(!elevated_or_unknown_with(Some(Rights::Standard), never));
+        assert!(elevated_or_unknown_with(Some(Rights::Elevated), never));
+        for desktop in [
+            Desktop::Running(Rights::Standard),
+            Desktop::Running(Rights::Elevated),
+            Desktop::Running(Rights::Unrestricted),
+            Desktop::Unreachable,
+            Desktop::Absent,
+        ] {
+            assert_eq!(
+                elevated_or_unknown_with(Some(Rights::Unrestricted), || desktop),
+                elevated_launch(Rights::Unrestricted, || desktop),
+                "{desktop:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_static_environment_answers_what_it_was_given() {
         let environment = StaticEnvironment::new()
             .with_now(Timestamp::from_unix(1_700_000_000, 0))
@@ -661,6 +754,20 @@ mod tests {
             environment.recycle(Path::new("/nulle/part")),
             Err(RecycleError::Unavailable)
         ));
+    }
+
+    #[test]
+    fn a_hand_made_bin_that_destroys_says_so_and_keeps_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let file = temp.path().join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let environment =
+            StaticEnvironment::new().with_recycle_folder(&bin).with_recycle_destroying();
+        assert!(matches!(environment.recycle(&file), Ok(Sent::Destroyed)));
+        assert!(!file.exists());
+        assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 0);
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::fmt;
 
 use serde::Serialize;
 
+use crate::startup::access::PcAccess;
 use crate::startup::{EntryId, Hint, Listing, Mark, Origin, Scope, State, TargetKind};
 
 /// Une entrée de démarrage, telle que la page l'affiche.
@@ -42,6 +43,19 @@ pub struct StartupEntry {
     pub own: bool,
     /// Vrai si Shinku sait la régler.
     pub adjustable: bool,
+    /// Pour une entrée du PC : le nom sous lequel elle est inscrite, mis en forme
+    /// par la même fonction que la boîte de l'assistant. `null` pour le compte.
+    pub registered: Option<String>,
+}
+
+/// Un changement du PC en attente de la réponse de la personne.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupPending {
+    /// L'entrée dont on attend la réponse.
+    pub id: EntryId,
+    /// L'état demandé : vrai pour remettre, faux pour couper.
+    pub enabled: bool,
 }
 
 /// Tout ce que la page affiche.
@@ -52,9 +66,23 @@ pub struct StartupView {
     pub entries: Vec<StartupEntry>,
     /// Les portées dont une place n'a pas pu être lue, ou seulement en partie.
     pub unreadable: Vec<Scope>,
+    /// Qui peut régler les entrées du PC, et comment.
+    pub pc: PcAccess,
+    /// Le changement du PC en attente de la réponse de la personne, s'il y en a un.
+    pub pending: Option<StartupPending>,
+}
+
+impl StartupView {
+    /// La vue, avec ce que l'assistant élevé permet et le changement en attente.
+    pub fn with_access(mut self, pc: PcAccess, pending: Option<StartupPending>) -> Self {
+        self.pc = pc;
+        self.pending = pending;
+        self
+    }
 }
 
 impl From<&Listing> for StartupView {
+    /// La vue d'une lecture : sans assistant (`unavailable`), rien en attente.
     fn from(listing: &Listing) -> Self {
         let entries = listing
             .entries
@@ -74,6 +102,7 @@ impl From<&Listing> for StartupView {
                 hint: entry.hint,
                 own: entry.own,
                 adjustable: entry.adjustable,
+                registered: entry.registered.clone(),
             })
             .collect();
         let mut unreadable: Vec<Scope> = Vec::new();
@@ -86,7 +115,7 @@ impl From<&Listing> for StartupView {
         }
         // Le compte d'abord, comme les entrées.
         unreadable.sort_by_key(|scope| *scope != Scope::User);
-        Self { entries, unreadable }
+        Self { entries, unreadable, pc: PcAccess::Unavailable, pending: None }
     }
 }
 
@@ -102,6 +131,10 @@ pub enum StartupRefusal {
     Busy,
     /// Windows n'a pas gardé le changement.
     Failed,
+    /// La personne a refusé (ou n'a pas répondu à temps) : rien n'a changé.
+    Cancelled,
+    /// Il faut un administrateur pour régler cette entrée.
+    NeedsAdmin,
 }
 
 impl fmt::Display for StartupRefusal {
@@ -111,6 +144,8 @@ impl fmt::Display for StartupRefusal {
             Self::NotAdjustable => "cette entrée ne se règle pas ici",
             Self::Busy => "un autre changement est en cours",
             Self::Failed => "le changement n'a pas pu être fait",
+            Self::Cancelled => "rien n'a changé",
+            Self::NeedsAdmin => "il faut un administrateur pour régler cette entrée",
         })
     }
 }

@@ -10,7 +10,7 @@ import { formatAgo, formatBytes, splitPath } from '../format.ts';
 import { fr } from '../i18n/fr.ts';
 import { sharedFolders } from '../model/duplicates.ts';
 import { binOverThreshold, category, duplicatesPercent, ringFraction } from '../model/scan.ts';
-import type { Actions, AppState, Route } from '../state.ts';
+import type { Actions, AppState } from '../state.ts';
 import { binArt, moduleArt, type ModuleArt, ring } from './art.ts';
 import { hero, orb, stage, stopCore } from './parts.ts';
 
@@ -324,20 +324,6 @@ export function binView(state: AppState): TemplateResult {
     dock: html`<div class="dock">
       ${orb(fr.bin.emptyIt, null)}
       ${bin === null ? nothing : html`<p class="cap">${bin.items > 0 ? fr.bin.viaClean : fr.bin.nothing}</p>`}
-    </div>`,
-  });
-}
-
-// ── Modules à venir ────────────────────────────────────────────────────────
-
-type SoonRoute = Extract<Route, 'privacy'>;
-
-export function soonView(route: SoonRoute): TemplateResult {
-  return stage({
-    body: hero(moduleArt(route), fr.nav[route], fr.soon[route]),
-    dock: html`<div class="dock">
-      ${orb(fr.common.soon, null)}
-      <p class="cap">${fr.soon.cap}</p>
     </div>`,
   });
 }

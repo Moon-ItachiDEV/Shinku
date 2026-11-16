@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { type BootDemo, demoOptions, mockBackend } from '../src/backend/mock.ts';
+import { type BootDemo, demoOptions, mockBackend, shownName } from '../src/backend/mock.ts';
 import type { Backend, StartupEntry, StartupRefusal, StartupView } from '../src/backend/types.ts';
 
 const DAY = 24 * 3600 * 1000;
@@ -31,7 +31,7 @@ async function refusal(promise: Promise<unknown>): Promise<StartupRefusal | null
 }
 
 test('les paramètres d’adresse du démarrage sont lus, et le reste prend les valeurs par défaut', () => {
-  const expected = (parts: Partial<BootDemo>): BootDemo => ({ data: 'few', fail: false, read: 'all', load: 'ok', shinku: 'on', ...parts });
+  const expected = (parts: Partial<BootDemo>): BootDemo => ({ data: 'few', fail: false, read: 'all', load: 'ok', shinku: 'on', pc: 'consent', pcflow: 'wait', ...parts });
   assert.deepEqual(demoOptions('').boot, expected({}));
   assert.deepEqual(demoOptions('?boot=many').boot, expected({ data: 'many' }));
   assert.deepEqual(demoOptions('?boot=empty').boot, expected({ data: 'empty' }));
@@ -121,7 +121,7 @@ test('chaque ligne de la démo montre ce que le cahier des charges lui donne', a
     'Realtek HD Audio Universal Service',
     'Sécurité Windows',
   ]);
-  assert.ok(machine.every((entry) => !entry.adjustable), 'aucune entrée du PC ne se règle dans ce lot');
+  assert.ok(machine.every((entry) => entry.adjustable), 'avec un accès (par défaut : consent), toutes les entrées du PC se règlent');
   assert.equal(byName(view, 'Sécurité Windows').alias, 'SecurityHealth');
   assert.equal(byName(view, 'Sécurité Windows').publisher, 'Microsoft Corporation');
   assert.equal(byName(view, 'Realtek HD Audio Universal Service').publisher, 'Realtek Semiconductor');
@@ -154,10 +154,13 @@ test('« many » montre quarante apps de toutes sortes, « empty » aucune', asy
   has((entry) => entry.hint === 'sync', 'une synchronisation');
   has((entry) => entry.publisher === null && entry.target === 'found', 'un éditeur inconnu');
   // La règle du cœur tient aussi dans la démo : seules les entrées du compte, lues, se règlent.
-  assert.ok(many.entries.every((entry) => entry.adjustable === (entry.scope === 'user' && entry.state !== 'unknown' && !entry.own)));
+  assert.ok(many.entries.every((entry) => entry.adjustable === (entry.state !== 'unknown' && !entry.own)));
+  // Sans accès (`?bootpc=none`), seules celles du compte se règlent : l'affichage du lot 1.
+  const none = await demo('?boot=many&bootpc=none').startupView();
+  assert.ok(none.entries.every((entry) => entry.adjustable === (entry.scope === 'user' && entry.state !== 'unknown' && !entry.own)));
 
   const empty = await demo('?boot=empty').startupView();
-  assert.deepEqual(empty, { entries: [], unreadable: [] });
+  assert.deepEqual(empty, { entries: [], unreadable: [], pc: 'consent', pending: null });
 });
 
 test('« bootread » déclare une portée illisible, sans retirer ce qui a été lu', async () => {
@@ -222,7 +225,7 @@ test('la vue rendue est une copie : la modifier ne change pas la démo', async (
 });
 
 test('le faux cœur refuse comme le vrai : entrée inconnue, entrée qui ne se règle pas', async () => {
-  const backend = demo();
+  const backend = demo('?bootpc=none');
   const view = await backend.startupView();
   assert.equal(await refusal(backend.setStartupEntry('ur-0000000000000000', false)), 'unknownEntry');
   assert.equal(await refusal(backend.setStartupEntry('n’importe quoi', false)), 'unknownEntry');
@@ -257,13 +260,13 @@ test('le résumé d’analyse compte les apps actives hors Shinku, et se tait si
   await backend.setStartupEntry(byName(await backend.startupView(), 'Discord').id, false);
   assert.equal((await summaryOf(backend)).items, 7);
 
-  const unreadable = await summaryOf(mockBackend({ ...options, boot: { data: 'few', fail: false, read: 'machine', load: 'ok', shinku: 'on' } }));
+  const unreadable = await summaryOf(mockBackend({ ...options, boot: { data: 'few', fail: false, read: 'machine', load: 'ok', shinku: 'on', pc: 'consent', pcflow: 'wait' } }));
   assert.equal(unreadable.state, 'unavailable');
-  assert.equal((await summaryOf(mockBackend({ ...options, boot: { data: 'empty', fail: false, read: 'all', load: 'ok', shinku: 'on' } }))).items, 0);
+  assert.equal((await summaryOf(mockBackend({ ...options, boot: { data: 'empty', fail: false, read: 'all', load: 'ok', shinku: 'on', pc: 'consent', pcflow: 'wait' } }))).items, 0);
 });
 
 test('l’ordre des refus est celui du cœur : entrée inconnue, entrée qui ne se règle pas, puis l’échec', async () => {
-  const backend = demo('?bootfail=1');
+  const backend = demo('?bootfail=1&bootpc=none');
   const view = await backend.startupView();
   assert.equal(await refusal(backend.setStartupEntry('ur-0000000000000000', false)), 'unknownEntry');
   assert.equal(await refusal(backend.setStartupEntry(byName(view, 'Shinku').id, false)), 'notAdjustable');
@@ -340,4 +343,143 @@ test('le compte de l’analyse est lu une fois, à la fin : en route il n’est 
   await backend.startScan();
   await pause(20);
   assert.equal((await startupOf(backend))?.items, 7, 'une nouvelle analyse relit');
+});
+
+// ── Le PC avec l'accord de Windows (lot 2) ─────────────────────────────────
+
+test('« bootpc » et « bootpcflow » sont lus ; `consent` et `wait` par défaut, `none` veut dire `unavailable`', () => {
+  assert.equal(demoOptions('').boot.pc, 'consent');
+  assert.equal(demoOptions('?boot=few').boot.pc, 'consent');
+  assert.equal(demoOptions('?bootpc=consent').boot.pc, 'consent');
+  assert.equal(demoOptions('?bootpc=password').boot.pc, 'password');
+  assert.equal(demoOptions('?bootpc=direct').boot.pc, 'direct');
+  assert.equal(demoOptions('?bootpc=none').boot.pc, 'unavailable');
+  assert.equal(demoOptions('?bootpc=xyz').boot.pc, 'consent');
+  assert.equal(demoOptions('').boot.pcflow, 'wait');
+  for (const flow of ['wait', 'cancel', 'admin', 'fail'] as const) {
+    assert.equal(demoOptions(`?bootpcflow=${flow}`).boot.pcflow, flow);
+  }
+  assert.equal(demoOptions('?bootpcflow=xyz').boot.pcflow, 'wait');
+});
+
+test('chaque valeur de `bootpc` est dite dans la vue ; sans accès, aucune entrée du PC ne se règle', async () => {
+  for (const [query, pc] of [['', 'consent'], ['?bootpc=password', 'password'], ['?bootpc=direct', 'direct'], ['?bootpc=none', 'unavailable']] as const) {
+    const view = await demo(query).startupView();
+    assert.equal(view.pc, pc, query);
+    assert.equal(view.pending, null, query);
+    const machine = view.entries.filter((entry) => entry.scope === 'machine');
+    assert.equal(machine.every((entry) => entry.adjustable), pc !== 'unavailable', query);
+  }
+});
+
+test('une entrée du PC dit son nom d’inscription, mis en forme comme le cœur ; une entrée du compte, `null`', async () => {
+  const view = await demo().startupView();
+  assert.equal(byName(view, 'Sécurité Windows').registered, 'SecurityHealth');
+  // Le caractère invisible est montré, jamais retiré.
+  assert.equal(byName(view, 'Realtek HD Audio Universal Service').registered, 'RtkAud⟨U+00A0⟩UService');
+  assert.ok(view.entries.filter((entry) => entry.scope === 'user').every((entry) => entry.registered === null));
+  assert.equal(shownName('a b'), 'a b');
+  assert.equal(shownName('Tab\tle'), 'Tab⟨U+0009⟩le');
+  assert.equal(shownName('Prénom « ok » ® €'), 'Prénom « ok » ® €');
+  assert.equal(shownName('x‮y'), 'x⟨U+202E⟩y');
+  assert.equal(shownName('xㅤy'), 'x⟨U+3164⟩y');
+  assert.equal(shownName('a'.repeat(81)), `${'a'.repeat(80)}…`);
+});
+
+/** Un faux cœur dont l'attente du PC est courte mais réelle (quelques millisecondes). */
+const quick = (query: string): Backend => mockBackend({ ...demoOptions(query), speed: 500 });
+
+test('un changement du PC attend : la vue dit `pending` tout de suite, le compte est refusé `busy`, puis le geste se fait', async () => {
+  const backend = quick('');
+  const view = await backend.startupView();
+  const realtek = byName(view, 'Realtek HD Audio Universal Service');
+  const waiting = backend.setStartupEntry(realtek.id, false);
+  const during = await backend.startupView();
+  assert.deepEqual(during.pending, { id: realtek.id, enabled: false });
+  assert.equal(byName(during, 'Realtek HD Audio Universal Service').state, 'enabled', 'rien ne change avant la fin');
+  // Comme le cœur : ni un autre changement du PC, ni un changement du compte.
+  assert.equal(await refusal(backend.setStartupEntry(byName(view, 'Sécurité Windows').id, false)), 'busy');
+  assert.equal(await refusal(backend.setStartupEntry(byName(view, 'Discord').id, false)), 'busy');
+  const done = await waiting;
+  assert.equal(done.pending, null);
+  const after = byName(done, 'Realtek HD Audio Universal Service');
+  assert.equal(after.state, 'disabled');
+  assert.equal(after.mark?.kind, 'cutByShinku');
+  assert.equal(byName(done, 'Discord').state, 'enabled', 'le changement du compte refusé n’a rien fait');
+  assert.equal((await backend.startupView()).pending, null);
+  // Remettre : la marque s'efface.
+  const back = await backend.setStartupEntry(realtek.id, true);
+  assert.equal(byName(back, 'Realtek HD Audio Universal Service').state, 'enabled');
+  assert.equal(byName(back, 'Realtek HD Audio Universal Service').mark, null);
+});
+
+test('« bootpcflow » : annulation, administrateur, échec ; la vue relue est celle d’avant, sans `pending`', async () => {
+  for (const [flow, reason] of [['cancel', 'cancelled'], ['admin', 'needsAdmin'], ['fail', 'failed']] as const) {
+    const backend = quick(`?bootpcflow=${flow}`);
+    const view = await backend.startupView();
+    const id = byName(view, 'Sécurité Windows').id;
+    const waiting = refusal(backend.setStartupEntry(id, false));
+    assert.notEqual((await backend.startupView()).pending, null, `${flow} : l’attente est vraie aussi`);
+    assert.equal(await waiting, reason, flow);
+    assert.deepEqual(await backend.startupView(), view, `${flow} : rien n’a changé`);
+    // Un changement du compte n'attend pas, et le refus du PC ne bloque rien ensuite.
+    assert.equal((await backend.setStartupEntry(byName(view, 'Discord').id, false)).pending, null);
+  }
+});
+
+test('sans accès (`bootpc=none`), un changement du PC est refusé tout de suite, sans attente', async () => {
+  const backend = quick('?bootpc=none&bootpcflow=cancel');
+  const view = await backend.startupView();
+  assert.equal(await refusal(backend.setStartupEntry(byName(view, 'Sécurité Windows').id, false)), 'notAdjustable');
+  assert.equal((await backend.startupView()).pending, null);
+});
+
+// ── Relecture 1 du lot 2 : la fausse machine comme le vrai cœur ────────────
+
+test('m8 : `shownName` donne les mêmes résultats que les essais de `shown.rs` du cœur', () => {
+  for (const name of ['Discord', 'Mon app 2', 'Réglages « son »', 'Ünïcode ®', 'a.b-c_d (x86)', '日本語']) {
+    assert.equal(shownName(name), name, name);
+  }
+  assert.equal(shownName('Sécu\u202Erité\u00A0x\u0000\t'), 'Sécu⟨U+202E⟩rité⟨U+00A0⟩x⟨U+0000⟩⟨U+0009⟩');
+  for (const hidden of [0x115f, 0x1160, 0x3164, 0xffa0, 0x200b, 0xfeff, 0x2028]) {
+    assert.equal(shownName(`a${String.fromCodePoint(hidden)}b`), `a⟨U+${hidden.toString(16).toUpperCase()}⟩b`, hidden.toString(16));
+  }
+  assert.equal(shownName('\u{1F600}'), '⟨U+1F600⟩');
+  // 80 caractères affichés au plus ; un signe montré n'est jamais coupé en deux.
+  assert.equal(shownName('a'.repeat(80)), 'a'.repeat(80));
+  assert.equal(shownName(`${'a'.repeat(80)}b`), `${'a'.repeat(80)}…`);
+  assert.equal(shownName(`${'a'.repeat(77)}\u202E`), `${'a'.repeat(77)}…`);
+  assert.equal(shownName(`${'a'.repeat(72)}\u202E`), `${'a'.repeat(72)}⟨U+202E⟩`);
+  // `char::is_alphanumeric` : les voyelles combinantes (Other_Alphabetic) et les chiffres Nl/No sont gardés.
+  assert.equal(shownName('कि'), 'कि');
+  assert.equal(shownName('Ⅻ ½ ²'), 'Ⅻ ½ ²');
+  // Le contrôle, le format et les espaces insécables sont montrés.
+  assert.equal(shownName('\u00a0'), '⟨U+00A0⟩');
+});
+
+test('m8 : une ligne du PC de la démo a un alias comme dans le cœur (nom brut nettoyé, s’il diffère du nom montré)', async () => {
+  const view = await demo().startupView();
+  assert.equal(byName(view, 'Realtek HD Audio Universal Service').alias, 'RtkAud UService');
+  assert.equal(byName(view, 'Sécurité Windows').alias, 'SecurityHealth');
+  assert.equal(byName(view, 'Logitech G HUB').alias, 'LGHUB');
+});
+
+test('m8 : `unknownEntry` et `notAdjustable` passent avant `busy`, même pendant une attente', async () => {
+  const backend = quick('');
+  const view = await backend.startupView();
+  const waiting = backend.setStartupEntry(byName(view, 'Sécurité Windows').id, false);
+  assert.equal(await refusal(backend.setStartupEntry('mr-0000000000000000', false)), 'unknownEntry');
+  assert.equal(await refusal(backend.setStartupEntry(byName(view, 'Shinku').id, false)), 'notAdjustable');
+  assert.equal(await refusal(backend.setStartupEntry(byName(view, 'Discord').id, false)), 'busy');
+  await waiting;
+});
+
+test('m8 : une entrée du PC déjà dans l’état voulu est rendue tout de suite, sans attente ni `pending`', async () => {
+  const backend = demo('?bootpcflow=cancel');
+  const view = await backend.startupView();
+  const id = byName(view, 'Sécurité Windows').id;
+  // Déjà active : « remettre » ne demande rien (pas d'attente de 4,5 s, pas de refus du déroulé `cancel`).
+  const answer = backend.setStartupEntry(id, true);
+  assert.equal((await backend.startupView()).pending, null);
+  assert.deepEqual(await answer, view);
 });

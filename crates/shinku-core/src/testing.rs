@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::model::Timestamp;
 use crate::platform::{
-    Environment, KnownFolder, RecycleBin, RecycleError, StaticEnvironment, Volume,
+    Environment, KnownFolder, RecycleBin, RecycleError, Sent, StaticEnvironment, Volume,
 };
 
 /// Temps laissé à un test pour voir arriver ce qu'il attend.
@@ -116,7 +116,7 @@ impl Environment for SlowBin {
         self.machine.empty_recycle_bin()
     }
 
-    fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
+    fn recycle(&self, path: &Path) -> Result<Sent, RecycleError> {
         self.machine.recycle(path)
     }
 }

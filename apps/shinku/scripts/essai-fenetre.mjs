@@ -51,6 +51,8 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { DOM, EXPECTED } from './essai-desinstallation-dom.mjs';
+import { DOM as STARTUP_DOM, EXPECTED as STARTUP_EXPECTED } from './essai-demarrage-dom.mjs';
+import { DOM as PRIVACY_DOM, EXPECTED as PRIVACY_EXPECTED, readPrivacy } from './essai-confidentialite-dom.mjs';
 
 const { values: options } = parseArgs({
   options: {
@@ -460,44 +462,51 @@ function readGame() {
 }
 
 /**
- * La page Démarrage : son titre, ses lignes (avec la carte où elles sont), et la
- * zone de retour. Une ligne se reconnaît à ce qu'elle dit de son nom : le nom
- * lui-même, ou le nom d'inscription (« inscrite sous « … » »).
+ * La page Démarrage : son titre, ses cartes (avec leur phrase d'accès), ses lignes (avec la carte où elles
+ * sont), et la zone de retour. Une ligne se reconnaît à ce qu'elle dit de son nom : le nom lui-même, ou le
+ * nom d'inscription (« inscrite sous « … » »). Les sélecteurs viennent de `essai-demarrage-dom.mjs` (`dom`).
  */
-function readStartup() {
+function readStartup(dom) {
   const text = (element) => (element?.innerText ?? '').replace(/[ \u00a0\u202f]+/g, ' ').trim();
-  const say = document.querySelector('.pzone .psay');
+  const say = document.querySelector(dom.say);
   return {
-    title: text(document.querySelector('.main h1')),
-    // La note de chargement (ou d'échec) seule : la note du bas de page porte aussi la classe `note`.
-    loading: document.querySelector('.page.startup .note[role="status"]') !== null,
-    rows: [...document.querySelectorAll('.page.startup .plist > li.row')].map((row) => {
-      const control = row.querySelector('button[role=switch]');
+    title: text(document.querySelector(dom.title)),
+    loading: document.querySelector(dom.loading) !== null,
+    sections: [...document.querySelectorAll(dom.section)].map((section) => ({
+      title: text(section.querySelector(dom.sectionTitle)),
+      access: [...section.querySelectorAll(dom.access)].map((one) => text(one)),
+      caution: text(section.querySelector(dom.caution)),
+      windowsButtons: [...section.querySelectorAll(dom.windowsButton)].map((one) => text(one)),
+    })),
+    rows: [...document.querySelectorAll(dom.row)].map((row) => {
+      const control = row.querySelector(dom.rowSwitch);
       return {
-        name: text(row.querySelector('.t1')),
-        detail: text(row.querySelector('.t2')),
-        card: text(row.closest('section.psec')?.querySelector('h2')),
+        name: text(row.querySelector(dom.rowName)),
+        detail: text(row.querySelector(dom.rowDetail)),
+        registered: text(row.querySelector(dom.registered)),
+        waiting: text(row.querySelector(dom.waiting)),
+        card: text(row.closest(dom.section)?.querySelector(dom.sectionTitle)),
         hasSwitch: control !== null,
         checked: control?.getAttribute('aria-checked') === 'true',
         disabled: control?.disabled === true || control?.getAttribute('aria-disabled') === 'true',
         label: control?.getAttribute('aria-label') ?? '',
-        tags: [...row.querySelectorAll('.tag')].map((tag) => text(tag)),
+        tags: [...row.querySelectorAll(dom.tag)].map((tag) => text(tag)),
         text: text(row),
       };
     }),
-    say: say === null ? null : { text: text(say.querySelector('span')), undo: say.querySelector('button') !== null },
+    say: say === null ? null : { text: text(say.querySelector(dom.sayText)), undo: say.querySelector(dom.sayButton) !== null },
   };
 }
 
 /** Où se trouve l'interrupteur de la ligne qui porte ce nom, et ce qu'un clic à cet endroit toucherait. */
-function locateSwitch(name) {
+function locateSwitch(name, dom) {
   const wanted = name.toLowerCase();
-  const row = [...document.querySelectorAll('.page.startup .plist > li.row')].find((candidate) =>
-    `${candidate.querySelector('.t1')?.textContent ?? ''} ${candidate.querySelector('.t2')?.textContent ?? ''}`
+  const row = [...document.querySelectorAll(dom.row)].find((candidate) =>
+    `${candidate.querySelector(dom.rowName)?.textContent ?? ''} ${candidate.querySelector(dom.rowDetail)?.textContent ?? ''} ${candidate.querySelector(dom.registered)?.textContent ?? ''}`
       .toLowerCase()
       .includes(wanted),
   );
-  const element = row?.querySelector('button[role=switch]');
+  const element = row?.querySelector(dom.rowSwitch);
   if (element === null || element === undefined) {
     return null;
   }
@@ -517,14 +526,14 @@ function locateSwitch(name) {
 }
 
 /** Clique sur l'interrupteur de cette ligne, sans passer par la souris. */
-function clickSwitchInPage(name) {
+function clickSwitchInPage(name, dom) {
   const wanted = name.toLowerCase();
-  const row = [...document.querySelectorAll('.page.startup .plist > li.row')].find((candidate) =>
-    `${candidate.querySelector('.t1')?.textContent ?? ''} ${candidate.querySelector('.t2')?.textContent ?? ''}`
+  const row = [...document.querySelectorAll(dom.row)].find((candidate) =>
+    `${candidate.querySelector(dom.rowName)?.textContent ?? ''} ${candidate.querySelector(dom.rowDetail)?.textContent ?? ''} ${candidate.querySelector(dom.registered)?.textContent ?? ''}`
       .toLowerCase()
       .includes(wanted),
   );
-  const element = row?.querySelector('button[role=switch]');
+  const element = row?.querySelector(dom.rowSwitch);
   element?.click();
   return element !== null && element !== undefined;
 }
@@ -714,7 +723,7 @@ class Window {
 
   /** Clique sur l'interrupteur de la ligne du Démarrage qui porte ce nom. */
   clickSwitch(name) {
-    return this.press(`l’interrupteur de la ligne « ${name} »`, locateSwitch, clickSwitchInPage, [name]);
+    return this.press(`l’interrupteur de la ligne « ${name} »`, locateSwitch, clickSwitchInPage, [name, STARTUP_DOM]);
   }
 
   /** `find` (dans la page) dit où est la cible ; `inPage` la clique quand la souris ne répond pas. */
@@ -1137,7 +1146,6 @@ async function checkModules(window) {
     ['Démarrage', 'inscrite'],
     ['Mode jeu', 'Pendant que tu joues'],
     ['Désinstallation', EXPECTED.store, EXPECTED.noApps],
-    ['Confidentialité', 'Ce module arrive dans une prochaine version'],
   ];
   for (const [label, ...expected] of modules) {
     const screen = await window.open(label);
@@ -1148,6 +1156,39 @@ async function checkModules(window) {
     quote(screen.main, 14);
     await window.capture(slug(label));
   }
+}
+
+// ── La Confidentialité : une visite pour lire, jamais pour effacer ──────────
+
+/**
+ * La page s'affiche, rien n'est coché d'avance, le bouton « Effacer ce qui est coché » est inerte, aucune
+ * confirmation n'est ouverte. Cet essai-ci ne coche rien et ne clique sur aucun « Effacer » : l'effacement
+ * pour de bon est celui de `essai-confidentialite.mjs`, réservé à une machine jetable.
+ */
+async function checkPrivacy(window) {
+  await window.open(PRIVACY_EXPECTED.title);
+  const screen = await until('la page « Confidentialité » est chargée', 60_000, async () => {
+    const now = await window.session.run(readPrivacy, PRIVACY_DOM);
+    return now.title === PRIVACY_EXPECTED.title && now.ready && !now.busy ? now : null;
+  }, 300);
+  if (!shows(screen.intro, PRIVACY_EXPECTED.intro)) {
+    fail(`la page Confidentialité ne dit pas « ${PRIVACY_EXPECTED.intro} » sous son titre :\n${screen.intro}`);
+  }
+  const ticked = screen.rows.filter((row) => row.checked);
+  if (ticked.length > 0) {
+    fail(`la page Confidentialité coche d'avance : ${ticked.map((row) => `${row.block} / ${row.title}`).join(', ')}`);
+  }
+  if (screen.erase === null) {
+    fail(`la page Confidentialité n'a pas son bouton « ${PRIVACY_EXPECTED.erase} »`);
+  }
+  if (!screen.erase.inert) {
+    fail(`le bouton « ${PRIVACY_EXPECTED.erase} » est actif alors que rien n'est coché`);
+  }
+  if (screen.dialog !== null && screen.dialog.open) {
+    fail('une confirmation d\u2019effacement est ouverte alors que personne n\u2019a rien coché');
+  }
+  done(`écran « ${PRIVACY_EXPECTED.title} » (lecture seule) : ${screen.rows.length} ligne(s), rien de coché, bouton inerte`);
+  await window.capture('confidentialite');
 }
 
 // ── Le Démarrage ───────────────────────────────────────────────────────────
@@ -1168,9 +1209,9 @@ const STARTUP_MACHINE = 'Essai Shinku PC';
 const STARTUP_APPROVED = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved';
 const APPROVED_ON = '020000000000000000000000';
 
-/** La valeur d'approbation, en hexadécimal, lue par `reg query /reg:64` ; `null` si elle n'existe pas. */
-function readApproval([key, name]) {
-  const result = spawnSync('reg', ['query', `${STARTUP_APPROVED}\\${key}`, '/v', name, '/reg:64'], {
+/** La valeur d'approbation (HKCU par défaut, `root` pour HKLM), en hexadécimal, lue par `reg query /reg:64` (vue 64 bits) ; `null` si elle n'existe pas. */
+function readApproval([key, name], root = STARTUP_APPROVED) {
+  const result = spawnSync('reg', ['query', `${root}\\${key}`, '/v', name, '/reg:64'], {
     encoding: 'utf8',
     timeout: 15_000,
   });
@@ -1205,7 +1246,7 @@ async function checkStartup(window) {
     note('essai du Démarrage sauté : la démo n’a pas les entrées de la machine d’essai');
     return;
   }
-  const read = () => window.session.run(readStartup);
+  const read = () => window.session.run(readStartup, STARTUP_DOM);
   const rowOf = (screen, name) => screen.rows.find((row) => `${row.name} ${row.detail}`.toLowerCase().includes(name.toLowerCase()));
   await window.open('Démarrage');
   const loaded = await until('la liste du Démarrage est affichée', 30_000, async () => {
@@ -1233,26 +1274,20 @@ async function checkStartup(window) {
       fail(`la ligne « ${entry.name} » devrait avoir un interrupteur allumé : ${JSON.stringify(row)}`);
     }
   }
-  // La ligne du PC : là, sans interrupteur, avec sa pastille d'état.
+  // La ligne du PC : là, dans la carte du PC. Ce qu'elle montre (interrupteur ou lot 1) se juge plus bas.
   const machine = rowOf(loaded, STARTUP_MACHINE);
   if (machine === undefined) {
     fail(`la page Démarrage n’a pas la ligne du PC « ${STARTUP_MACHINE} »`);
   }
-  if (!shows(machine.card, 'Pour tous les comptes')) {
+  if (!shows(machine.card, STARTUP_EXPECTED.machineCard)) {
     fail(`la ligne « ${STARTUP_MACHINE} » est dans la carte « ${machine.card} »`);
-  }
-  if (machine.hasSwitch) {
-    fail(`la ligne du PC « ${STARTUP_MACHINE} » a un interrupteur : Shinku ne règle pas le PC`);
-  }
-  if (!machine.tags.includes('Active')) {
-    fail(`la ligne du PC devrait porter la pastille « Active » : ${JSON.stringify(machine.tags)}`);
   }
   // La description du fichier a été lue : la ligne Cible a le nom de notepad.exe, et l'inscription en second nom.
   const target = rowOf(loaded, 'Essai Shinku Cible');
   if (!shows(target.detail, 'inscrite sous') || !shows(target.detail, 'Essai Shinku Cible')) {
     fail(`la ligne « Essai Shinku Cible » ne dit pas « inscrite sous » son nom d’inscription : « ${target.name} » / « ${target.detail} »`);
   }
-  done('les quatre lignes du compte et la ligne du PC sont là ; la ligne du PC n’a pas d’interrupteur ; la description du fichier est lue');
+  done('les quatre lignes du compte et la ligne du PC sont là ; la description du fichier est lue');
   await window.capture('demarrage');
 
   const controlled = onWindows;
@@ -1300,6 +1335,103 @@ async function checkStartup(window) {
     await window.healthy(`après avoir remis « ${entry.name} »`);
     await window.capture(`demarrage-${slug(entry.name)}-remise`);
   }
+  await checkStartupMachine(window, read);
+}
+
+// ── Le Démarrage : la ligne du PC ──────────────────────────────────────────
+
+const MACHINE_APPROVED = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved';
+const MACHINE_APPROVAL = ['Run', STARTUP_MACHINE];
+const POLICIES = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System';
+
+/** Une valeur DWORD des stratégies de Windows (UAC), lue par `reg query /reg:64` ; `null` si elle n'existe pas. */
+function readPolicy(name) {
+  const result = spawnSync('reg', ['query', POLICIES, '/v', name, '/reg:64'], { encoding: 'utf8', timeout: 15_000 });
+  if (result.status !== 0) {
+    return null;
+  }
+  const found = /REG_DWORD\s+0x([0-9A-Fa-f]+)/.exec(result.stdout ?? '');
+  return found === null ? null : Number.parseInt(found[1], 16);
+}
+
+const accessOf = (section) => {
+  const said = section.access.join(' ');
+  return ['consent', 'password', 'direct', 'unavailable'].filter((name) => shows(said, STARTUP_EXPECTED[name]));
+};
+
+/**
+ * La ligne « Essai Shinku PC » (posée dans HKLM\\…\\Run par `essai-demarrage.ps1 -Preparer`), selon ce que la page
+ * montre. **Aucun clic** : sur la machine de GitHub (`EnableLUA = 1`, `ConsentPromptBehaviorUser = 3`, bureau
+ * sécurisé), un clic ouvrirait une demande de mot de passe à laquelle personne ne peut répondre. Le changement
+ * lui-même est prouvé par `essai-assistant.ps1`. Ici : ce que la page dit de l'accès doit être ce que la
+ * stratégie de la machine permet, et HKLM ne doit pas bouger pendant le contrôle.
+ */
+async function checkStartupMachine(window, read) {
+  const before = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
+  const screen = await read();
+  const row = screen.rows.find((one) => shows(`${one.name} ${one.registered} ${one.detail}`, STARTUP_MACHINE));
+  const section = screen.sections.find((one) => shows(one.title, STARTUP_EXPECTED.machineCard));
+  if (row === undefined || section === undefined) {
+    fail(`la carte du PC ou la ligne « ${STARTUP_MACHINE} » a disparu de la page`);
+  }
+  const accesses = accessOf(section);
+  if (accesses.length !== 1) {
+    fail(`la carte du PC doit dire exactement un accès (consent, password, direct, unavailable), elle en dit ${JSON.stringify(accesses)} : ${JSON.stringify(section.access)}`);
+  }
+  const access = accesses[0];
+  if (!shows(row.registered, STARTUP_EXPECTED.registered) || !shows(row.registered, STARTUP_MACHINE)) {
+    fail(`la ligne du PC ne dit pas « Inscrite sous « ${STARTUP_MACHINE} » » : « ${row.registered} » (ligne : ${JSON.stringify(row)})`);
+  }
+  // Un interrupteur si et seulement si la page dit un accès.
+  if (row.hasSwitch !== (access !== 'unavailable')) {
+    fail(`la ligne du PC ${row.hasSwitch ? 'a' : 'n’a pas'} d’interrupteur alors que la carte dit l’accès « ${access} » : ${JSON.stringify(row)}`);
+  }
+  if (access === 'unavailable') {
+    // Le lot 1 : seulement l'état, la phrase du lot 1 et son bouton vers les réglages de Windows, sans prudence.
+    if (!row.tags.some((tag) => shows(tag, STARTUP_EXPECTED.active))) {
+      fail(`la ligne du PC sans interrupteur devrait porter la pastille « Active » : ${JSON.stringify(row.tags)}`);
+    }
+    if (!section.windowsButtons.some((text) => shows(text, STARTUP_EXPECTED.openWindows))) {
+      fail(`la carte du PC sans accès devrait avoir le bouton « Apps de démarrage de Windows » : ${JSON.stringify(section.windowsButtons)}`);
+    }
+    if (section.caution !== '') {
+      fail(`la carte du PC sans accès ne devrait pas avoir la phrase de prudence : « ${section.caution} »`);
+    }
+  } else {
+    if (!shows(section.caution, STARTUP_EXPECTED.caution)) {
+      fail(`la carte du PC a un accès mais pas la phrase de prudence : « ${section.caution} »`);
+    }
+    if (!row.checked || row.waiting !== '') {
+      fail(`la ligne du PC devrait être active et sans attente : ${JSON.stringify(row)}`);
+    }
+  }
+
+  // Ce que la machine permet : UAC actif, et un jeton sans droits que Windows laisse élever (`ConsentPromptBehaviorUser` ≠ 0).
+  let policy = 'non lue (hors de Windows)';
+  if (onWindows) {
+    const lua = readPolicy('EnableLUA') ?? 1;
+    const consent = readPolicy('ConsentPromptBehaviorUser') ?? 3;
+    policy = `EnableLUA = ${lua}, ConsentPromptBehaviorUser = ${consent}`;
+    const elevates = lua === 1 && consent !== 0;
+    if (elevates && !['consent', 'password'].includes(access)) {
+      fail(`la machine laisse élever (${policy}) et la fenêtre tourne sans droits : l’accès devrait être consent ou password, la page dit « ${access} »`);
+    }
+    if (!elevates && access !== 'unavailable') {
+      fail(`la machine ne laisse pas élever (${policy}) : la page devrait montrer le lot 1 (unavailable), elle dit « ${access} »`);
+    }
+  }
+  const after = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
+  if (after !== before) {
+    fail(`HKLM StartupApproved\\Run\\${STARTUP_MACHINE} a changé pendant le contrôle : ${before ?? 'aucune valeur'} puis ${after ?? 'aucune valeur'}`);
+  }
+  done(`ligne du PC « ${STARTUP_MACHINE} » : accès « ${access} », ${row.hasSwitch ? 'interrupteur présent' : 'affichage du lot 1'}, conforme à la machine (${policy})`);
+  say(
+    `FAIT : accès = ${access} ; stratégie = ${policy} ; interrupteur = ${row.hasSwitch ? 'oui' : 'non'} ; ` +
+      `HKLM StartupApproved\\Run\\${STARTUP_MACHINE} = ${after ?? 'aucune valeur'} (inchangée) ; ` +
+      'pas de clic : Windows demanderait ici un accord auquel personne ne peut répondre ; ' +
+      'le changement lui-même est prouvé par essai-assistant.ps1',
+  );
+  await window.capture(row.hasSwitch ? 'demarrage-pc-acces' : 'demarrage-pc-lot1');
 }
 
 // ── La Désinstallation ─────────────────────────────────────────────────────
@@ -1876,6 +2008,7 @@ async function main() {
     }
     await checkScan(window);
     await checkModules(window);
+    await checkPrivacy(window);
     await checkStartup(window);
     await checkUninstall(window);
     await checkGameMode(window);

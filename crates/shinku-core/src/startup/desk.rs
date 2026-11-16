@@ -5,33 +5,75 @@
 //! peut avoir changé (un autre programme, le Gestionnaire des tâches). Un seul
 //! changement à la fois : le second, s'il arrive pendant le premier, est refusé
 //! ([`StartupRefusal::Busy`]).
+//!
+//! Une entrée **du PC** se règle par l'assistant élevé ([`ElevatedHelper`]) : le
+//! guichet pose `pending`, **relâche tout verrou de lecture** (la vue répond
+//! pendant l'attente), lance l'assistant et attend sa fin, puis relit la machine
+//! et met `startup.json` à jour d'après la valeur **relue**. Le code de sortie de
+//! l'assistant ne sert qu'à choisir le message.
+//!
+//! Si Shinku se ferme pendant l'attente, l'assistant finit seul : le changement
+//! se fait sans la marque « par Shinku ».
 
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
+use crate::helper::request::{StartupAction, StartupRequest, StartupSlot};
 use crate::platform::agent::run_command;
+use crate::startup::access::PcAccess;
 use crate::startup::host::StartupHost;
+use crate::startup::launcher::{ElevatedHelper, HelperRun, InertHelper};
 use crate::startup::store::StartupStore;
-use crate::startup::view::{StartupRefusal, StartupView};
-use crate::startup::{self, EntryId, Probe, ToggleError};
+use crate::startup::view::{StartupPending, StartupRefusal, StartupView};
+use crate::startup::{self, EntryId, MachineRules, Probe, Scope, State, ToggleError};
 
 /// Le module « Démarrage », vu du guichet.
 #[derive(Debug)]
 pub struct StartupDesk {
     host: Arc<dyn StartupHost>,
+    helper: Arc<dyn ElevatedHelper>,
     store: Option<StartupStore>,
     /// La commande que le mode jeu écrit pour cette installation.
     own: Option<String>,
-    /// Pris (sans attendre) par un changement en cours.
+    /// Pris (sans attendre) par un changement en cours, **pendant toute
+    /// l'attente de l'assistant** : c'est lui qui refuse un second changement.
     busy: Mutex<()>,
     /// Met en file la lecture de la machine et l'écriture de `startup.json` :
-    /// une vue et un changement ne s'écrasent pas.
+    /// une vue et un changement ne s'écrasent pas. Jamais tenu pendant l'attente.
     turn: Mutex<()>,
+    /// Le changement du PC dont on attend la réponse.
+    pending: Mutex<Option<StartupPending>>,
+}
+
+/// Retire `pending` à la fin de l'attente, quoi qu'il arrive.
+struct PendingGuard<'a>(&'a Mutex<Option<StartupPending>>);
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
+
+fn refusal(error: ToggleError) -> StartupRefusal {
+    match error {
+        ToggleError::UnknownEntry => StartupRefusal::UnknownEntry,
+        ToggleError::NotAdjustable => StartupRefusal::NotAdjustable,
+        ToggleError::Failed => StartupRefusal::Failed,
+    }
 }
 
 impl StartupDesk {
-    /// Un guichet sur cette machine et ce fichier.
+    /// Un guichet sur cette machine et ce fichier, sans assistant élevé : les
+    /// entrées du PC ne se règlent pas.
     pub fn new(host: Arc<dyn StartupHost>, store: Option<StartupStore>) -> Self {
-        Self { host, store, own: run_command(), busy: Mutex::new(()), turn: Mutex::new(()) }
+        Self {
+            host,
+            helper: Arc::new(InertHelper),
+            store,
+            own: run_command(),
+            busy: Mutex::new(()),
+            turn: Mutex::new(()),
+            pending: Mutex::new(None),
+        }
     }
 
     /// Change la commande qu'on prend pour celle de Shinku (pour les tests).
@@ -40,57 +82,158 @@ impl StartupDesk {
         self
     }
 
+    /// Branche l'assistant élevé : les entrées du PC se règlent par lui.
+    pub fn with_helper(mut self, helper: Arc<dyn ElevatedHelper>) -> Self {
+        self.helper = helper;
+        self
+    }
+
     /// De quoi compter les apps inscrites à la fin d'une analyse.
     pub fn probe(&self) -> Probe {
         Probe::new(Arc::clone(&self.host), self.own.clone())
     }
 
-    /// Tout ce que la page affiche. Met `startup.json` à jour.
+    fn turn(&self) -> MutexGuard<'_, ()> {
+        self.turn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn pending(&self) -> Option<StartupPending> {
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Ce que l'assistant permet, et ce qui s'en déduit pour les entrées du PC.
+    fn rules(&self) -> (PcAccess, MachineRules) {
+        let pc = self.helper.access();
+        let allowed = pc != PcAccess::Unavailable;
+        (pc, MachineRules { allowed, folder_safe: allowed && self.helper.folder_safe() })
+    }
+
+    /// Tout ce que la page affiche. Met `startup.json` à jour. Répond tout de
+    /// suite pendant l'attente de l'assistant, avec `pending`.
     pub fn view(&self) -> StartupView {
-        let _turn = self.turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _turn = self.turn();
         self.read()
     }
 
     fn read(&self) -> StartupView {
+        let (pc, rules) = self.rules();
         let listing =
-            startup::enumerate(self.host.as_ref(), self.own.as_deref(), self.store.as_ref());
-        StartupView::from(&listing)
+            startup::enumerate(self.host.as_ref(), self.own.as_deref(), self.store.as_ref(), rules);
+        StartupView::from(&listing).with_access(pc, self.pending())
     }
 
-    /// Coupe ou remet une entrée du compte, puis rend la vue d'après.
-    ///
-    /// `id` est celui que la page a reçu : mal formé, il désigne une entrée
-    /// inconnue. Un changement à la fois : s'il y en a un en cours, `Busy`.
+    /// Coupe ou remet une entrée, puis rend la vue d'après. Sans fenêtre
+    /// propriétaire pour l'accord de Windows : voir [`StartupDesk::set_for`].
     pub fn set(&self, id: &str, enabled: bool) -> Result<StartupView, StartupRefusal> {
+        self.set_for(id, enabled, 0)
+    }
+
+    /// Coupe ou remet une entrée. `id` est celui que la page a reçu : mal formé,
+    /// il désigne une entrée inconnue. Un changement à la fois : s'il y en a un
+    /// en cours (même en attente d'une réponse), `Busy`.
+    ///
+    /// Pour une entrée du PC, `owner` est la fenêtre de Shinku (0 : aucune) :
+    /// l'accord de Windows s'ouvre devant elle. Rend la main quand l'assistant a
+    /// fini.
+    pub fn set_for(
+        &self,
+        id: &str,
+        enabled: bool,
+        owner: isize,
+    ) -> Result<StartupView, StartupRefusal> {
         let id = EntryId::parse(id).ok_or(StartupRefusal::UnknownEntry)?;
         let _busy = match self.busy.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(TryLockError::WouldBlock) => return Err(StartupRefusal::Busy),
         };
-        let _turn = self.turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if id.place().scope() == Scope::Machine {
+            return self.set_machine(id, enabled, owner);
+        }
+        let _turn = self.turn();
         let change = startup::toggle(self.host.as_ref(), self.own.as_deref(), id, enabled)
-            .map_err(|error| match error {
-                ToggleError::UnknownEntry => StartupRefusal::UnknownEntry,
-                ToggleError::NotAdjustable => StartupRefusal::NotAdjustable,
-                ToggleError::Failed => StartupRefusal::Failed,
-            })?;
-        if change.changed
-            && let Some(store) = &self.store
-        {
-            let mut file = store.load();
-            if enabled {
-                file.forget(id);
-            } else {
-                file.remember(id, &change.name, self.host.now().unix_millis(), change.file_time);
-            }
-            // Un fichier qui ne s'écrit pas n'annule pas le changement : la
-            // page dira « Coupée le … » d'après Windows, sans « par Shinku ».
-            let _ = store.save(&file);
+            .map_err(refusal)?;
+        if change.changed {
+            self.remember(id, &change.name, enabled, change.file_time);
         }
         Ok(self.read())
     }
+
+    /// Met `startup.json` à jour : une coupure retenue, une remise oubliée. Un
+    /// fichier qui ne s'écrit pas n'annule pas le changement : la page dira
+    /// « Coupée le … » d'après Windows, sans « par Shinku ».
+    fn remember(&self, id: EntryId, name: &str, enabled: bool, file_time: u64) {
+        let Some(store) = &self.store else { return };
+        let mut file = store.load();
+        if enabled {
+            file.forget(id);
+        } else {
+            file.remember(id, name, self.host.now().unix_millis(), file_time);
+        }
+        let _ = store.save(&file);
+    }
+
+    /// Une entrée du PC : par l'assistant élevé, **sans verrou de lecture**.
+    fn set_machine(
+        &self,
+        id: EntryId,
+        enabled: bool,
+        owner: isize,
+    ) -> Result<StartupView, StartupRefusal> {
+        // 1. Ce qu'on va demander : relu à l'instant, une seule fois, réglable.
+        let request = {
+            let _turn = self.turn();
+            let (_, rules) = self.rules();
+            let entry = startup::locate(self.host.as_ref(), self.own.as_deref(), id, rules)
+                .map_err(refusal)?;
+            let wanted = if enabled { State::Enabled } else { State::Disabled };
+            if entry.state == wanted {
+                // Déjà dans l'état voulu : aucun accord à demander.
+                return Ok(self.read());
+            }
+            let slot = StartupSlot::of_place(entry.place).ok_or(StartupRefusal::NotAdjustable)?;
+            let action = if enabled { StartupAction::Restore } else { StartupAction::Cut };
+            StartupRequest::new(action, slot, &entry.raw_name)
+                .ok_or(StartupRefusal::NotAdjustable)?
+        };
+
+        // 2. L'attente : `pending` posé, aucun verrou de lecture tenu.
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(StartupPending { id, enabled });
+        let pending = PendingGuard(&self.pending);
+        let outcome = self.helper.run(&request.to_words(), owner);
+
+        // 3. La relecture dit l'état ; `startup.json` suit la valeur relue.
+        // `pending` reste posé jusqu'à la fin de cette étape (et il est retiré
+        // quoi qu'il arrive, même sur panique) : la page ne cesse pas de relire
+        // avant que la vue dise la vérité.
+        let _turn = self.turn();
+        let (_, rules) = self.rules();
+        let again = startup::reread(self.host.as_ref(), self.own.as_deref(), id, rules);
+        if let Some(entry) = again {
+            let cut = !enabled && outcome == HelperRun::Exited(0) && entry.state == State::Disabled;
+            let restored = enabled && entry.state == State::Enabled;
+            if cut || restored {
+                self.remember(id, &entry.name, enabled, entry.file_time);
+            }
+        }
+        drop(pending);
+        match outcome {
+            HelperRun::Cancelled | HelperRun::Exited(3) => Err(StartupRefusal::Cancelled),
+            HelperRun::Exited(5) => Err(StartupRefusal::NeedsAdmin),
+            HelperRun::Exited(0 | 9) => Ok(self.read()),
+            HelperRun::Exited(4) => Err(StartupRefusal::UnknownEntry),
+            // Dont le code 1, celui d'un assistant tué : jamais rendu par lui.
+            HelperRun::Exited(_) | HelperRun::TimedOut | HelperRun::NotStarted => {
+                Err(StartupRefusal::Failed)
+            }
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "desk_pc_tests.rs"]
+mod pc_tests;
 
 #[cfg(test)]
 mod tests {
