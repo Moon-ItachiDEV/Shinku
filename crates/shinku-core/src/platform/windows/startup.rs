@@ -30,8 +30,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-    CoTaskMemFree, CoUninitialize, IPersistFile, STGM_READ,
+    CLSCTX_INPROC_SERVER, COINIT, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IPersistFile, STGM_READ,
 };
 use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
 use windows::Win32::System::Registry::{
@@ -488,9 +488,19 @@ pub(super) struct ComScope {
 
 impl ComScope {
     pub(super) fn enter() -> Self {
+        Self::with(COINIT_APARTMENTTHREADED)
+    }
+
+    /// Pour appeler `ShellExecuteExW` : mêmes drapeaux que la Désinstallation
+    /// (`COINIT_DISABLE_OLE1DDE` en plus), comme le recommande sa documentation.
+    pub(super) fn enter_for_shell() -> Self {
+        Self::with(COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+    }
+
+    fn with(flags: COINIT) -> Self {
         // SAFETY: appel sans pointeur. Si le fil a déjà un appartement d'un
         // autre type, l'appel échoue et COM reste utilisable tel qu'il est.
-        let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let result = unsafe { CoInitializeEx(None, flags) };
         Self { initialized: result.is_ok() }
     }
 }

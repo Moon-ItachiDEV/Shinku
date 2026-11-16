@@ -63,6 +63,13 @@ impl SystemHelper {
         Self { path: Some(path) }
     }
 
+    /// Le contrôle d'emplacement du **lancement**, poignée gardée : la seule
+    /// ouverture avec accès aux données (donc dans le partage de Windows). Le
+    /// chemin de code de `run`, que l'essai de l'installation reprend tel quel.
+    fn open_for_launch(&self) -> Option<security::Opened> {
+        open_helper(&self.helper_path()?, true)
+    }
+
     fn helper_path(&self) -> Option<PathBuf> {
         match &self.path {
             Some(path) => Some(path.clone()),
@@ -109,7 +116,7 @@ fn launch(
     kept: Option<security::Opened>,
 ) -> HelperRun {
     // `ShellExecuteExW` demande COM sur le fil appelant (comme la Désinstallation).
-    let _com = super::startup::ComScope::enter();
+    let _com = super::startup::ComScope::enter_for_shell();
     let verb = HSTRING::from("runas");
     let file = HSTRING::from(file);
     let parameters = HSTRING::from(parameters);
@@ -163,7 +170,9 @@ fn launch(
 
 impl ElevatedHelper for SystemHelper {
     fn access(&self) -> PcAccess {
-        let helper_safe = self.helper_path().and_then(|path| open_helper(&path)).is_some();
+        // Sans accès aux données : rien n'est lancé ici, et un outil qui tient
+        // le fichier ne doit pas faire disparaître les interrupteurs.
+        let helper_safe = self.helper_path().and_then(|path| open_helper(&path, false)).is_some();
         access::decide(&AccessFacts {
             helper_safe,
             elevation: security::elevation_type(),
@@ -178,9 +187,8 @@ impl ElevatedHelper for SystemHelper {
     }
 
     fn run(&self, words: &[String; 4], owner: isize) -> HelperRun {
-        let Some(path) = self.helper_path() else { return HelperRun::NotStarted };
         // Le contrôle, poignée gardée ouverte : refus avant tout lancement.
-        let Some(kept) = open_helper(&path) else { return HelperRun::NotStarted };
+        let Some(kept) = self.open_for_launch() else { return HelperRun::NotStarted };
         let file = launchable(&kept.placed.path);
         let parameters = words.join(" ");
         launch(&file, &parameters, owner, WAIT, Some(kept))
@@ -240,6 +248,31 @@ mod tests {
         let run = helper.run(&request.to_words(), 0);
         println!("FAIT : l'assistant installé répond {run:?} pour un nom inconnu");
         assert_eq!(run, HelperRun::Exited(4));
+
+        // La poignée que `run` garde bloque bien l'écriture et la suppression :
+        // par violation de partage (code 32), pas par les droits (l'essai tourne
+        // élevé). On n'écrit jamais dans le fichier : l'ouverture échoue, ou ne
+        // sert qu'à être fermée aussitôt.
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const DELETE: u32 = 0x0001_0000;
+            const SHARING_VIOLATION: i32 = 32;
+            let kept = helper.open_for_launch().expect("l'emplacement est sûr");
+            let write = std::fs::OpenOptions::new().write(true).open(&installed);
+            let delete = std::fs::OpenOptions::new().access_mode(DELETE).open(&installed);
+            let read = std::fs::File::open(&installed);
+            println!(
+                "FAIT : poignée du lancement ouverte : écriture {:?}, suppression {:?}, lecture {}",
+                write.as_ref().err().and_then(std::io::Error::raw_os_error),
+                delete.as_ref().err().and_then(std::io::Error::raw_os_error),
+                read.is_ok()
+            );
+            assert_eq!(write.err().and_then(|e| e.raw_os_error()), Some(SHARING_VIOLATION));
+            assert_eq!(delete.err().and_then(|e| e.raw_os_error()), Some(SHARING_VIOLATION));
+            assert!(read.is_ok(), "la lecture reste permise");
+            drop(kept);
+            assert!(std::fs::File::open(&installed).is_ok(), "poignée fermée : la lecture passe");
+        }
 
         // Une copie hors de Program Files : refusée avant tout lancement.
         let temp = tempfile::tempdir().unwrap();

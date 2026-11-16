@@ -15,7 +15,8 @@
 //!
 //! - durcissement : `SetDefaultDllDirectories` ;
 //! - jeton : `CheckTokenMembership`, `CreateWellKnownSid` ;
-//! - son propre chemin : `GetModuleFileNameW` (par `current_exe`) ;
+//! - son propre chemin : `GetModuleFileNameW` (par `current_exe`) ; la
+//!   demande : `GetCommandLineW` (par `args_os`) ;
 //! - fichiers et dossiers, **sans jamais lire un contenu** : `CreateFileW`
 //!   (`READ_CONTROL`, attributs ; `FILE_READ_DATA` pour le seul fichier de
 //!   l'assistant, sans `ReadFile`), `GetFileInformationByHandle`,
@@ -136,8 +137,14 @@ fn program_files() -> Vec<Placed> {
 /// Files` sont sûrs. La poignée du fichier est rendue (accès aux données et
 /// partage en lecture seule) : celui qui la garde ouverte empêche qu'on réécrive
 /// ou supprime le fichier, un garde-fou contre nos erreurs, pas une barrière.
-pub(super) fn open_helper(path: &Path) -> Option<Opened> {
-    let file = security::open_object(path, FILE_SHARE_READ, true)?;
+///
+/// `keep` : poignée **de lancement** (accès aux données, partage en lecture
+/// seule). Faux pour `access()` (chaque vue) et pour la vérification que
+/// l'assistant fait de lui-même : rien n'est lancé derrière, et un outil qui
+/// tient le fichier ne doit pas les faire échouer.
+pub(super) fn open_helper(path: &Path, keep: bool) -> Option<Opened> {
+    let share = if keep { FILE_SHARE_READ } else { SHARE_ALL };
+    let file = security::open_object(path, share, keep)?;
     let folder_path = Path::new(&file.placed.path).parent()?.to_path_buf();
     let folder = security::open_object(&folder_path, SHARE_ALL, false)?;
     location::helper_is_well_placed(&file.placed, &folder.placed, &program_files()).then_some(file)
@@ -262,6 +269,12 @@ fn names_in(key: &Key) -> io::Result<Names> {
     Ok(Names { names, complete })
 }
 
+/// Les noms du dossier dont on tient la poignée vérifiée : seul son chemin final
+/// est énumérable ici (ni chemin non résolu, ni dossier non contrôlé).
+fn folder_names_checked(opened: &Opened) -> io::Result<Names> {
+    folder_names(Path::new(&opened.placed.path))
+}
+
 /// Les noms des fichiers du dossier Démarrage commun, d'après les seuls
 /// attributs rendus par l'énumération (aucun fichier n'est ouvert).
 fn folder_names(folder: &Path) -> io::Result<Names> {
@@ -323,7 +336,7 @@ impl MachineStartup for SystemMachineStartup {
     }
 
     fn location_safe(&self) -> bool {
-        std::env::current_exe().ok().and_then(|path| open_helper(&path)).is_some()
+        std::env::current_exe().ok().and_then(|path| open_helper(&path, false)).is_some()
     }
 
     fn names(&self, place: StartupSlot) -> Result<Names, NamesError> {
@@ -334,7 +347,7 @@ impl MachineStartup for SystemMachineStartup {
                 // La poignée reste ouverte jusqu'à la fin de l'énumération, et c'est
                 // le chemin final vérifié qu'on énumère.
                 let opened = common_folder().ok_or(NamesError::UnsafeFolder)?;
-                let names = folder_names(Path::new(&opened.placed.path));
+                let names = folder_names_checked(&opened);
                 drop(opened);
                 names
             }
@@ -414,36 +427,50 @@ impl MachineStartup for SystemMachineStartup {
     }
 
     fn ask(&self, text: &str) -> bool {
-        let deadline = Arc::new(Deadline::new());
-        let timer = Arc::clone(&deadline);
-        // L'échéance : de la réponse et de la minuterie, la première qui change
-        // l'état gagne. Si c'est la minuterie, le processus sort avec le code 3,
-        // sans rien écrire.
-        std::thread::spawn(move || {
-            std::thread::sleep(QUESTION_DEADLINE);
-            if timer.expire() {
-                std::process::exit(3);
-            }
-        });
-        // SAFETY: `text` et le titre sont des chaînes UTF-16 terminées par zéro,
-        // vivantes pendant l'appel ; aucune fenêtre propriétaire.
-        let answer = unsafe {
-            MessageBoxW(
-                None,
-                &HSTRING::from(text),
-                &HSTRING::from("Shinku"),
-                MB_OKCANCEL | MB_DEFBUTTON2 | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
-            )
+        let shown = |text: &str| {
+            // SAFETY: `text` et le titre sont des chaînes UTF-16 terminées par
+            // zéro, vivantes pendant l'appel ; aucune fenêtre propriétaire.
+            let answer = unsafe {
+                MessageBoxW(
+                    None,
+                    &HSTRING::from(text),
+                    &HSTRING::from("Shinku"),
+                    MB_OKCANCEL | MB_DEFBUTTON2 | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
+                )
+            };
+            answer == IDOK
         };
-        // La décision est dans `settle` (essayée) : la minuterie a-t-elle gagné ?
-        let Some(accepted) = settle(&deadline, answer == IDOK) else {
+        let expired = || std::process::exit(3);
+        match ask_with(text, QUESTION_DEADLINE, shown, expired) {
+            Some(accepted) => accepted,
             // La minuterie a gagné : le processus est en train de sortir.
-            loop {
+            None => loop {
                 std::thread::sleep(std::time::Duration::from_secs(60));
-            }
-        };
-        accepted
+            },
+        }
     }
+}
+
+/// Pose la question avec l'échéance : de la réponse et de la minuterie, la
+/// première qui change l'état gagne. `None` si c'est la minuterie (elle a
+/// appelé `on_expiry`, qui sort du processus avec le code 3, sans rien écrire).
+/// `show` est la boîte ; elle est passée en paramètre pour être essayée.
+fn ask_with(
+    text: &str,
+    limit: std::time::Duration,
+    show: impl FnOnce(&str) -> bool,
+    on_expiry: impl FnOnce() + Send + 'static,
+) -> Option<bool> {
+    let deadline = Arc::new(Deadline::new());
+    let timer = Arc::clone(&deadline);
+    std::thread::spawn(move || {
+        std::thread::sleep(limit);
+        if timer.expire() {
+            on_expiry();
+        }
+    });
+    let accepted = show(text);
+    settle(&deadline, accepted)
 }
 
 /// Les arguments de la ligne de commande, sans le nom du programme.
@@ -482,13 +509,41 @@ mod tests {
         );
     }
 
+    fn folder_names_of(folder: &Path) -> Names {
+        let opened = security::open_object(folder, SHARE_ALL, false).expect("ouvert");
+        folder_names_checked(&opened).unwrap()
+    }
+
+    #[test]
+    fn a_question_answered_in_time_counts_and_one_answered_late_does_not() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        let long = Duration::from_secs(60);
+        assert_eq!(ask_with("?", long, |_| true, || ()), Some(true));
+        assert_eq!(ask_with("?", long, |_| false, || ()), Some(false));
+        // La boîte répond après l'échéance : la minuterie a gagné, la réponse ne vaut rien.
+        let expired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&expired);
+        let late = ask_with(
+            "?",
+            Duration::from_millis(30),
+            |_| {
+                std::thread::sleep(Duration::from_millis(400));
+                true
+            },
+            move || flag.store(true, Ordering::SeqCst),
+        );
+        assert_eq!(late, None);
+        assert!(expired.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn a_folder_listing_gives_files_only_without_desktop_ini() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("a.lnk"), b"x").unwrap();
         std::fs::write(temp.path().join("Desktop.INI"), b"x").unwrap();
         std::fs::create_dir(temp.path().join("sous-dossier")).unwrap();
-        let names = folder_names(temp.path()).unwrap();
+        let names = folder_names_of(temp.path());
         assert_eq!(names.names, ["a.lnk"]);
         assert!(names.complete);
         let long = temp.path().join("n".repeat(MAX_NAME + 1));
@@ -496,7 +551,7 @@ mod tests {
             // Sous Wine, le système de fichiers Linux refuse 256 octets.
             return;
         }
-        let names = folder_names(temp.path()).unwrap();
+        let names = folder_names_of(temp.path());
         assert_eq!(names.names, ["a.lnk"]);
         assert!(!names.complete, "un nom trop long rend la place incomplète");
     }

@@ -39,6 +39,10 @@ fn the_helper_has_no_console_and_no_verbs() {
     assert!(
         !main.contains("--verbes") && !main.contains("--version") && !main.contains("println!")
     );
+    // Un durcissement refusé fait sortir avec le code 8 (`Code::Failed`).
+    assert!(main.contains("if !shinku_core::platform::harden_helper_process() {"));
+    let after = &main[main.find("if !shinku_core::platform::harden_helper_process() {").unwrap()..];
+    assert!(after.lines().nth(1).is_some_and(|line| line.contains("Code::Failed as u8")));
     // Le durcissement est la première chose que fait `main`.
     let body = &main[main.find("fn main()").unwrap()..];
     let first = body

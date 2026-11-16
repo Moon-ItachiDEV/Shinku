@@ -8,7 +8,8 @@
 //! Un objet est ouvert **une seule fois**, avec une poignée qui sert à tout :
 //! son chemin final (`GetFinalPathNameByHandleW`) et son descripteur de sécurité
 //! (`GetSecurityInfo`), jamais à lire son contenu (aucun `ReadFile`). Pour le
-//! **fichier de l'assistant**, la poignée demande aussi `FILE_READ_DATA` : sans
+//! **fichier de l'assistant, au lancement seulement** (`run()`), la poignée
+//! demande aussi `FILE_READ_DATA` : sans
 //! accès aux données, une poignée n'entre pas dans le contrôle de partage de
 //! Windows et ne bloque rien. Avec lui et le partage en lecture seule, personne
 //! ne peut réécrire ni supprimer le fichier entre le contrôle et le retour de

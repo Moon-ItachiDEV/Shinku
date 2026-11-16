@@ -10,7 +10,7 @@ notes couvrent le « comment ».
 | Programme | Rôle | Droits |
 | --- | --- | --- |
 | `shinku.exe` | La fenêtre et le cœur : analyse tout ce qui appartient à l'utilisateur. | Ceux de l'utilisateur, jamais plus. |
-| `shinku-helper.exe` | Les actions sur la machine. N'accepte que des verbes fixes. | Administrateur, à la demande, un processus par changement (voir « Qui l'assistant protège »). |
+| `shinku-helper.exe` | Les actions sur la machine. N'accepte qu'une demande fixe de quatre mots, dont un nom (voir « Régler une entrée du PC »). | Administrateur, à la demande, un processus par changement (voir « Contre qui l'assistant protège »). |
 | `shinku-agent.exe` | Le mode jeu, sans fenêtre (voir plus bas). Plus tard, l'analyse planifiée. | Ceux de l'utilisateur ; il refuse de tourner en administrateur. |
 
 ### Contre qui l'assistant protège
@@ -36,7 +36,7 @@ une entrée qui existe déjà** dans `HKLM` ou dans le dossier Démarrage commun
 désignée par son vrai nom, que l'assistant affiche. Il ne choisit pas le texte
 affiché : ces noms ne sont écrits que par des administrateurs.
 
-Conséquences assumées, à écrire aussi :
+Conséquences assumées :
 
 - **La boîte de l'assistant n'est pas une barrière.** Elle s'affiche sur le bureau
   ordinaire : un programme du compte ne peut pas y cliquer (Windows l'interdit
@@ -49,12 +49,12 @@ Conséquences assumées, à écrire aussi :
   imitateur** (bannière « éditeur inconnu »). La sortie publique est déjà
   conditionnée à la signature de `shinku.exe` ; **elle l'est aussi à celle de
   `shinku-helper.exe`**, et `shinku.exe` devra alors vérifier la signature de
-  l'assistant avant de le lancer. À ajouter à « Avant une version publique ».
-  D'ici là, seules les versions d'essai existent : pas de réglage
-  « expérimental ».
+  l'assistant avant de le lancer (voir « Avant une version publique »). D'ici
+  là, seules les versions d'essai existent : pas de réglage « expérimental ».
 - Le verbe de ce lot **a un paramètre** (un nom) et n'est **pas** « sans danger
-  même si un programme malveillant l'envoie » : corriger le commentaire de
-  `helper.rs`, et les phrases « jamais sous `HKLM` » de `docs/conception.md`.
+  même si un programme malveillant l'envoie » : c'est pourquoi l'assistant
+  relit tout lui-même et montre ce qu'il change. `shinku.exe`, lui, n'écrit
+  jamais sous `HKLM`.
 
 Toute la logique vit dans `shinku-core`. Les trois programmes ne font que
 l'appeler : ce qui décide se teste donc sans fenêtre, sans Windows et sans
@@ -199,7 +199,7 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | `%LOCALAPPDATA%\Shinku\startup.json` | Ce que le module Démarrage a coupé (au plus 200 lignes : identifiant, nom, dates, `FILETIME` écrit). Écrit par la fenêtre seulement. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, valeur `Shinku` | Lance l'agent avec Windows. La seule écriture que Shinku fasse dans une clé `Run`. Présente seulement quand le mode jeu automatique est allumé. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | Une valeur de douze octets par entrée de démarrage du compte que la personne coupe ou remet (voir « Démarrage »). Le même réglage que le Gestionnaire des tâches. Écrite par `shinku.exe`. |
-| `HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | La même valeur de douze octets pour une entrée du PC. Écrite **seulement par `shinku-helper.exe`**, élevé, après un clic dans une fenêtre de Windows (vue 64 bits). |
+| `HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | La même valeur de douze octets pour une entrée du PC. Écrite **seulement par `shinku-helper.exe`**, élevé, après l'accord de Windows, quand il en demande un, et un « OK » dans la boîte de l'assistant (vue 64 bits). |
 | `%LOCALAPPDATA%\fr.shinku.app\` | Le cache de WebView2 pour la fenêtre. |
 
 Rien d'autre, et rien hors du PC. `shinku.exe` n'écrit jamais sous `HKLM` : la
@@ -891,8 +891,8 @@ mentir.
 
 - **Ni les apps du Store, ni les tâches planifiées, ni les services** ne sont
   listés (voir plus haut).
-- **Les entrées du PC sont en lecture seule** dans ce lot : il faut l'accord
-  d'un administrateur. La page ouvre la page de Windows.
+- **Les entrées du PC sont en lecture seule** quand l'accès est `unavailable`
+  (voir « Régler une entrée du PC ») : la page ouvre alors la page de Windows.
 - **Pas d'icônes** : aucune icône n'est affichée dans ce lot, la page montre
   l'initiale du nom. Shinku lit pourtant les **ressources de version** du fichier
   (description et éditeur, `GetFileVersionInfoW`, qui charge le fichier), et
@@ -961,10 +961,10 @@ l'identifiant ; le cœur retrouve la place et le nom. Tout est dans
 `platform/windows/` (`helper_host.rs`, `launcher.rs`, `security.rs`).
 
 Règles de ce lot. Presque chacune a un essai qui échoue si on la retire ; les
-exceptions sont dites plus bas.
+exceptions sont dites sous « Ce qui n'est tenu que par relecture ».
 
-- **l'assistant ne lit que des noms** : valeurs texte non vides de `Run` (sans
-  leurs données), noms de fichiers du dossier commun ; ni variable, ni ressource
+- **l'assistant ne lit que des noms** : valeurs texte de `Run` dont le nom n'est pas
+  vide (sans leurs données), noms de fichiers du dossier commun, et la seule valeur d'approbation ; ni variable, ni ressource
   de version, ni contenu de fichier ;
 - **il se revérifie** : son fichier est `shinku-helper.exe`, sans lien, sûr
   (propriétaire Administrateurs, Système ou TrustedInstaller ; aucun droit
@@ -978,7 +978,7 @@ exceptions sont dites plus bas.
   **une seule fois** (et aucun autre nom égal à la casse près : code 4), état
   lu, question, puis les mêmes vérifications relues, écriture, relecture. Une
   valeur relue qui n'est pas celle écrite donne 8 ;
-- **codes de sortie** : 0 fait ; 2 demande refusée ; 3 refusé ou délai ; 4
+- **codes de sortie** : 0 fait ; 2 demande refusée ; 3 refusé ou échéance de la boîte ; 4
   entrée introuvable ou ambiguë (y compris disparue ou doublée pendant la
   question) ; 5 droits insuffisants ; 6 emplacement non sûr ; 7 réglage
   illisible ; 8 échec (écriture, place illisible, ou durcissement des
@@ -996,10 +996,11 @@ exceptions sont dites plus bas.
   pas sûr, `unavailable` ; jeton limité d'une paire, `consent` (un clic) ;
   groupe Administrateurs **activé** dans le jeton, quel que soit le type,
   `direct` (Windows ne demande rien : la boîte de l'assistant est la seule
-  question) ; sinon `EnableLUA` ou `ConsentPromptBehaviorUser` à 0,
+  question ; c'est le mode D) ; sinon `EnableLUA` ou `ConsentPromptBehaviorUser` à 0,
   `unavailable` ; sinon `password` (mot de passe d'un administrateur, y compris
   pour un jeton « complet » filtré) ;
-- **refus** de la page : `cancelled` (accord ou boîte refusés, délai),
+- **refus** de la page : `cancelled` (accord ou boîte refusés, échéance de la boîte ; l'attente de dix
+  minutes de `shinku.exe` donne `failed`),
   `needsAdmin`.
 
 Fermer `shinku.exe` pendant l'attente n'arrête pas l'assistant : il termine ou
@@ -1015,26 +1016,49 @@ code. Cette section ne la recopie pas.
 
 #### Ce qui n'est tenu que par relecture
 
+Aucun essai ne voit ces règles si on les retire :
+
 - « jamais `HKCU` » : un essai de source refuse `HKCU` et `Hive` dans le code de
-  l'assistant, et c'est tout ; il vaut pour **le code de Shinku, pas pour tout
-  le processus** (`user32` et le cadre de saisie lisent ce qu'ils veulent dans le
-  `HKCU` du compte élevé) ;
+  l'assistant (une ruche écrite par sa valeur numérique y échapperait), et il
+  vaut pour **le code de Shinku, pas pour tout le processus** (`user32` et le
+  cadre de saisie lisent ce qu'ils veulent dans le `HKCU` du compte élevé) ;
 - la poignée du fichier de l'assistant reste ouverte **jusqu'au retour de
-  `ShellExecuteExW`** et pas après : aucun essai ne le voit (retirer le
-  `drop` ou le placer plus tôt ne casse rien).
+  `ShellExecuteExW`** et pas après (retirer le `drop` ou le placer plus tôt ne
+  casse rien) ;
+- COM est initialisé avant `ShellExecuteExW` ;
+- dans `ask`, la sortie du processus avec le code 3 à l'échéance (la décision
+  « réponse ou échéance » est essayée dans `ask_with`, pas l'appel à
+  `process::exit`) ;
+- l'énumération du dossier commun passe par `common_folder` : `names()` pourrait
+  ouvrir un autre dossier (la fonction d'énumération, elle, ne prend qu'une
+  poignée vérifiée et n'énumère que son chemin final) ;
+- que la poignée de `run()` demande l'accès aux données (`open_helper(.., true)`)
+  n'est prouvé que par l'essai de la vraie installation
+  (`SHINKU_ESSAI_ASSISTANT`, sur NTFS, élevé : écriture et suppression refusées
+  par violation de partage), pas par les essais ordinaires.
+
+Sont en revanche tenus par un essai : la sortie avec le code 8 de `main` si le
+durcissement échoue (essai de structure du crate de l'assistant), la décision de
+l'échéance, la lecture des droits (descripteurs fabriqués), les valeurs de
+`Run`, le dossier commun refusé.
 
 #### Limites connues
 
 - **La poignée du fichier** (accès aux données, partage en lecture seule) empêche
   de réécrire ou supprimer le fichier entre le contrôle et le retour de
   `ShellExecuteExW`. C'est un garde-fou contre nos erreurs, pas une barrière,
-  et rien n'est promis sur le renommage du dossier. L'essai qui le prouve est
-  sauté sous Wine et tourne sur un vrai NTFS en intégration continue.
+  et rien n'est promis sur le renommage du dossier. Elle n'est demandée que par
+  le lancement (`run()`) : `access()` et la vérification que l'assistant fait de
+  lui-même ouvrent sans accès aux données, pour qu'un outil qui tient le fichier
+  ne fasse pas disparaître les interrupteurs. Les essais qui la prouvent sont
+  sautés sous Wine et tournent sur un vrai NTFS en intégration continue.
 - **Les bibliothèques.** L'assistant lie tout `shinku-core` : des bibliothèques
   sont chargées avant `main`, donc avant `SetDefaultDllDirectories`. Sur le
-  binaire publié, c'est le drapeau de l'éditeur de liens
-  (`/DEPENDENTLOADFLAG:0x800`, MSVC seulement) qui les tient à `System32` ; son
-  contrôle sur le binaire de sortie est fait par le script d'essai. **Un petit
+  binaire publié, le drapeau de l'éditeur de liens
+  (`/DEPENDENTLOADFLAG:0x800`, MSVC seulement) doit les tenir à `System32` : le
+  drapeau est posé à la construction, sa présence est lue sur le binaire
+  installé par le script d'essai, et son effet sur le chargeur est le
+  comportement documenté de Windows, pas prouvé par nous. **Un petit
   crate dédié à l'assistant reste à faire avant la sortie publique.**
 - **Le nom montré** garde les marques combinantes et l'écriture de droite à
   gauche (au plus 80 caractères, mais ils peuvent s'empiler et réordonner les
@@ -1291,6 +1315,10 @@ corbeille trop petite, « disparu sans que la corbeille ait reçu quoi que ce so
   Windows).
 - La garde ne voit que des réglages : un cas qu'elle ne connaît pas se voit
   seulement après coup (`destroyed`).
+- Quand Windows répond « supprimé pour de bon » (`Sent::Destroyed`), l'étape des
+  doublons s'arrête (`NotInRecycleBin`) sans jamais compter la copie comme
+  envoyée à la corbeille ; le bilan sous-estime alors l'espace libéré (0 pour
+  cette copie), par prudence.
 - Une inscription du compte peut désigner n'importe quel programme (comme dans
   Windows) : Shinku ne lance qu'après un clic et une confirmation, sans droits de
   plus que la personne.

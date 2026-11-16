@@ -226,7 +226,11 @@ fn the_name_must_exist_exactly_once_with_the_exact_units() {
     assert_eq!(cut(&both), 4);
     let accented = base().with_entry(StartupSlot::Run, "essai");
     assert_eq!(cut(&accented), 4);
-    for fake in [&missing, &other_case, &other_place, &twice, &both, &accented] {
+    // Hors ASCII : un pliage ASCII seul laisserait passer « Élan » / « élan ».
+    let non_ascii =
+        Fake::new().with_entry(StartupSlot::Run, "Élan").with_entry(StartupSlot::Run, "élan");
+    assert_eq!(run(&non_ascii, &words("couper", "run", "Élan")), 4);
+    for fake in [&missing, &other_case, &other_place, &twice, &both, &accented, &non_ascii] {
         assert!(fake.writes().is_empty());
     }
 }
