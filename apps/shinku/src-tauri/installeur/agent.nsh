@@ -1,7 +1,7 @@
 ; Agent du mode jeu (shinku-agent.exe) dans l'installeur NSIS de Shinku.
 ;
 ; Ce fichier ne depend que de LogicLib.nsh et ne definit que quatre macros
-; publiques, que les crochets de Tauri (installer-hooks.nsh) appellent :
+; publiques, que les crochets de Tauri (habillage.nsh) appellent :
 ;
 ;   ShinkuAgentPreInstall     avant toute copie : l'ancien agent sort ;
 ;   ShinkuAgentPostInstall    l'agent sort encore, puis est copie a cote de

@@ -430,6 +430,15 @@ try {
     Done 'le désinstalleur recopié (~nsu*.tmp\Un.exe) a fini'
     if (Test-Path $Dossier) { Fail "après la désinstallation, le dossier $Dossier existe encore : $(Describe-Dir $Dossier) ; un crochet a peut-être abandonné (le code de sortie n'est pas lisible sur ce chemin)" }
     Done 'le dossier d''installation a disparu'
+    # Le dossier part avant la clé (raccourcis entre les deux), et un processus
+    # dont Windows ne donne pas encore le chemin échappe à Copied-Uninstallers :
+    # l'attente ci-dessus peut alors rendre la main dès que le dossier a disparu,
+    # la copie encore en marche (vu une fois sur la machine d'intégration). On
+    # laisse donc à la clé le temps de partir : un crochet qui abandonne la
+    # laisse pour de bon, et l'essai échoue quand même.
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Test-Path $UninstallKey) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    Wait-Uninstallers 30
     if (Test-Path $UninstallKey) { Fail "après la désinstallation, la clé $UninstallKey existe encore : le désinstalleur n'est pas allé au bout" }
     Done 'la clé de désinstallation a disparu'
     if ($null -ne (Get-RunValue)) { Fail "après la désinstallation, la valeur de démarrage existe encore : « $(Get-RunValue) »" }
@@ -457,6 +466,22 @@ try {
         Say "  dossier d'installation : $(Describe-Dir $Dossier)"
         Say "  valeur Run : $(if ($null -eq (Get-RunValue)) { 'absente' } else { Get-RunValue })"
         Say "  agents en marche : $((Agents-Running).Count)"
+        # De quoi dire si le désinstalleur a fini, s'est arrêté en route, ou tourne encore.
+        $copies = @(Copied-Uninstallers)
+        Say "  désinstalleurs recopiés en marche : $($copies.Count) $(($copies | ForEach-Object { "$($_.Id) $($_.Path)" }) -join ' ; ')"
+        $autres = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)setup|uninstall|^Un_|^Au_' })
+        Say "  installeurs ou désinstalleurs en marche : $(($autres | ForEach-Object { "$($_.Id) $($_.Name) $($_.Path)" }) -join ' ; ')"
+        foreach ($cle in $UninstallKey, 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Shinku', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Shinku') {
+            if (Test-Path $cle) {
+                $valeurs = Get-ItemProperty -Path $cle -ErrorAction SilentlyContinue
+                Say "  clé $cle : présente ($(($valeurs.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' ; '))"
+            } else { Say "  clé $cle : absente" }
+        }
+        foreach ($raccourci in (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Shinku.lnk'), (Join-Path $env:PUBLIC 'Desktop\Shinku.lnk')) {
+            Say "  raccourci $raccourci : $(if (Test-Path $raccourci) { 'présent' } else { 'absent' })"
+        }
+        Start-Sleep -Seconds 5
+        Say "  cinq secondes plus tard : clé de désinstallation $(if (Test-Path $UninstallKey) { 'présente' } else { 'absente' }), désinstalleurs recopiés en marche : $((Copied-Uninstallers).Count)"
     } catch { Say "  (diagnostic impossible : $($_.Exception.Message))" }
 } finally {
     try { Restore-Everything } catch { Say "remise en place incomplète : $($_.Exception.Message)"; $exitCode = 1 }
