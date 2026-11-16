@@ -79,25 +79,51 @@ test("les quatre hooks de Tauri sont dans habillage.nsh et appellent ceux de l'a
   }
 });
 
+/** Un fichier .nsh sans ses commentaires (lignes qui commencent par « ; »). */
+const code = (name: string): string => read(name).replace(/^\s*;.*$/gm, '');
+
+/** Les fichiers que « Supprimer aussi mes réglages » retire, par dossier. */
+const SETTINGS_FILES: Record<string, string[]> = {
+  $APPDATA: ['settings.json', 'settings.illisible.json', 'journal.json', 'settings.json.tmp', 'journal.json.tmp'],
+  $LOCALAPPDATA: ['game.json', 'game.json.tmp', 'startup.json', 'startup.json.tmp'],
+};
+
 test('« Supprimer aussi mes réglages » supprime fichier par fichier, jamais un dossier entier', () => {
   const body = macro('ShinkuDeleteSettings');
-  assert.doesNotMatch(body, /RMDir\s+\/r/i, 'RMDir /r suit les jonctions');
-  const deleted = Array.from(body.matchAll(/^\s*Delete "([^"]+)"$/gm), (match) => match[1] ?? '').sort();
-  assert.deepEqual(deleted, [
-    '$APPDATA\\Shinku\\journal.json',
-    '$APPDATA\\Shinku\\journal.json.tmp',
-    '$APPDATA\\Shinku\\settings.illisible.json',
-    '$APPDATA\\Shinku\\settings.json',
-    '$APPDATA\\Shinku\\settings.json.tmp',
-    '$LOCALAPPDATA\\Shinku\\game.json',
-    '$LOCALAPPDATA\\Shinku\\game.json.tmp',
-    '$LOCALAPPDATA\\Shinku\\startup.json',
-    '$LOCALAPPDATA\\Shinku\\startup.json.tmp',
-  ]);
-  // La suppression n'a lieu que case cochée et hors mise à jour.
+  // Aucun « RMDir /r », nulle part : il suit les jonctions, avec les droits d'administrateur.
+  for (const name of ['habillage.nsh', 'agent.nsh']) {
+    assert.doesNotMatch(code(name), /^\s*RMDir\b.*\s\/r\b/im, `${name} : RMDir /r`);
+  }
+  // Toute suppression de fichier de habillage.nsh est dans la macro, sans option ni joker.
+  const everywhere = Array.from(code('habillage.nsh').matchAll(/^\s*Delete\b(.*)$/gim), (match) => (match[1] ?? '').trim());
+  const expected = Object.entries(SETTINGS_FILES).flatMap(([root, files]) => files.map((file) => `"${root}\\Shinku\\${file}"`));
+  assert.deepEqual([...everywhere].sort(), [...expected].sort());
+  assert.equal(body.match(/^\s*Delete\b/gim)?.length, expected.length, 'un Delete est hors de ShinkuDeleteSettings');
+  // Chaque dossier : pas un point d'analyse (jonction, lien), ses fichiers un par un, puis RMDir sans /r.
+  const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const [root, files] of Object.entries(SETTINGS_FILES)) {
+    const folder = `${root}\\Shinku`;
+    const lines = [
+      `\${If} ${root} != ""`,
+      `System::Call 'kernel32::GetFileAttributesW(w "${folder}") i .r0'`,
+      '${If} $0 <> -1',
+      'IntOp $0 $0 & 0x400',
+      '${If} $0 = 0',
+      ...files.map((file) => `Delete "${folder}\\${file}"`),
+      `RMDir "${folder}"`,
+      '${EndIf}',
+      '${EndIf}',
+      '${EndIf}',
+    ];
+    const guarded = new RegExp(lines.map((line) => `^\\s*${literal(line)}\\n`).join('(?:\\s*\\n)*'), 'm');
+    assert.match(body, guarded, `${folder} : garde, fichiers ou RMDir inattendus`);
+  }
+  // La suppression n'a lieu qu'à un endroit : case cochée et hors mise à jour.
+  assert.equal(code('habillage.nsh').match(/!insertmacro\s+ShinkuDeleteSettings\b/g)?.length, 1);
+  assert.doesNotMatch(code('agent.nsh'), /ShinkuDeleteSettings/);
   assert.match(
     macro('NSIS_HOOK_POSTUNINSTALL'),
-    /\$\{If\} \$DeleteAppDataCheckboxState = 1\n\s*\$\{AndIf\} \$UpdateMode <> 1\n\s*!insertmacro ShinkuDeleteSettings\n\s*\$\{EndIf\}/,
+    /^\s*!insertmacro ShinkuAgentPostUninstall\n\s*\$\{If\} \$DeleteAppDataCheckboxState = 1\n\s*\$\{AndIf\} \$UpdateMode <> 1\n\s*!insertmacro ShinkuDeleteSettings\n\s*\$\{EndIf\}\s*$/,
   );
 });
 

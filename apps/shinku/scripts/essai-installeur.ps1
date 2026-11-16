@@ -9,8 +9,9 @@
 #
 # Trois étapes, à enchaîner dans cet ordre sur une machine jetable :
 #   installer     Bienvenue, Dossier, Installation, Terminé ; puis vérifie le
-#                 code de sortie, shinku.exe, uninstall.exe, l'absence de
-#                 raccourci sur le bureau et le raccourci du menu Démarrer ;
+#                 code de sortie, shinku.exe, shinku-agent.exe, uninstall.exe,
+#                 l'absence de raccourci sur le bureau et le raccourci du menu
+#                 Démarrer ;
 #   deja-installe relance l'installeur : la page « Shinku est déjà installé »,
 #                 puis Annuler. Rien ne doit changer sur le disque ;
 #   desinstaller  lance uninstall.exe, coche « Supprimer aussi mes réglages »

@@ -139,8 +139,10 @@
 ; page d'installation affichee jusqu'a un clic (MUI_FINISHPAGE_NOAUTOCLOSE,
 ; pour lire la liste des details en cas de probleme). Ici la liste est
 ; masquee : la page passe seule a la page Termine. Ce hook n'est atteint que si
-; l'installation a reussi ; en cas d'echec, la page reste affichee avec
-; l'en-tete "Installation interrompue".
+; la copie de Shinku a reussi ; en cas d'echec, la page reste affichee avec
+; l'en-tete "Installation interrompue". Seul cas ou la page passe sans que tout
+; soit en place : la copie de l'agent echoue et la personne choisit "Ignorer"
+; dans le message de NSIS ; Shinku marche alors sans mode jeu automatique.
 !macro NSIS_HOOK_POSTINSTALL
   !insertmacro ShinkuAgentPostInstall
   SetAutoClose true
@@ -162,8 +164,7 @@
 ; (SetShellVarContext current, comme le fait Tauri pour ses propres dossiers)
 ; et non ceux de "tous les utilisateurs", que l'installation pour toute la
 ; machine selectionne par defaut. L'agent passe avant ce bloc : il lit encore
-; ses fichiers pour tout remettre en place, et ne doit pas heriter du contexte
-; "current".
+; ses fichiers pour tout remettre en place.
 ;
 ; Pas de "RMDir /r" : il suit les jonctions, et le desinstalleur tourne avec
 ; les droits d'administrateur sur des dossiers que n'importe quel programme de

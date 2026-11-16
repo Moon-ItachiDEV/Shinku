@@ -1111,7 +1111,11 @@ d'analyse, supprime un par un les fichiers que Shinku y écrit
 est vide. Tout nouveau fichier écrit par Shinku dans ces dossiers doit être
 ajouté à la liste du hook. Supprimer `startup.json` fait oublier ce que Shinku
 avait coupé au démarrage : les entrées restent coupées, et se rallument depuis
-le Gestionnaire des tâches de Windows.
+le Gestionnaire des tâches de Windows. Supprimer `game.json` efface le journal
+du mode jeu : si l'agent n'a pas pu tout remettre en place en sortant (le mode
+d'alimentation, par exemple), la trace de l'état d'avant part avec lui, et une
+réinstallation ne le reprendra pas. Case décochée, le journal reste et sera
+repris.
 
 Le mode silencieux (`/S`) n'a pas de fenêtre : les fonctions d'interface n'y
 tournent pas, et aucun hook de section ne suppose une fenêtre. En mode passif
@@ -1156,13 +1160,16 @@ clique par `BM_CLICK`.
 
 - `installer` : Bienvenue, Dossier, Installation, Terminé (« Lancer Shinku » est
   décoché, le raccourci du bureau doit l'être déjà), puis code de sortie,
-  `shinku.exe`, `uninstall.exe`, pas de raccourci sur le bureau, un raccourci
-  dans le menu Démarrer ;
+  `shinku.exe`, `shinku-agent.exe`, `uninstall.exe`, pas de raccourci sur le
+  bureau, un raccourci dans le menu Démarrer ;
 - `deja-installe` : la page « Shinku est déjà installé », puis Annuler. Rien ne
   doit changer sur le disque ;
 - `desinstaller` : la page de désinstallation, la case « Supprimer aussi mes
-  réglages », puis le dossier d'installation et `%APPDATA%\Shinku` doivent
-  avoir disparu.
+  réglages », puis le dossier d'installation, `%APPDATA%\Shinku` et
+  `%LOCALAPPDATA%\Shinku` doivent avoir disparu. L'étape tourne en dernier, sur
+  ce que les essais d'avant y ont vraiment écrit (réglages de la fenêtre,
+  journal du grand vide) : un fichier oublié dans la liste du hook ferait
+  rester son dossier.
 
 Un aller-retour silencieux (`/S`) garde la preuve que ce mode marche. Les
 captures sont publiées (artefact `captures-de-l-installeur`) ; un lancement à
@@ -1264,7 +1271,8 @@ place ne tourne jamais tant qu'un désinstalleur recopié vit encore. La valeur
 `Run` est aussi effacée par le modèle de Tauri : son absence prouve l'état final,
 pas lequel des deux l'a effacée. Le contrôle « alimentation inchangée » est un
 garde-fou, pas une preuve : aucune partie n'a lieu. Shinku n'est plus installé
-ensuite, ce qui ne gêne rien : l'étape suivante publie l'installeur. Les
+ensuite : les deux étapes suivantes (l'aller-retour silencieux, puis la
+désinstallation à la main) le réinstallent elles-mêmes. Les
 réglages, le journal et la valeur `Run` d'origine sont remis comme pour l'essai
 précédent (`--quitter` d'abord, arrêt forcé ensuite). Il ne couvre pas un agent
 qui refuse de sortir (le `taskkill` puis la reprise du journal), un agent en
