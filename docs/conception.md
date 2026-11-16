@@ -1090,11 +1090,15 @@ par fichier ; si Windows répond oui mais que le chemin est encore là, c'est
 **La corbeille a-t-elle vraiment reçu l'élément ?** `shell::recycle` rend
 `Sent::InBin` ou `Sent::Destroyed` : le puits de l'opération note, à
 `PostDeleteItem`, si Windows a donné un élément de corbeille (absent : la
-suppression est définitive). Seule une réussite franche (`S_OK`) compte ; un
-autre code de réussite sans élément est un échec. `Destroyed` est un **constat
-après coup**, pas une barrière : le puits ne peut rien arrêter (le vrai Windows
-l'a montré : `PreDeleteItem` porte le drapeau « corbeille si possible » même
-quand elle est trop petite). Côté restes, après `Destroyed`, le disque tranche :
+suppression est définitive). Le code de réussite ne distingue rien : sur le vrai
+Windows (essai du 16 novembre 2026), un envoi réussi et une suppression
+définitive rendent le même (`0x00270008`). Sans élément de corbeille, le disque
+tranche : chemin absent, `Destroyed` ; encore là, un échec. `Destroyed` est un
+**constat après coup**, pas une barrière : le puits ne peut rien arrêter
+(`PreDeleteItem` porte le drapeau « corbeille si possible » même quand elle est
+trop petite, et Windows supprime alors pour de bon). Le drapeau
+`FOF_WANTNUKEWARNING` n'aide pas : même sans interface, il ouvre une fenêtre de
+Windows qui attend une réponse (essayé le même jour). Côté restes, après `Destroyed`, le disque tranche :
 absent avec certitude, `failed/destroyed` (sans octet compté) ; encore là,
 `failed` sans raison.
 
@@ -1117,9 +1121,8 @@ est retirée si elle est vide). Rien ne vide la corbeille de la machine sans
 désactivée, trop petite), sans la garde la corbeille désactivée est refusée par
 Windows, une corbeille de 8 Mio reçoit 1 Mio, et, sans la garde avec une
 corbeille trop petite, « disparu sans que la corbeille ait reçu quoi que ce soit
-» doit avoir donné `Destroyed` et « un élément de plus » `InBin`.
-`FOF_WANTNUKEWARNING` (processus fils, 30 s au plus) reste **observé** et
-imprimé (`FAIT :`).
+» doit avoir donné `Destroyed` et « un élément de plus » `InBin`. Leurs lignes
+`FAIT :` disent ce que Windows a répondu (drapeaux, code, élément de corbeille).
 
 ### Limites connues
 

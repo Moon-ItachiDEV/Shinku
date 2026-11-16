@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use windows::Win32::Foundation::{
-    E_ABORT, E_ACCESSDENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, S_OK,
+    E_ABORT, E_ACCESSDENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
 };
 use windows::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
@@ -545,20 +545,26 @@ fn send(path: &Path, extra: FILEOPERATION_FLAGS, seen: &Rc<Seen>) -> Result<Sent
     performed.map_err(failed)?;
     match seen.post.get() {
         Some((_, result, _)) if result.is_err() => Err(recycle_error(result)),
-        // Seule une réussite franche (`S_OK`) compte comme une suppression
-        // faite. Un autre code de réussite (« sauté », « déjà fait »…) sans
-        // élément de corbeille n'est ni `InBin` ni `Destroyed` : un échec.
-        Some((_, result, _)) if result != S_OK => Err(RecycleError::Failed(format!(
-            "Windows n'a pas dit avoir supprimé ({})",
-            describe(result)
-        ))),
-        // Réussi, avec un élément dans la corbeille : restaurable. Réussi sans :
-        // Windows a supprimé pour de bon (d'après la documentation de
-        // `PostDeleteItem`, l'élément de corbeille est alors nul).
-        Some((_, _, in_bin)) if aborted.is_ok_and(|aborted| !aborted.as_bool()) => {
-            Ok(if in_bin { Sent::InBin } else { Sent::Destroyed })
+        Some(_) if !aborted.is_ok_and(|aborted| !aborted.as_bool()) => {
+            Err(RecycleError::Failed("Windows a abandonné l'opération".to_owned()))
         }
-        _ => Err(RecycleError::Failed("Windows a abandonné l'opération".to_owned())),
+        // Le code de réussite ne distingue rien : sur le vrai Windows, un envoi
+        // réussi à la corbeille et une suppression définitive rendent le même
+        // (`0x00270008`, vu le 16 novembre 2026). Ce qui les sépare est
+        // l'élément de corbeille que reçoit `PostDeleteItem` : présent,
+        // l'élément est restaurable.
+        Some((_, _, true)) => Ok(Sent::InBin),
+        // Sans élément de corbeille : ou bien Windows a supprimé pour de bon,
+        // ou bien il n'a rien fait. Le disque tranche, et le doute est un échec.
+        Some((_, result, false)) => match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Sent::Destroyed),
+            _ => Err(RecycleError::Failed(format!(
+                "Windows dit avoir fini sans rien mettre à la corbeille, et l'élément est \
+                 toujours là ({})",
+                describe(result)
+            ))),
+        },
+        None => Err(RecycleError::Failed("Windows a abandonné l'opération".to_owned())),
     }
 }
 
@@ -624,7 +630,6 @@ pub(super) fn empty_bins(roots: Vec<String>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::UI::Shell::FOF_WANTNUKEWARNING;
 
     #[test]
     fn shell_refusals_are_told_apart() {
@@ -1125,80 +1130,6 @@ mod tests {
         if std::env::var_os("SHINKU_ESSAI_VIDE_LA_CORBEILLE").is_some() {
             let _ = empty_bins(vec![drive]);
         }
-    }
-
-    /// Le nom de l'essai fils de [`what_the_nuke_warning_flag_does_is_observed`].
-    const CHILD_TEST: &str = "platform::windows::shell::tests::the_child_observes_the_nuke_warning";
-    const CHILD_ENV: &str = "SHINKU_ESSAI_CORBEILLE_FILS";
-
-    /// L'essai fils : ne fait **rien** sans la variable qui lui donne un fichier.
-    /// Il demande à Windows seul, avec `FOF_WANTNUKEWARNING`, de supprimer ce
-    /// fichier, et dit ce qui s'est passé. Une fenêtre peut s'ouvrir et attendre :
-    /// c'est pourquoi il tourne dans un processus à part, que le parent tue.
-    #[test]
-    fn the_child_observes_the_nuke_warning() {
-        let Some(file) = std::env::var_os(CHILD_ENV) else { return };
-        let path = PathBuf::from(file);
-        let (sent, facts) = on_shell_thread({
-            let path = path.clone();
-            move || recycle_unchecked(&path, FILEOPERATION_FLAGS(FOF_WANTNUKEWARNING.0))
-        })
-        .expect("le fil du shell");
-        println!(
-            "{}",
-            fact_line("FOF_WANTNUKEWARNING, corbeille trop petite", &sent, &facts, path.exists())
-        );
-    }
-
-    /// Observe si `FOF_WANTNUKEWARNING` transforme la suppression définitive en
-    /// refus sans fenêtre. Une fenêtre pourrait s'ouvrir et attendre : l'essai
-    /// relance son propre exécutable (l'essai fils), l'attend 30 secondes au plus,
-    /// le tue s'il n'a pas fini, et imprime `FAIT :`. Il n'échoue jamais sur ce
-    /// qu'il observe, et remet la machine en état.
-    #[test]
-    fn what_the_nuke_warning_flag_does_is_observed() {
-        if std::env::var_os("SHINKU_ESSAI_CORBEILLE").is_none() {
-            return;
-        }
-        let _serial = bin_lock();
-        let workspace = tempfile::tempdir().unwrap();
-        let root = to_internal_path(workspace.path()).unwrap();
-        let (_drive, _bin, volume_key) = bin_keys(&root);
-        let _small = BinSetting::set(&volume_key, "MaxCapacity", 1);
-        let (file, _tree) = big_things(&root, "avertissement");
-        let log = root.join("fils.txt");
-        let output = std::fs::File::create(&log).unwrap();
-        let mut child =
-            std::process::Command::new(std::env::current_exe().expect("mon exécutable"))
-                .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
-                .env(CHILD_ENV, &file)
-                .stdout(output.try_clone().unwrap())
-                .stderr(output)
-                .spawn()
-                .expect("le fils se lance");
-        let started = std::time::Instant::now();
-        let mut killed = false;
-        let status = loop {
-            if let Some(status) = child.try_wait().expect("l'état du fils") {
-                break Some(status);
-            }
-            if started.elapsed() > std::time::Duration::from_secs(30) {
-                let _ = child.kill();
-                let _ = child.wait();
-                killed = true;
-                break None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        };
-        let said = std::fs::read_to_string(&log).unwrap_or_default();
-        for line in said.lines().filter(|line| line.contains("FAIT :")) {
-            println!("{line}");
-        }
-        println!(
-            "FAIT : FOF_WANTNUKEWARNING : fils terminé : {status:?} ; fenêtre en attente tuée au \
-             bout de 30 s : {killed} ; fichier encore sur le disque : {}",
-            file.exists()
-        );
     }
 
     #[test]

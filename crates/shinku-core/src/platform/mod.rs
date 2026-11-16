@@ -191,9 +191,9 @@ impl fmt::Display for RecycleError {
 
 impl std::error::Error for RecycleError {}
 
-/// Où est parti un élément que Windows a accepté de supprimer. Seule une
-/// réussite franche du shell (`S_OK`) donne l'un ou l'autre ; tout le reste est
-/// une erreur.
+/// Où est parti un élément que Windows a accepté de supprimer. Le code de
+/// réussite du shell ne le dit pas (il est le même dans les deux cas) : c'est
+/// l'élément de corbeille rendu par Windows, puis le disque, qui tranchent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sent {
     /// Dans la corbeille : l'élément y est, restaurable.
