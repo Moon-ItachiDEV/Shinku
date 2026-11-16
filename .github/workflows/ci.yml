@@ -161,11 +161,12 @@ jobs:
         working-directory: apps/shinku
         run: npm ci
 
-      # Compile l'interface, puis l'agent du mode jeu (beforeBuildCommand, dans
-      # target/release), puis shinku.exe en version finale, puis l'installeur
-      # NSIS, qui embarque l'agent par ses crochets (installer-hooks.nsh, puis
-      # installeur/agent.nsh). Non signé : la signature vient avant la version
-      # publique.
+      # Compile l'interface, puis l'agent du mode jeu et l'assistant élevé du
+      # Démarrage (beforeBuildCommand, dans target/release), puis shinku.exe en
+      # version finale, puis l'installeur NSIS, qui embarque l'agent et
+      # l'assistant par ses crochets (installer-hooks.nsh, puis
+      # installeur/agent.nsh et installeur/helper.nsh). Non signé : la signature
+      # vient avant la version publique.
       - name: Installeur
         working-directory: apps/shinku
         run: npm run tauri build
@@ -199,7 +200,7 @@ jobs:
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-desinstallation.ps1 -Preparer
 
-      # Les trois essais qui suivent tournent chacun même si un essai d'avant a
+      # Les essais qui suivent tournent chacun même si un essai d'avant a
       # échoué (il suffit que Shinku soit installé) : un passage dit ainsi tout
       # ce qu'il peut dire. Le travail échoue quand même si l'un d'eux échoue.
       - name: Essai de la fenêtre
@@ -217,6 +218,36 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-mode-jeu.ps1 -Agent "$env:ProgramFiles\Shinku\shinku-agent.exe"
+
+      # L'assistant élevé du Démarrage, installé, sur le vrai Windows. D'abord le
+      # lanceur de shinku.exe (essai Rust activé par la variable : il appelle le
+      # vrai lanceur sur l'assistant installé, avec un nom qui n'existe pas :
+      # code 4, aucune fenêtre ; sur une copie dans %TEMP% : refus avant tout
+      # lancement). Sa sortie est montrée : les lignes « FAIT : » disent ce que
+      # Windows a fait.
+      - name: Essai du lanceur de l'assistant
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          $env:SHINKU_ESSAI_ASSISTANT = Join-Path $env:ProgramFiles 'Shinku\shinku-helper.exe'
+          cargo test --locked -p shinku-core --lib platform::windows::launcher::tests -- --nocapture --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Puis l'assistant lui-même (D9, point 2) : manifeste, demandes refusées,
+      # la boîte et ses réponses, l'essai négatif depuis un processus sans droits,
+      # l'échéance de deux minutes (le script dure un peu plus de deux minutes).
+      # Il travaille sur « Essai Shinku PC », posée plus haut, et la remet dans
+      # son état d'avant.
+      - name: Essai de l'assistant élevé
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-assistant.ps1
+
+      # Quoi qu'il arrive : plus aucun assistant en marche, et la seconde entrée
+      # d'essai de l'échéance est retirée.
+      - name: Remettre la machine d'essai en place (assistant)
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-assistant.ps1 -Nettoyer
 
       # Quoi qu'il arrive : le mode d'alimentation, les réglages et le journal
       # d'origine sont remis, et ce qui reste de l'essai est arrêté.
