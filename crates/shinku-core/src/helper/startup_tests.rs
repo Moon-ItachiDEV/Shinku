@@ -18,6 +18,7 @@ struct Fake {
     answer: Cell<bool>,
     write_fails: Cell<bool>,
     write_ignored: Cell<bool>,
+    write_altered: Cell<bool>,
     during_question: RefCell<Option<Hook>>,
     log: RefCell<Vec<String>>,
     now: u64,
@@ -35,6 +36,7 @@ impl Fake {
             answer: Cell::new(true),
             write_fails: Cell::new(false),
             write_ignored: Cell::new(false),
+            write_altered: Cell::new(false),
             during_question: RefCell::new(None),
             log: RefCell::new(Vec::new()),
             now: NOW,
@@ -107,7 +109,10 @@ impl MachineStartup for Fake {
         if self.write_fails.get() {
             return Err(io::Error::other("refusé"));
         }
-        if !self.write_ignored.get() {
+        if self.write_altered.get() {
+            // Un autre programme est passé derrière : d'autres octets, même type.
+            self.set_bytes(place, name, &[3, 0, 0, 0, 9, 9, 9, 9, 9, 9, 9, 9]);
+        } else if !self.write_ignored.get() {
             self.set_bytes(place, name, &bytes);
         }
         Ok(())
@@ -215,11 +220,13 @@ fn the_name_must_exist_exactly_once_with_the_exact_units() {
     // Deux noms égaux (dossier sensible à la casse n'en donne pas, mais un hôte pourrait).
     let twice = base().with_entry(StartupSlot::Run, "Essai");
     assert_eq!(cut(&twice), 4);
-    // Deux noms qui ne diffèrent que par la casse : celui de la demande reste seul.
+    // Deux noms qui ne diffèrent que par la casse : la valeur d'approbation ne
+    // tient pas compte de la casse, donc rien n'est réglé (code 4).
     let both = base().with_entry(StartupSlot::Run, "ESSAI");
-    assert_eq!(cut(&both), 0);
-    assert_eq!(both.approval_now(StartupSlot::Run, "ESSAI"), None, "l'autre n'est pas touché");
-    for fake in [&missing, &other_case, &other_place, &twice] {
+    assert_eq!(cut(&both), 4);
+    let accented = base().with_entry(StartupSlot::Run, "essai");
+    assert_eq!(cut(&accented), 4);
+    for fake in [&missing, &other_case, &other_place, &twice, &both, &accented] {
         assert!(fake.writes().is_empty());
     }
 }
@@ -247,12 +254,12 @@ fn an_unreadable_approval_is_code_7_and_nothing_is_written() {
 }
 
 #[test]
-fn already_in_the_requested_state_is_code_1_without_a_question_or_a_write() {
+fn already_in_the_requested_state_is_code_9_without_a_question_or_a_write() {
     let active = base();
-    assert_eq!(run(&active, &words("remettre", "run", "Essai")), 1);
+    assert_eq!(run(&active, &words("remettre", "run", "Essai")), 9);
     let cut_already = base();
     cut_already.set_bytes(StartupSlot::Run, "Essai", &cut_bytes(NOW));
-    assert_eq!(cut(&cut_already), 1);
+    assert_eq!(cut(&cut_already), 9);
     for fake in [&active, &cut_already] {
         assert!(
             fake.log
@@ -300,11 +307,11 @@ fn the_approval_changed_during_the_question_is_checked_again() {
             .insert((StartupSlot::Run, "Essai".to_owned()), Err(io::Error::other("x")));
     }));
     assert_eq!(cut(&unreadable), 7);
-    // Déjà coupée par quelqu'un d'autre pendant ce temps : code 1, rien d'écrit.
+    // Déjà coupée par quelqu'un d'autre pendant ce temps : code 9, rien d'écrit.
     let already = base();
     *already.during_question.borrow_mut() =
         Some(Box::new(|fake| fake.set_bytes(StartupSlot::Run, "Essai", &cut_bytes(NOW))));
-    assert_eq!(cut(&already), 1);
+    assert_eq!(cut(&already), 9);
     assert!(unreadable.writes().is_empty() && already.writes().is_empty());
 }
 
@@ -317,6 +324,14 @@ fn a_failed_or_ignored_write_is_code_8() {
     ignored.write_ignored.set(true);
     assert_eq!(cut(&ignored), 8);
     assert_eq!(ignored.writes().len(), 1);
+    // Une valeur relue qui n'est pas celle qu'on a écrite : 8, pas 0.
+    let altered = base();
+    altered.write_altered.set(true);
+    assert_eq!(cut(&altered), 8);
+    let restore_altered = base();
+    restore_altered.set_bytes(StartupSlot::Run, "Essai", &cut_bytes(NOW));
+    restore_altered.write_altered.set(true);
+    assert_eq!(run(&restore_altered, &words("remettre", "run", "Essai")), 8);
 }
 
 #[test]
@@ -399,7 +414,6 @@ fn the_deadline_has_one_winner_among_many_threads() {
 fn the_exit_codes_are_the_documented_numbers() {
     let numbers: Vec<u8> = [
         Code::Done,
-        Code::Already,
         Code::Refused,
         Code::Cancelled,
         Code::NotFound,
@@ -407,9 +421,22 @@ fn the_exit_codes_are_the_documented_numbers() {
         Code::UnsafeLocation,
         Code::Unreadable,
         Code::Failed,
+        Code::Already,
     ]
     .iter()
     .map(|code| *code as u8)
     .collect();
-    assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(numbers, [0, 2, 3, 4, 5, 6, 7, 8, 9]);
+}
+
+#[test]
+fn an_answer_before_the_deadline_counts_and_one_after_it_does_not() {
+    let early = Deadline::new();
+    assert_eq!(settle(&early, true), Some(true));
+    let refused = Deadline::new();
+    assert_eq!(settle(&refused, false), Some(false));
+    let late = Deadline::new();
+    assert!(late.expire());
+    assert_eq!(settle(&late, true), None, "une réponse tardive ne vaut rien");
+    assert!(late.expired());
 }

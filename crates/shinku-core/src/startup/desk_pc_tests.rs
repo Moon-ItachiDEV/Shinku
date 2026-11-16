@@ -2,6 +2,7 @@
 //! `Busy` pendant l'attente, la vue qui répond pendant l'attente, et
 //! `startup.json` d'après la valeur relue.
 
+use std::sync::Mutex;
 use std::sync::mpsc::{channel, sync_channel};
 
 use super::*;
@@ -172,7 +173,9 @@ fn every_outcome_of_the_helper_has_its_refusal_and_the_view_is_reread() {
         (HelperRun::Exited(5), Some(StartupRefusal::NeedsAdmin)),
         (HelperRun::Exited(4), Some(StartupRefusal::UnknownEntry)),
         (HelperRun::Exited(0), None),
-        (HelperRun::Exited(1), None),
+        (HelperRun::Exited(9), None),
+        // 1 : le code d'un assistant tué, jamais rendu par lui.
+        (HelperRun::Exited(1), Some(StartupRefusal::Failed)),
         (HelperRun::Exited(2), Some(StartupRefusal::Failed)),
         (HelperRun::Exited(6), Some(StartupRefusal::Failed)),
         (HelperRun::Exited(7), Some(StartupRefusal::Failed)),
@@ -211,6 +214,32 @@ fn a_helper_that_says_zero_without_changing_anything_leaves_no_line() {
         "la relecture dit vrai"
     );
     assert!(store.load().cut.is_empty());
+    // Le fichier brut ne garde rien non plus : une ligne à `FILETIME` nul serait
+    // seulement écartée au chargement, ce qui cacherait l'erreur.
+    let raw = std::fs::read_to_string(store.path()).unwrap_or_default();
+    assert!(!raw.contains("Essai Shinku PC"), "{raw}");
+}
+
+#[test]
+fn pending_stays_until_the_machine_is_reread() {
+    let Fixture { desk, host, helper, .. } = fixture();
+    honest(&host, &helper);
+    let id = id_of(&desk, "Essai Shinku PC");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    // La relecture demande l'accès à l'assistant : on regarde `pending` à ce
+    // moment, une fois l'assistant lancé.
+    let (watched, spy, weak) = (helper.clone(), seen.clone(), Arc::downgrade(&desk));
+    helper.on_access(move || {
+        if let (false, Some(desk)) = (watched.runs().is_empty(), weak.upgrade()) {
+            spy.lock().unwrap().push(desk.pending());
+        }
+    });
+    let _ = desk.set(&id, false);
+    let seen = seen.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "la relecture a eu lieu");
+    // La première lecture est la relecture ; la dernière, la vue rendue, sans `pending`.
+    assert!(seen[0].is_some(), "pending retiré avant la relecture : {seen:?}");
+    assert_eq!(desk.view().pending, None);
 }
 
 #[test]

@@ -297,9 +297,10 @@ pub fn machine_startup() -> Option<Box<dyn crate::helper::startup::MachineStartu
 }
 
 /// Durcit le processus de l'assistant (bibliothèques depuis `System32` seulement).
-/// À appeler **avant tout** autre chose.
-pub fn harden_helper_process() {
-    imp::harden_helper_process();
+/// À appeler **avant tout** autre chose. Faux si Windows refuse : l'assistant
+/// sort alors avec le code 8.
+pub fn harden_helper_process() -> bool {
+    imp::harden_helper_process()
 }
 
 /// Les arguments de la ligne de commande de l'assistant, sans le nom du programme.

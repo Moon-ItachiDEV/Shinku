@@ -16,7 +16,9 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     // Avant tout : ne charger de bibliothèque que depuis System32.
-    shinku_core::platform::harden_helper_process();
+    if !shinku_core::platform::harden_helper_process() {
+        return ExitCode::from(shinku_core::helper::startup::Code::Failed as u8);
+    }
     let arguments = shinku_core::platform::helper_arguments();
     ExitCode::from(shinku_core::helper::run_command_line(&arguments))
 }

@@ -3,10 +3,13 @@
 //! `shinku.exe` ne s'élève jamais lui-même. Avant de lancer, il refait la
 //! vérification d'emplacement de l'assistant ([`open_helper`]) : le fichier est
 //! `shinku-helper.exe` dans le dossier de `shinku.exe`, sûr, et son dossier est
-//! l'enfant direct de `Program Files`. **La poignée du fichier reste ouverte, en
-//! partage de lecture seule** (ni écriture ni suppression), du contrôle jusqu'au
-//! retour de `ShellExecuteExW` : personne ne peut le remplacer entre les deux.
-//! C'est le **chemin final vérifié** qui est lancé.
+//! l'enfant direct de `Program Files`. **La poignée du fichier reste ouverte**
+//! (accès aux données, partage en lecture seule), du contrôle jusqu'au retour de
+//! `ShellExecuteExW` : personne ne peut réécrire ni supprimer le fichier entre
+//! les deux. C'est un garde-fou contre nos erreurs, pas une barrière (voir
+//! `crate::helper`, section 0). C'est le **chemin final vérifié** qui est lancé.
+//! Que la poignée tienne jusqu'au retour de `ShellExecuteExW` n'est tenu que par
+//! relecture : aucun essai ne le voit.
 //!
 //! Le lancement : verbe `runas`, la fenêtre de Shinku en propriétaire (pour que
 //! l'accord de Windows s'ouvre devant), dossier de travail `System32`,
@@ -105,6 +108,8 @@ fn launch(
     wait: Duration,
     kept: Option<security::Opened>,
 ) -> HelperRun {
+    // `ShellExecuteExW` demande COM sur le fil appelant (comme la Désinstallation).
+    let _com = super::startup::ComScope::enter();
     let verb = HSTRING::from("runas");
     let file = HSTRING::from(file);
     let parameters = HSTRING::from(parameters);

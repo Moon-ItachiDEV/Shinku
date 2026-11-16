@@ -331,8 +331,8 @@ pub(super) fn machine_startup() -> Option<Box<dyn MachineStartup>> {
 }
 
 /// Durcit le processus de l'assistant : bibliothèques depuis `System32` seulement.
-pub(super) fn harden_helper_process() {
-    helper_host::harden();
+pub(super) fn harden_helper_process() -> bool {
+    helper_host::harden()
 }
 
 /// Les arguments de la ligne de commande de l'assistant, sans le nom du programme.

@@ -200,12 +200,13 @@ impl StartupDesk {
         // 2. L'attente : `pending` posé, aucun verrou de lecture tenu.
         *self.pending.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(StartupPending { id, enabled });
-        let outcome = {
-            let _pending = PendingGuard(&self.pending);
-            self.helper.run(&request.to_words(), owner)
-        };
+        let pending = PendingGuard(&self.pending);
+        let outcome = self.helper.run(&request.to_words(), owner);
 
         // 3. La relecture dit l'état ; `startup.json` suit la valeur relue.
+        // `pending` reste posé jusqu'à la fin de cette étape (et il est retiré
+        // quoi qu'il arrive, même sur panique) : la page ne cesse pas de relire
+        // avant que la vue dise la vérité.
         let _turn = self.turn();
         let (_, rules) = self.rules();
         let again = startup::reread(self.host.as_ref(), self.own.as_deref(), id, rules);
@@ -216,11 +217,13 @@ impl StartupDesk {
                 self.remember(id, &entry.name, enabled, entry.file_time);
             }
         }
+        drop(pending);
         match outcome {
             HelperRun::Cancelled | HelperRun::Exited(3) => Err(StartupRefusal::Cancelled),
             HelperRun::Exited(5) => Err(StartupRefusal::NeedsAdmin),
-            HelperRun::Exited(0 | 1) => Ok(self.read()),
+            HelperRun::Exited(0 | 9) => Ok(self.read()),
             HelperRun::Exited(4) => Err(StartupRefusal::UnknownEntry),
+            // Dont le code 1, celui d'un assistant tué : jamais rendu par lui.
             HelperRun::Exited(_) | HelperRun::TimedOut | HelperRun::NotStarted => {
                 Err(StartupRefusal::Failed)
             }

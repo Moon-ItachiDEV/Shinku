@@ -5,9 +5,11 @@
 //! | --- | --- |
 //! | assistant absent ou emplacement non sûr | `unavailable` |
 //! | jeton limité d'une paire (`TokenElevationTypeLimited`) | `consent` |
-//! | jeton complet, ou jeton simple avec Administrateurs activé | `direct` (Windows ne demandera rien) |
-//! | jeton simple sans droits, `EnableLUA` = 0 ou `ConsentPromptBehaviorUser` = 0 | `unavailable` |
-//! | jeton simple sans droits, sinon | `password` |
+//! | Administrateurs activé dans le jeton (quel que soit le type) | `direct` (Windows ne demandera rien) |
+//! | sinon, `EnableLUA` = 0 ou `ConsentPromptBehaviorUser` = 0 | `unavailable` |
+//! | sinon (y compris un jeton « complet » filtré, sans Administrateurs) | `password` |
+//!
+//! L'ordre est celui du tableau.
 
 use serde::Serialize;
 
@@ -56,15 +58,16 @@ pub fn decide(facts: &AccessFacts) -> PcAccess {
     if !facts.helper_safe {
         return PcAccess::Unavailable;
     }
-    match facts.elevation {
-        ElevationType::Limited => PcAccess::Consent,
-        ElevationType::Full => PcAccess::Direct,
-        ElevationType::Default if facts.admin_enabled => PcAccess::Direct,
-        ElevationType::Default if facts.enable_lua == Some(0) || facts.consent_user == Some(0) => {
-            PcAccess::Unavailable
-        }
-        ElevationType::Default => PcAccess::Password,
+    if facts.elevation == ElevationType::Limited {
+        return PcAccess::Consent;
     }
+    if facts.admin_enabled {
+        return PcAccess::Direct;
+    }
+    if facts.enable_lua == Some(0) || facts.consent_user == Some(0) {
+        return PcAccess::Unavailable;
+    }
+    PcAccess::Password
 }
 
 #[cfg(test)]
@@ -102,10 +105,19 @@ mod tests {
     }
 
     #[test]
-    fn a_full_token_or_an_enabled_administrators_group_is_direct() {
+    fn an_enabled_administrators_group_is_direct_and_a_full_token_without_it_is_not() {
         assert_eq!(decide(&facts(ElevationType::Full, true)), PcAccess::Direct);
-        assert_eq!(decide(&facts(ElevationType::Full, false)), PcAccess::Direct);
         assert_eq!(decide(&facts(ElevationType::Default, true)), PcAccess::Direct);
+        // Un jeton « complet » filtré (Administrateurs en refus seul) : Windows
+        // demandera un mot de passe, pas « rien ».
+        assert_eq!(decide(&facts(ElevationType::Full, false)), PcAccess::Password);
+        let mut no_uac = facts(ElevationType::Full, false);
+        no_uac.enable_lua = Some(0);
+        assert_eq!(decide(&no_uac), PcAccess::Unavailable);
+        // Administrateurs activé passe avant EnableLUA.
+        let mut admin = facts(ElevationType::Default, true);
+        admin.enable_lua = Some(0);
+        assert_eq!(decide(&admin), PcAccess::Direct);
     }
 
     #[test]

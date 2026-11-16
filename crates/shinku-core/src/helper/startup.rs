@@ -7,9 +7,11 @@
 //! des variables et sonde des fichiers). Aucune méthode du trait ne touche au
 //! compte (`HKCU`) : les seules places sont celles du PC ([`StartupSlot`]).
 //!
-//! Codes de sortie ([`Code`]) : 0 fait, 1 déjà dans cet état, 2 demande
-//! refusée, 3 annulé (ou échéance), 4 entrée introuvable, 5 pas de droits,
-//! 6 emplacement non sûr, 7 réglage illisible, 8 échec.
+//! Codes de sortie ([`Code`]) : 0 fait, 2 demande refusée, 3 annulé (ou
+//! échéance), 4 entrée introuvable (ou ambiguë), 5 pas de droits, 6 emplacement
+//! non sûr, 7 réglage illisible, 8 échec, 9 déjà dans cet état. Le code 1 n'est
+//! jamais rendu : c'est celui d'un processus tué (`taskkill /F`), et le guichet
+//! le range avec les codes inconnus.
 //!
 //! L'assistant n'écrit rien d'autre que la valeur d'approbation : ni journal,
 //! ni fichier, ni autre clé.
@@ -34,8 +36,6 @@ pub const QUESTION_DEADLINE: Duration = Duration::from_secs(120);
 pub enum Code {
     /// Fait.
     Done = 0,
-    /// Déjà dans cet état : rien n'est écrit.
-    Already = 1,
     /// Demande refusée.
     Refused = 2,
     /// Annulé, ou échéance passée.
@@ -50,6 +50,8 @@ pub enum Code {
     Unreadable = 7,
     /// Échec.
     Failed = 8,
+    /// Déjà dans cet état : rien n'est écrit. (Pas 1 : voir l'en-tête.)
+    Already = 9,
 }
 
 /// Les noms d'une place, tels que l'hôte les énumère.
@@ -194,7 +196,26 @@ fn find(host: &dyn MachineStartup, request: &StartupRequest) -> Result<(), Code>
         .iter()
         .filter(|name| name.encode_utf16().eq(request.name.encode_utf16()))
         .count();
-    if equal == 1 { Ok(()) } else { Err(Code::NotFound) }
+    if equal != 1 {
+        return Err(Code::NotFound);
+    }
+    // Un autre nom qui ne diffère que par la casse : la valeur d'approbation est
+    // un nom de valeur de registre, qui ne tient pas compte de la casse. Couper
+    // l'un couperait l'autre sans que la boîte le dise. Comparaison large exprès.
+    let wanted = &request.name;
+    let confusable = names.names.iter().any(|name| {
+        name != wanted
+            && (name.to_lowercase() == wanted.to_lowercase()
+                || name.to_uppercase() == wanted.to_uppercase())
+    });
+    if confusable { Err(Code::NotFound) } else { Ok(()) }
+}
+
+/// Ce que vaut la réponse de la boîte : `None` si l'échéance a gagné (la
+/// minuterie fait sortir le processus, la réponse tardive ne vaut rien),
+/// sinon `Some(accepté)`. C'est ici, et nulle part ailleurs, que l'hôte décide.
+pub fn settle(deadline: &Deadline, accepted: bool) -> Option<bool> {
+    deadline.answer().then_some(accepted)
 }
 
 /// L'état actuel, lu strictement ; `Err` si illisible ou déjà dans l'état voulu.

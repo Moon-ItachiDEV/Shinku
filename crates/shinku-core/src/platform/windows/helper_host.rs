@@ -8,26 +8,48 @@
 //! d'approbation ; il n'ouvre aucun fichier pour en lire le contenu et ne
 //! développe aucune variable.
 //!
-//! **Liste fermée des fonctions de Windows** permises ici (et dans
-//! [`super::security`], qui lui sert) : `SetDefaultDllDirectories`,
-//! `CheckTokenMembership` et de quoi construire le SID, `GetModuleFileNameW`
-//! (par `current_exe`), `CreateFileW` (pour une poignée : chemin final et
-//! descripteur de sécurité, jamais de lecture de contenu),
-//! `GetFinalPathNameByHandleW`, `GetSecurityInfo`, `SHGetKnownFolderPath`,
-//! `RegOpenKeyExW`, `RegEnumValueW` (sans données), `RegQueryValueExW` (la seule
-//! approbation), `RegCreateKeyExW` et `RegSetValueExW` (la seule approbation),
-//! `FindFirstFileExW` / `FindNextFileW`, `GetSystemTimeAsFileTime`,
-//! `MessageBoxW`, `ExitProcess` (par `process::exit`), et la fermeture des
-//! poignées. Rien d'autre.
+//! **Liste fermée des fonctions de Windows** : c'est **cette liste** qui fait foi
+//! (la conception et la spec y renvoient). Ce que le processus élevé appelle,
+//! ici et dans [`super::security`] et `super::startup::known_folder` qui lui
+//! servent :
+//!
+//! - durcissement : `SetDefaultDllDirectories` ;
+//! - jeton : `CheckTokenMembership`, `CreateWellKnownSid` ;
+//! - son propre chemin : `GetModuleFileNameW` (par `current_exe`) ;
+//! - fichiers et dossiers, **sans jamais lire un contenu** : `CreateFileW`
+//!   (`READ_CONTROL`, attributs ; `FILE_READ_DATA` pour le seul fichier de
+//!   l'assistant, sans `ReadFile`), `GetFileInformationByHandle`,
+//!   `GetFinalPathNameByHandleW`, `FindFirstFileExW`, `FindNextFileW` ;
+//! - droits : `GetSecurityInfo`, `GetAclInformation`, `GetAce`, `IsValidSid`,
+//!   `GetSidIdentifierAuthority`, `GetSidSubAuthorityCount`, `GetSidSubAuthority`,
+//!   `LocalFree` ;
+//! - dossiers connus : `SHGetKnownFolderPath`, `CoTaskMemFree` ;
+//! - registre, **`HKEY_LOCAL_MACHINE` seulement** : `RegOpenKeyExW`,
+//!   `RegQueryInfoKeyW`, `RegEnumValueW` (sans données), `RegQueryValueExW` (la
+//!   seule approbation), `RegCreateKeyExW` et `RegSetValueExW` (la seule
+//!   approbation) ;
+//! - heure : `GetSystemTimeAsFileTime` ;
+//! - la boîte : `MessageBoxW` ; l'échéance : `CreateThread` et `Sleep` (par
+//!   `std::thread`), `ExitProcess` (par `process::exit`) ;
+//! - fermeture : `CloseHandle`, `RegCloseKey`, `FindClose`.
+//!
+//! Rien d'autre. Côté `shinku.exe` seulement (jamais dans l'assistant) :
+//! `ShellExecuteExW`, `WaitForSingleObject`, `GetExitCodeProcess`,
+//! `GetSystemDirectoryW`, `GetCurrentProcess`, `OpenProcessToken`,
+//! `GetTokenInformation`, `CoInitializeEx` et `CoUninitialize`.
+//!
+//! Le processus élevé ne lit pas `HKCU` **par son propre code** ; `user32` et le
+//! cadre de saisie, eux, peuvent y lire ce qu'ils veulent (c'est une limite
+//! connue, voir la conception).
 #![allow(unsafe_code)]
 
 use std::ffi::OsString;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use windows::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS,
+    ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
 };
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ,
@@ -38,9 +60,10 @@ use windows::Win32::System::LibraryLoader::{
     LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
 };
 use windows::Win32::System::Registry::{
-    KEY_READ, KEY_SET_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_BINARY, REG_EXPAND_SZ,
-    REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE, RegCreateKeyExW, RegEnumValueW,
-    RegQueryInfoKeyW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    REG_BINARY, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
+    RegCreateKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW, RegQueryValueExW,
+    RegSetValueExW,
 };
 use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 use windows::Win32::UI::Shell::{
@@ -52,10 +75,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 
 use super::security::{self, Opened};
-use super::startup::{Hive, Key, known_folder, open_key, os_error};
+use super::startup::{Key, known_folder, os_error};
 use crate::helper::location::{self, Placed};
 use crate::helper::request::StartupSlot;
-use crate::helper::startup::{Deadline, MachineStartup, Names, NamesError, QUESTION_DEADLINE};
+use crate::helper::startup::{
+    Deadline, MachineStartup, Names, NamesError, QUESTION_DEADLINE, settle,
+};
 use crate::startup::MAX_ENTRIES;
 use crate::startup::MAX_NAME;
 use crate::startup::host::RawApproval;
@@ -73,18 +98,26 @@ const SHARE_ALL: FILE_SHARE_MODE =
     FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0);
 
 /// Durcit le processus : ne charger de bibliothèque que depuis `System32`. À
-/// appeler **avant tout** autre chose.
-pub(crate) fn harden() {
+/// appeler **avant tout** autre chose. Faux si Windows refuse : l'assistant
+/// sort alors avec le code 8.
+pub(crate) fn harden() -> bool {
     // SAFETY: l'appel ne prend qu'un drapeau ; il restreint les dossiers où ce
     // processus cherchera les bibliothèques qu'il chargera ensuite.
-    let _ = unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) };
+    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) }.is_ok()
 }
 
-/// Le dossier Démarrage commun, s'il est sûr (propriétaire et droits).
-pub(super) fn common_folder() -> Option<PathBuf> {
-    let folder = known_folder(&FOLDERID_CommonStartup)?;
-    let opened = security::open_object(&folder, SHARE_ALL)?;
-    (!opened.placed.reparse && location::is_safe(&opened.placed.security)).then_some(folder)
+/// Le dossier Démarrage commun de Windows, **s'il est sûr** (propriétaire et
+/// droits) : la poignée est rendue ; son chemin final est celui qu'on énumère.
+pub(super) fn common_folder() -> Option<Opened> {
+    checked_common_folder(&known_folder(&FOLDERID_CommonStartup)?)
+}
+
+/// Ce dossier est-il sûr pour y lire des noms ? Ouvert sans suivre de lien,
+/// propriétaire et droits relus par la même décision que l'emplacement de
+/// l'assistant. Le chemin est donné : on l'essaie sur un dossier temporaire.
+fn checked_common_folder(folder: &Path) -> Option<Opened> {
+    let opened = security::open_object(folder, SHARE_ALL, false)?;
+    (!opened.placed.reparse && location::is_safe(&opened.placed.security)).then_some(opened)
 }
 
 /// Les dossiers `Program Files` que Windows donne, ouverts.
@@ -92,7 +125,7 @@ fn program_files() -> Vec<Placed> {
     [&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX64]
         .into_iter()
         .filter_map(known_folder)
-        .filter_map(|folder| security::open_object(&folder, SHARE_ALL))
+        .filter_map(|folder| security::open_object(&folder, SHARE_ALL, false))
         .map(|opened| opened.placed)
         .collect()
 }
@@ -100,13 +133,32 @@ fn program_files() -> Vec<Placed> {
 /// Ouvre ce fichier comme assistant, **si** son emplacement est sûr (D5) : le
 /// fichier s'appelle `shinku-helper.exe`, n'est pas un lien, est sûr ; son
 /// dossier est l'enfant direct de `Program Files` ; ce dossier et `Program
-/// Files` sont sûrs. La poignée du fichier est rendue : celui qui la garde
-/// ouverte (partage en lecture seule) empêche qu'on le remplace.
+/// Files` sont sûrs. La poignée du fichier est rendue (accès aux données et
+/// partage en lecture seule) : celui qui la garde ouverte empêche qu'on réécrive
+/// ou supprime le fichier, un garde-fou contre nos erreurs, pas une barrière.
 pub(super) fn open_helper(path: &Path) -> Option<Opened> {
-    let file = security::open_object(path, FILE_SHARE_READ)?;
+    let file = security::open_object(path, FILE_SHARE_READ, true)?;
     let folder_path = Path::new(&file.placed.path).parent()?.to_path_buf();
-    let folder = security::open_object(&folder_path, SHARE_ALL)?;
+    let folder = security::open_object(&folder_path, SHARE_ALL, false)?;
     location::helper_is_well_placed(&file.placed, &folder.placed, &program_files()).then_some(file)
+}
+
+/// Ouvre une clé du PC (`HKEY_LOCAL_MACHINE`, et nulle autre ruche). `None` si
+/// elle n'existe pas.
+fn open_machine_key(path: &str, access: REG_SAM_FLAGS) -> io::Result<Option<Key>> {
+    let mut key = HKEY::default();
+    // SAFETY: `path` est une chaîne terminée par zéro, valide pendant l'appel ;
+    // `key` est une variable locale où Windows écrit la poignée.
+    let result = unsafe {
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, &HSTRING::from(path), None, access, &raw mut key)
+    };
+    if result == ERROR_SUCCESS {
+        Ok(Some(Key(key)))
+    } else if result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND {
+        Ok(None)
+    } else {
+        Err(os_error(result))
+    }
 }
 
 /// La machine de l'assistant.
@@ -124,9 +176,15 @@ fn approved_key(place: StartupSlot) -> String {
 
 /// Les noms des valeurs texte d'une clé `Run` du PC, dans la vue demandée.
 fn run_names(view: u32) -> io::Result<Names> {
-    let Some(key) = open_key(Hive::Local, RUN_KEY, KEY_READ | REG_SAM_FLAGS(view))? else {
-        return Ok(Names { names: Vec::new(), complete: true });
-    };
+    match open_machine_key(RUN_KEY, KEY_READ | REG_SAM_FLAGS(view))? {
+        Some(key) => names_in(&key),
+        None => Ok(Names { names: Vec::new(), complete: true }),
+    }
+}
+
+/// Les noms des valeurs texte non vides d'une clé déjà ouverte. Les valeurs
+/// d'un autre type (nombre, binaire) ne sont pas des entrées.
+fn names_in(key: &Key) -> io::Result<Names> {
     let mut values = 0u32;
     // SAFETY: la clé est ouverte pour `key` ; le seul pointeur donné est une
     // variable locale où Windows écrit un nombre.
@@ -273,16 +331,19 @@ impl MachineStartup for SystemMachineStartup {
             StartupSlot::Run => run_names(KEY_WOW64_64KEY.0),
             StartupSlot::Run32 => run_names(KEY_WOW64_32KEY.0),
             StartupSlot::Folder => {
-                let folder = common_folder().ok_or(NamesError::UnsafeFolder)?;
-                folder_names(&folder)
+                // La poignée reste ouverte jusqu'à la fin de l'énumération, et c'est
+                // le chemin final vérifié qu'on énumère.
+                let opened = common_folder().ok_or(NamesError::UnsafeFolder)?;
+                let names = folder_names(Path::new(&opened.placed.path));
+                drop(opened);
+                names
             }
         }
         .map_err(|_| NamesError::Unreadable)
     }
 
     fn approval(&self, place: StartupSlot, name: &str) -> io::Result<Option<RawApproval>> {
-        let Some(key) = open_key(Hive::Local, &approved_key(place), KEY_READ | KEY_WOW64_64KEY)?
-        else {
+        let Some(key) = open_machine_key(&approved_key(place), KEY_READ | KEY_WOW64_64KEY)? else {
             return Ok(None);
         };
         let mut buffer = [0u8; 256];
@@ -317,14 +378,14 @@ impl MachineStartup for SystemMachineStartup {
         if name.is_empty() || name.contains('\0') {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "nom invalide"));
         }
-        let mut key = windows::Win32::System::Registry::HKEY::default();
+        let mut key = HKEY::default();
         // SAFETY: le chemin est une chaîne terminée par zéro, valide pendant
         // l'appel ; `key` est une variable locale où Windows écrit la poignée. La
         // ruche est `HKLM` (jamais `HKCU`) ; la clé et ses parents sont créés si
         // elles manquent.
         let result = unsafe {
             RegCreateKeyExW(
-                Hive::Local.root(),
+                HKEY_LOCAL_MACHINE,
                 &HSTRING::from(approved_key(place).as_str()),
                 None,
                 PCWSTR::null(),
@@ -374,13 +435,14 @@ impl MachineStartup for SystemMachineStartup {
                 MB_OKCANCEL | MB_DEFBUTTON2 | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
             )
         };
-        if !deadline.answer() {
+        // La décision est dans `settle` (essayée) : la minuterie a-t-elle gagné ?
+        let Some(accepted) = settle(&deadline, answer == IDOK) else {
             // La minuterie a gagné : le processus est en train de sortir.
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(60));
             }
-        }
-        answer == IDOK
+        };
+        accepted
     }
 }
 
@@ -444,5 +506,112 @@ mod tests {
         let time = SystemMachineStartup.file_time_now();
         // Après le 1er janvier 2020.
         assert!(time > 132_223_104_000_000_000);
+    }
+
+    /// Le code d'un fichier, sans ses commentaires ni ses essais.
+    fn code_of(source: &str) -> String {
+        let end = source.find("#[cfg(test)]").unwrap_or(source.len());
+        source[..end]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_helper_never_names_the_account_hive() {
+        let files = [
+            ("helper_host.rs", include_str!("helper_host.rs")),
+            ("helper/mod.rs", include_str!("../../helper/mod.rs")),
+            ("helper/request.rs", include_str!("../../helper/request.rs")),
+            ("helper/location.rs", include_str!("../../helper/location.rs")),
+            ("helper/startup.rs", include_str!("../../helper/startup.rs")),
+        ];
+        for (name, source) in files {
+            let code = code_of(source);
+            for banned in ["Hive", "HKEY_CURRENT_USER", "HKCU", "HKEY_USERS", "StartupHost"] {
+                assert!(!code.contains(banned), "{name} nomme {banned}");
+            }
+        }
+        // Et la ruche du PC y est bien nommée : l'essai ne passe pas à vide.
+        assert!(code_of(include_str!("helper_host.rs")).contains("HKEY_LOCAL_MACHINE"));
+    }
+
+    #[test]
+    fn the_common_folder_goes_through_the_safety_decision_with_its_path() {
+        // Un dossier temporaire du compte n'est pas celui d'un administrateur :
+        // refusé (propriétaire ou droits). Sous Wine, le propriétaire est le
+        // compte Linux : refusé aussi.
+        let temp = tempfile::tempdir().unwrap();
+        assert!(checked_common_folder(temp.path()).is_none());
+        assert!(checked_common_folder(&temp.path().join("absent")).is_none());
+        // Et l'énumération du dossier refusé ne se fait pas : le guichet dit
+        // « dossier non sûr » avant de lire le moindre nom.
+    }
+
+    /// Une clé temporaire du compte (dans l'essai seulement), effacée à la fin.
+    struct TempKey {
+        root: String,
+        key: Key,
+    }
+
+    impl TempKey {
+        fn new(tag: &str) -> Self {
+            use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+            let root = format!(r"Software\Shinku\EssaiAssistant\{tag}-{}", std::process::id());
+            let mut key = HKEY::default();
+            // SAFETY: chemin terminé par zéro, valide pendant l'appel ; `key` locale.
+            let result = unsafe {
+                RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    &HSTRING::from(root.as_str()),
+                    None,
+                    PCWSTR::null(),
+                    REG_OPTION_NON_VOLATILE,
+                    KEY_READ | KEY_SET_VALUE,
+                    None,
+                    &raw mut key,
+                    None,
+                )
+            };
+            assert_eq!(result, ERROR_SUCCESS);
+            Self { root, key: Key(key) }
+        }
+
+        fn set(&self, name: &str, kind: REG_VALUE_TYPE, data: &[u8]) {
+            // SAFETY: clé ouverte ; `data` est un tampon local.
+            let result =
+                unsafe { RegSetValueExW(self.key.0, &HSTRING::from(name), None, kind, Some(data)) };
+            assert_eq!(result, ERROR_SUCCESS);
+        }
+    }
+
+    impl Drop for TempKey {
+        fn drop(&mut self) {
+            use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RegDeleteTreeW};
+            // SAFETY: chemin terminé par zéro ; la clé est celle de cet essai.
+            let _ =
+                unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(self.root.as_str())) };
+        }
+    }
+
+    fn text(value: &str) -> Vec<u8> {
+        value.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn only_non_empty_text_values_are_entries() {
+        use windows::Win32::System::Registry::REG_DWORD;
+        let temp = TempKey::new("noms");
+        temp.set("texte", REG_SZ, &text(r"C:\a.exe"));
+        temp.set("developpe", REG_EXPAND_SZ, &text(r"%X%\b.exe"));
+        temp.set("", REG_SZ, &text(r"C:\defaut.exe")); // la valeur par défaut : nom vide
+        temp.set("nombre", REG_DWORD, &1u32.to_le_bytes());
+        temp.set("binaire", REG_BINARY, &[1, 2, 3]);
+        let names = names_in(&temp.key).expect("lue");
+        let mut found = names.names.clone();
+        found.sort();
+        assert_eq!(found, ["developpe", "texte"], "ni nombre, ni binaire, ni nom vide");
+        assert!(names.complete);
     }
 }

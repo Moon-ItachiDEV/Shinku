@@ -109,7 +109,9 @@ pub(super) fn machine_startup() -> Option<Box<dyn crate::helper::startup::Machin
 }
 
 /// Hors de Windows, il n'y a rien à durcir.
-pub(super) fn harden_helper_process() {}
+pub(super) fn harden_helper_process() -> bool {
+    true
+}
 
 /// Hors de Windows, les arguments de la ligne de commande.
 pub(super) fn helper_arguments() -> Vec<std::ffi::OsString> {

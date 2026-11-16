@@ -65,6 +65,7 @@ pub struct FakeHelper {
     folder_safe: Mutex<bool>,
     effect: Mutex<Option<Effect>>,
     runs: Mutex<Vec<([String; 4], isize)>>,
+    on_access: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl fmt::Debug for FakeHelper {
@@ -81,6 +82,7 @@ impl FakeHelper {
             folder_safe: Mutex::new(true),
             effect: Mutex::new(None),
             runs: Mutex::new(Vec::new()),
+            on_access: Mutex::new(None),
         }
     }
 
@@ -100,6 +102,12 @@ impl FakeHelper {
         *self.effect.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(effect));
     }
 
+    /// Ce qui se passe à chaque lecture de l'accès (le guichet la fait en
+    /// relisant la machine : de quoi regarder l'état du guichet à ce moment).
+    pub fn on_access(&self, effect: impl Fn() + Send + Sync + 'static) {
+        *self.on_access.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(effect));
+    }
+
     /// Les lancements faits, dans l'ordre : les quatre mots et la fenêtre.
     pub fn runs(&self) -> Vec<([String; 4], isize)> {
         self.runs.lock().unwrap_or_else(PoisonError::into_inner).clone()
@@ -114,6 +122,10 @@ impl Default for FakeHelper {
 
 impl ElevatedHelper for FakeHelper {
     fn access(&self) -> PcAccess {
+        let hook = self.on_access.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(hook) = hook {
+            hook();
+        }
         *self.access.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
