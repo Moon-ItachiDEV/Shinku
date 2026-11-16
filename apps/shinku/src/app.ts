@@ -29,6 +29,7 @@ import { fr } from './i18n/fr.ts';
 import {
   announceLines,
   askFor as askForPrivacy,
+  askHolds,
   lastLines,
   PRIVACY_RELOAD_GAP,
   privacyFocus,
@@ -1942,7 +1943,6 @@ export class App {
       privacyChecked: [],
       privacyAsk: null,
       privacyRefused: null,
-      privacyLast: [],
       privacyAnnounce: '',
     });
   }
@@ -2004,10 +2004,20 @@ export class App {
       privacyFailed: false,
       privacyChecked: stillChecked(view, this.state.privacyChecked),
     });
+    const ask = this.state.privacyAsk;
+    if (ask !== null && !askHolds(view, ask)) {
+      // Une trace de la confirmation ne se coche plus : la personne n'a pas vu cette liste telle qu'elle partirait.
+      this.closeAskChanged();
+    }
     if (retried) {
       this.privacyRetried = false;
       this.focusKey(privacyFocus.title);
     }
+  }
+
+  /** La confirmation ne vaut plus : elle se referme, rien n'est envoyé, et la page le dit. */
+  private closeAskChanged(): void {
+    this.set({ privacyAsk: null, privacyRefused: 'listChanged', privacyAnnounce: fr.privacy.refused.listChanged });
   }
 
   private toggleTrace(id: string): void {
@@ -2046,6 +2056,12 @@ export class App {
     if (ask === null || this.state.privacyBusy) {
       return;
     }
+    // Juste avant l'envoi : chaque trace de la liste figée doit encore se cocher dans la vue courante.
+    const current = this.state.privacy;
+    if (current === null || !askHolds(current, ask)) {
+      this.closeAskChanged();
+      return;
+    }
     const visit = this.privacyVisit;
     // Une vue en vol est périmée par ce geste.
     this.privacyAction += 1;
@@ -2056,8 +2072,9 @@ export class App {
       this.privacyAction += 1;
       const here = visit === this.privacyVisit && this.state.route === 'privacy';
       if (!here) {
-        // La personne est partie, ou revenue : l'issue ne vaut que pour la visite qui l'a demandée.
-        this.set({ privacyBusy: false });
+        // La personne est partie, ou revenue : la vue de cette réponse n'est pas celle de sa visite, mais l'issue est gardée
+        // pour la carte « Dernier effacement », qui l'attend à son retour.
+        this.set({ privacyBusy: false, privacyChecked: [], privacyLast: lastLines(ask, answer.results) });
         void this.refreshPrivacy(true);
         return;
       }
@@ -2082,6 +2099,8 @@ export class App {
         // Rien n'a été effacé : la page le dit, les cases restent comme la personne les avait mises.
         this.set({ privacyRefused: refused, privacyAnnounce: fr.privacy.refused[refused] });
       } else {
+        // Une panne : on ne sait pas ce qui est parti. Les cases repartent vides, comme après un effacement.
+        this.set({ privacyChecked: [], privacyAnnounce: errorMessage(error) });
         this.toast(errorMessage(error));
       }
       this.focusKey(privacyFocus.erase);

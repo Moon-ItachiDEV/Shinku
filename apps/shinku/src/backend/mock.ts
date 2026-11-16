@@ -1618,12 +1618,12 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
     ...appsBackend(options.apps),
     privacyView: async () => privacyView(),
     eraseTraces: async (ids): Promise<ErasedTraces> => {
-      // L'ordre du cœur : trop d'identifiants d'abord, puis un grand vide ou un autre effacement en cours.
-      if (ids.length > MAX_ERASE) {
-        return privacyRefused('tooMany');
-      }
+      // L'ordre du cœur : un grand vide, une mise à la corbeille de restes ou un autre effacement en cours d'abord, puis le nombre.
       if (erasing || cleanRunning()) {
         return privacyRefused('busy');
+      }
+      if (ids.length > MAX_ERASE) {
+        return privacyRefused('tooMany');
       }
       erasing = true;
       try {

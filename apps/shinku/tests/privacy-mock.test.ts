@@ -215,6 +215,17 @@ test('un effacement en cours refuse le second (busy), puis la machine est libre 
   assert.deepEqual(outcomes((await backend.eraseTraces([ids[1] as string])).results), ['erased']);
 });
 
+test('busy passe avant tooMany : 65 traces pendant un effacement en cours sont refusées comme busy ; au repos, tooMany', async () => {
+  const backend = demo('?privacy=few');
+  const view = await backend.privacyView();
+  const ids = present(view);
+  const many = Array.from({ length: MAX_ERASE + 1 }, (_, index) => `x${index}`);
+  const first = backend.eraseTraces([ids[0] as string]);
+  assert.equal(await refusal(backend.eraseTraces(many)), 'busy');
+  await first;
+  assert.equal(await refusal(backend.eraseTraces(many)), 'tooMany');
+});
+
 test('un grand vide en cours refuse l’effacement (busy)', async () => {
   const backend = demo('', 40);
   await backend.startScan();

@@ -70,7 +70,7 @@ function header(state: AppState, view: PrivacyView, actions: Actions): TemplateR
       <div class="pline">
         ${eraseButton(state, actions, privacyFocus.erase)}
         ${none
-          ? html`<p class="d" id="privacy-hint">${nothingToErase(view) ? fr.privacy.nothing : fr.privacy.eraseHint}</p>`
+          ? html`<p class="d" id="privacy-hint">${nothingToErase(view) ? fr.privacy.nothingNow : fr.privacy.eraseHint}</p>`
           : html`<p class="d">${fr.privacy.checked(state.privacyChecked.length)}</p>`}
       </div>
     </div>
@@ -101,7 +101,11 @@ function lastCard(state: AppState): Content {
                 const help = outcomeHelp(line);
                 return html`<li class="row static uleft plast">
                   <span class="tx">
-                    <span class="t1">${line.block}</span>
+                    <span class="t1"
+                      >${line.browser === null || line.profile === null
+                        ? line.block
+                        : html`${line.browser} · <bdi>${line.profile}</bdi>`}</span
+                    >
                     <span class="t2">${line.trace}</span>
                     ${help === null ? nothing : html`<span class="t2 phelp">${help}</span>`}
                   </span>
@@ -132,7 +136,8 @@ function row(state: AppState, group: PrivacyGroup, item: TraceItem, actions: Act
   const size = traceSize(item);
   const kind = rowKind(group, item);
   const browser = group.kind === 'browser';
-  const title = browser ? profileLabel(group) : traceName(item.kind);
+  const view = state.privacy ?? undefined;
+  const title = browser ? html`<bdi>${profileLabel(group, view)}</bdi>` : traceName(item.kind);
   const sub = kind === 'unreadable' ? fr.privacy.unreadable : browser ? traceName(item.kind) : fr.privacy.loses[item.kind as keyof typeof fr.privacy.loses];
   if (kind !== 'check') {
     // Ni case, ni geste : la ligne dit pourquoi. La place de la case reste, pour que les noms restent alignés.
@@ -159,7 +164,7 @@ function row(state: AppState, group: PrivacyGroup, item: TraceItem, actions: Act
         type="checkbox"
         data-fk=${privacyFocus.check(item.id)}
         .checked=${checked}
-        aria-label=${checkLabel(group, item)}
+        aria-label=${checkLabel(group, item, state.privacy ?? undefined)}
         aria-describedby="${base}-d${state.privacyLast.some((one) => one.id === item.id) ? ` ${base}-o` : ''}"
         aria-disabled=${isBusy(state) ? 'true' : nothing}
         @click=${(event: Event) => {
@@ -345,18 +350,21 @@ export function privacyDialog(state: AppState, actions: Actions): Content {
     @click=${onClick}
   >
     <div class="askbox">
-      <h2 id="privacy-ask-title">${fr.privacy.confirm.title}</h2>
+      <h2 id="privacy-ask-title">${ask.ids.length === 1 ? fr.privacy.confirm.titleOne : fr.privacy.confirm.title}</h2>
       <div id="privacy-ask-text">
         <p class="askintro">${fr.privacy.confirm.intro}</p>
         ${ask.blocks.map(
           (one) => html`<div class="askblock">
             <p class="askname">${one.title}</p>
             <ul class="asklist">
-              ${one.traces.map((trace) => html`<li>${trace.name}</li>`)}
+              ${one.traces.map(
+                (trace) =>
+                  html`<li>${trace.profile === null ? trace.name : html`<bdi>${trace.profile}</bdi>${trace.tail}`}</li>`,
+              )}
             </ul>
           </div>`,
         )}
-        <p class="askintro askdirect">${fr.privacy.confirm.direct}</p>
+        <p class="askintro askdirect">${ask.ids.length === 1 ? fr.privacy.confirm.directOne : fr.privacy.confirm.direct}</p>
       </div>
       <div class="askbtns">
         <button type="button" class="ghost" autofocus @click=${actions.dismissErase}>${fr.privacy.confirm.cancel}</button>
@@ -382,7 +390,7 @@ export function privacyView(state: AppState, actions: Actions): TemplateResult {
                 </button>`
               : nothing}`
           : html`${header(state, view, actions)}
-            ${state.privacyBusy ? html`<p class="note pwait" role="status">${fr.privacy.working}</p>` : nothing}
+            ${state.privacyBusy ? html`<p class="note pwait">${fr.privacy.working}</p>` : nothing}
             ${lastCard(state)}
             ${browsers(state, view, actions)}
             ${repeat(

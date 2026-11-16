@@ -4,6 +4,8 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { html } from 'lit-html';
+import { unsafeHTML } from 'lit-html/directives/unsafe-html.js';
 import { test } from 'node:test';
 
 import type { PrivacyGroup, PrivacyView, TraceItem, TraceKind, TraceOutcome } from '../src/backend/types.ts';
@@ -19,8 +21,8 @@ import {
   hasBrowser,
   isCheckable,
   lastLines,
+  askHolds,
   nothingToErase,
-  outcomeText,
   outcomeHelp,
   outcomeLine,
   outcomeShort,
@@ -136,6 +138,8 @@ test('seule une trace présente d’un navigateur fermé se coche', () => {
   assert.deepEqual(checkableIds(FULL), ['chrome:0-h', 'chrome:3-h', 'edge:0-h', 'w-recent', 'w-typed', 'w-clip']);
   assert.equal(nothingToErase(FULL), false);
   assert.equal(nothingToErase(view([CHROME_TWO, BRAVE])), true);
+  // Des traces présentes, mais aucune ne se coche (navigateur ouvert) : rien à effacer pour l'instant.
+  assert.equal(nothingToErase(view([VIVALDI_OPEN, { ...WINDOWS, items: WINDOWS.items.map((item) => ({ ...item, state: 'empty' as const })) }])), true);
 });
 
 test('cocher : un identifiant inconnu ou inerte ne change rien, et l’ordre est celui de la page', () => {
@@ -177,30 +181,97 @@ test('l’issue de chaque trace demandée, dans l’ordre ; une issue qu’on n�
     { id: 'edge:0-h', outcome: 'erased' },
   ]);
   assert.deepEqual(
-    lines.map((line) => [line.block, line.trace, line.browser, line.outcome]),
+    lines.map((line) => [line.block, line.trace, line.browser, line.profile, line.outcome]),
     [
-      ['Chrome · Léa', 'Historique de navigation', 'Chrome', 'erased'],
-      ['Windows', 'Fichiers et dossiers récents', null, 'partial'],
+      ['Chrome · Léa', 'Historique de navigation', 'Chrome', 'Léa', 'erased'],
+      ['Windows', 'Fichiers et dossiers récents', null, null, 'partial'],
     ],
   );
   assert.equal(
     announceLines(lines),
-    `Effacement terminé. Chrome · Léa, Historique de navigation${NBSP}: Effacé. Windows, Fichiers et dossiers récents${NBSP}: Effacé en partie${NBSP}: il en reste.`,
+    `Effacement terminé. Chrome · Léa, Historique de navigation${NBSP}: Effacé. Windows, Fichiers et dossiers récents${NBSP}: Effacé en partie. Il en reste${NBSP}: regarde de nouveau.`,
   );
 });
 
-test('les six issues sont celles de la conception', () => {
+test('une ligne pour chaque trace demandée : absente des résultats ou issue inconnue, c’est « Résultat inconnu », jamais « Effacé »', () => {
+  const ask = askFor(FULL, ['chrome:0-h', 'edge:0-h', 'w-recent']);
+  assert.ok(ask !== null);
+  // Le cœur ne dit rien.
+  const none = lastLines(ask, []);
+  assert.deepEqual(none.map((line) => line.outcome), ['unknown', 'unknown', 'unknown']);
+  // Une issue qu'aucun des six ne nomme, ou qui n'est pas du texte.
+  const odd = lastLines(ask, [
+    { id: 'chrome:0-h', outcome: 'deleted' as never },
+    { id: 'edge:0-h', outcome: undefined as never },
+    { id: 'w-recent', outcome: 'erased' },
+  ]);
+  assert.deepEqual(odd.map((line) => line.outcome), ['unknown', 'unknown', 'erased']);
+  for (const line of none) {
+    assert.equal(outcomeShort(line.outcome), 'Résultat inconnu');
+    assert.equal(outcomeHelp(line), 'Regarde de nouveau.');
+    assert.equal(outcomeLine(line).includes('Effacé'), false);
+  }
+  const spoken = announceLines(none);
+  assert.ok(!/undefined|Effacé/.test(spoken), spoken);
+  assert.equal((spoken.match(/Résultat inconnu/g) ?? []).length, 3);
+  // Une issue pour un identifiant qu'on n'a pas demandé n'ajoute pas de ligne.
+  assert.equal(lastLines(ask, [{ id: 'w-clip', outcome: 'erased' }]).length, 3);
+});
+
+test('les issues courtes : six, plus « inconnue » ; « changed » d’une trace de Windows ne parle pas de profil', () => {
   const expected: Record<TraceOutcome, string> = {
     erased: 'Effacé',
     nothing: 'Rien à effacer',
-    inUse: `En cours d’utilisation${NBSP}: ferme l’app et recommence`,
-    changed: `Ce profil a changé${NBSP}: regarde de nouveau`,
-    partial: `Effacé en partie${NBSP}: il en reste`,
+    inUse: 'En cours d’utilisation',
+    changed: 'Profil changé',
+    partial: 'Effacé en partie',
     failed: 'Pas pu être effacé',
   };
   for (const [outcome, text] of Object.entries(expected)) {
-    assert.equal(outcomeText(outcome as TraceOutcome), text);
+    assert.equal(outcomeShort(outcome as TraceOutcome), text);
   }
+  assert.equal(outcomeShort('changed', true), 'A changé');
+  assert.equal(outcomeShort('inUse', true), 'En cours d’utilisation');
+  assert.equal(outcomeLine({ browser: null, outcome: 'changed' }), 'A changé. Regarde de nouveau.');
+  assert.equal(outcomeLine({ browser: 'Chrome', outcome: 'changed' }), 'Profil changé. Regarde de nouveau.');
+});
+
+test('la confirmation vaut tant que chacune de ses traces se coche encore', () => {
+  const ask = askFor(FULL, ['chrome:0-h', 'edge:0-h']);
+  assert.ok(ask !== null);
+  assert.equal(askHolds(FULL, ask), true);
+  assert.equal(askHolds(view([{ ...CHROME_MAIN, running: true }, EDGE, WINDOWS]), ask), false, 'navigateur ouvert depuis');
+  assert.equal(askHolds(view([EDGE, WINDOWS]), ask), false, 'profil disparu');
+  assert.equal(askHolds(view([{ ...CHROME_MAIN, items: [trace('chrome:0-h', 'history', { state: 'empty' })] }, EDGE]), ask), false, 'trace devenue vide');
+  assert.equal(askHolds(view([{ ...CHROME_MAIN, items: [trace('chrome:0-h', 'history', { state: 'unreadable' })] }, EDGE]), ask), false, 'trace devenue illisible');
+});
+
+test('deux profils du même nom dans le même navigateur : le dossier s’ajoute, seulement alors', () => {
+  const lea0 = browser('chrome', 0, 'Léa', { bytes: 1 });
+  const lea3 = browser('chrome', 3, 'Léa', { bytes: 2 });
+  const edgeLea = browser('edge', 0, 'Léa', { bytes: 3 });
+  const both = view([lea0, lea3, edgeLea, WINDOWS]);
+  assert.equal(profileLabel(lea0, both), 'Léa (Profil principal)');
+  assert.equal(profileLabel(lea3, both), 'Léa (Profil 3)');
+  assert.equal(profileLabel(edgeLea, both), 'Léa', 'un autre navigateur ne fait pas doublon');
+  assert.equal(profileLabel(CHROME_MAIN, FULL), 'Léa', 'sans doublon, le nom seul');
+  assert.equal(groupTitle(lea3, both), 'Chrome · Léa (Profil 3)');
+  assert.equal(checkLabel(lea3, lea3.items[0] as TraceItem, both), 'Chrome, Léa (Profil 3), historique de navigation');
+  const ask = askFor(both, ['chrome:0-h', 'chrome:3-h']);
+  assert.deepEqual(ask?.blocks[0]?.traces.map((one) => one.name), [
+    `Léa (Profil principal)${NBSP}: historique de navigation`,
+    `Léa (Profil 3)${NBSP}: historique de navigation`,
+  ]);
+  const lines = lastLines(ask as NonNullable<typeof ask>, []);
+  assert.deepEqual(lines.map((line) => line.block), ['Chrome · Léa (Profil principal)', 'Chrome · Léa (Profil 3)']);
+  // La page : deux lignes, deux noms accessibles différents.
+  const names = queryAll(page({}, both).tree, 'input[type="checkbox"]').map((box) => flat(box.attrs['aria-label'] ?? ''));
+  assert.deepEqual(names.slice(0, 2), ['Chrome, Léa (Profil principal), historique de navigation', 'Chrome, Léa (Profil 3), historique de navigation']);
+});
+
+test('un nom de profil vide ou fait d’espaces est comme absent', () => {
+  assert.equal(profileLabel(browser('chrome', 0, '', {})), 'Profil principal');
+  assert.equal(profileLabel(browser('chrome', 5, '  \u00a0 ', {})), 'Profil 5');
 });
 
 test('« Ce qui reste » : une fois pour les navigateurs, la phrase d’Edge seulement si Edge peut réimporter Chrome, une pour Windows', () => {
@@ -265,7 +336,7 @@ function moduleTexts(group: object, path = 'fr.privacy'): Array<[string, string]
   });
 }
 
-const FORBIDDEN = /pour de bon|définitivement|sans laisser de trace/i;
+const FORBIDDEN = /pour de bon|définitivement|sans laisser de trace|sécuris/i;
 
 test('aucun texte du module ne promet ce que Shinku ne peut pas tenir', () => {
   const texts = moduleTexts(fr.privacy);
@@ -518,8 +589,9 @@ test('après un effacement : une issue par ligne dans la carte, dans la région 
   // La région vivante garde une phrase complète par trace.
   const spoken = flat(textOfNode(query(tree, '[aria-live]') as Node));
   assert.ok(spoken.startsWith('Effacement terminé.'));
-  assert.ok(spoken.includes(flat(outcomeText('inUse'))));
-  assert.ok(spoken.includes(flat(outcomeText('partial'))));
+  // L'écran et la région vivante disent la même chose : l'aide nomme le navigateur.
+  assert.ok(spoken.includes('En cours d’utilisation. Ferme Edge et recommence.'), spoken);
+  assert.ok(spoken.includes('Effacé en partie. Il en reste : regarde de nouveau.'), spoken);
   assert.ok(flat(text).includes(flat(fr.privacy.lastTitle)));
   // Une ligne qui n'a pas pu partir garde sa case et dit pourquoi, sous son nom, avec la même aide.
   const edge = queryAll(tree, '.pbrowser')[1] as Node;
@@ -545,8 +617,12 @@ test('la page sans vue dit « Chargement… », ou l’échec avec « Réessayer
 
 test('quand rien ne se peut effacer, la page le dit en tête', () => {
   const nothing = page({}, view([CHROME_TWO, { ...WINDOWS, items: WINDOWS.items.map((item) => ({ ...item, state: 'empty' as const })) }]));
-  assert.ok(flat(textOfNode(query(nothing.tree, '.pline') as Node)).includes(flat(fr.privacy.nothing)));
+  assert.ok(flat(textOfNode(query(nothing.tree, '.pline') as Node)).includes(flat(fr.privacy.nothingNow)));
   assert.equal(queryAll(nothing.tree, 'input').length, 0);
+  // Chrome ouvert, Windows vide : des traces sont présentes mais aucune case n'existe, le texte ne dit pas « Coche… ».
+  const onlyOpen = page({}, view([VIVALDI_OPEN, { ...WINDOWS, items: WINDOWS.items.map((item) => ({ ...item, state: 'empty' as const })) }]));
+  assert.ok(flat(textOfNode(query(onlyOpen.tree, '.pline') as Node)).includes(flat(fr.privacy.nothingNow)));
+  assert.ok(!flat(onlyOpen.text).includes(flat(fr.privacy.eraseHint)));
 });
 
 // ── La confirmation ────────────────────────────────────────────────────────
@@ -566,7 +642,10 @@ test('la confirmation liste les traces cochées par bloc, dit qu’elles ne pass
   const names = queryAll(tree, '.askname').map((node) => flat(textOfNode(node)));
   assert.deepEqual(names, ['Chrome', 'Edge', 'Windows']);
   const chrome = queryAll(tree, '.askblock')[0] as Node;
-  assert.deepEqual(queryAll(chrome, 'li').map((node) => flat(textOfNode(node))), [flat(`Léa${NBSP}: historique de navigation`)]);
+  // Le nom est dans un <bdi> : l'aide d'arbre met le texte propre avant les enfants, on vérifie donc les deux morceaux.
+  const bullet = queryAll(chrome, 'li')[0] as Node;
+  assert.equal(queryAll(bullet, 'bdi').map((node) => flat(textOfNode(node))).join(), 'Léa');
+  assert.equal(flat(bullet.text), flat(`${NBSP}: historique de navigation`).trim().replace(/^:/, ':'));
   const windows = queryAll(tree, '.askblock')[2] as Node;
   assert.deepEqual(queryAll(windows, 'li').map((node) => flat(textOfNode(node))), [flat(fr.privacy.trace.typed), flat(fr.privacy.trace.clipboard)]);
   assert.ok(flat(textOfNode(tree)).includes('Elles sont supprimées directement, sans passer par la Corbeille.'));
@@ -637,4 +716,160 @@ test('les paragraphes d’introduction ont le même bord gauche que les titres e
   const css = readFileSync(new URL('../src/styles/privacy.css', import.meta.url), 'utf8');
   assert.match(css, /\.privacy \.pintro \{\s*margin: 0 4px 12px;/);
   assert.match(css, /\.premain \{\s*margin: 10px 4px 0;/);
+});
+
+// ── Gestes de la boîte et de la page, noms posés en texte ──────────────────
+
+/** Les fonctions liées à `nom=` (par exemple `@cancel=`) dans un gabarit, avec le HTML écrit avant chacune. */
+function boundTo(value: unknown, name: string): Array<{ context: string; fn: (event: unknown) => unknown }> {
+  const found: Array<{ context: string; fn: (event: unknown) => unknown }> = [];
+  const walk = (inner: unknown): void => {
+    if (Array.isArray(inner)) {
+      inner.forEach(walk);
+      return;
+    }
+    if (typeof inner !== 'object' || inner === null) {
+      return;
+    }
+    if ('_$litDirective$' in inner && 'values' in inner) {
+      const { values } = inner as unknown as { values: unknown[] };
+      const last = values.at(-1);
+      if (typeof last === 'function' && values.length > 1) {
+        for (const [index, item] of [...(values[0] as Iterable<unknown>)].entries()) {
+          walk((last as (item: unknown, index: number) => unknown)(item, index));
+        }
+      } else {
+        walk(last);
+      }
+      return;
+    }
+    if ('strings' in inner && 'values' in inner) {
+      const template = inner as { strings: readonly string[]; values: readonly unknown[] };
+      let out = '';
+      template.strings.forEach((text, index) => {
+        out += text;
+        if (index >= template.values.length) {
+          return;
+        }
+        const one = template.values[index];
+        if (out.endsWith(name) && typeof one === 'function') {
+          found.push({ context: out, fn: one as (event: unknown) => unknown });
+          out = out.slice(0, out.length - name.length);
+          return;
+        }
+        walk(one);
+        out += htmlOf(one);
+      });
+    }
+  };
+  walk(value);
+  return found;
+}
+
+test('Échap referme la confirmation sans rien confirmer, et ne laisse pas le navigateur la fermer à sa façon', () => {
+  const { template, calls } = dialog();
+  const [cancel] = boundTo(template, '@cancel=');
+  assert.ok(cancel !== undefined, 'la boîte écoute « cancel »');
+  let prevented = 0;
+  cancel.fn({ preventDefault: () => (prevented += 1) });
+  assert.equal(prevented, 1);
+  assert.equal(calls.dismissed, 1);
+  assert.equal(calls.confirmed, 0);
+});
+
+test('pendant l’effacement, un clic sur une case est annulé (la case du DOM ne bascule pas) ; hors effacement, il passe', () => {
+  for (const [busy, expected] of [[true, 1], [false, 0]] as const) {
+    const shown = page({ privacyBusy: busy });
+    const boxes = boundTo(shown.template, '@click=').filter((one) => one.context.includes('type="checkbox"'));
+    assert.ok(boxes.length >= 1, 'les cases écoutent le clic');
+    let prevented = 0;
+    for (const one of boxes.slice(0, 1)) {
+      one.fn({ preventDefault: () => (prevented += 1) });
+    }
+    assert.equal(prevented, expected, busy ? 'figée pendant l’effacement' : 'libre sinon');
+  }
+});
+
+/** Vrai si une valeur du gabarit est passée par `unsafeHTML` (ce qui lirait un nom de profil comme du HTML). */
+function usesUnsafeHtml(value: unknown): boolean {
+  const marker = (unsafeHTML('x') as unknown as { _$litDirective$: unknown })._$litDirective$;
+  const walk = (inner: unknown): boolean => {
+    if (Array.isArray(inner)) {
+      return inner.some(walk);
+    }
+    if (typeof inner !== 'object' || inner === null) {
+      return false;
+    }
+    if ('_$litDirective$' in inner) {
+      if ((inner as { _$litDirective$: unknown })._$litDirective$ === marker) {
+        return true;
+      }
+      const { values } = inner as unknown as { values: unknown[] };
+      const last = values.at(-1);
+      return typeof last === 'function' && values.length > 1
+        ? [...(values[0] as Iterable<unknown>)].some((item, index) => walk((last as (item: unknown, index: number) => unknown)(item, index)))
+        : walk(last);
+    }
+    if ('values' in inner) {
+      return (inner as { values: unknown[] }).values.some(walk);
+    }
+    return false;
+  };
+  return walk(value);
+}
+
+const HOSTILE = '<img src=x onerror=alert(1)>';
+
+test('un nom de profil est posé en texte, jamais lu comme du HTML : ligne, confirmation, « Dernier effacement »', () => {
+  const hostile = view([browser('chrome', 0, HOSTILE, { bytes: 5 }), WINDOWS]);
+  const ask = askFor(hostile, ['chrome:0-h']);
+  assert.ok(ask !== null);
+  const lines = lastLines(ask, [{ id: 'chrome:0-h', outcome: 'inUse' }]);
+  const shown = page({ privacyLast: lines }, hostile);
+  assert.equal(usesUnsafeHtml(shown.template), false);
+  assert.equal(usesUnsafeHtml(dialog({ privacy: hostile, privacyAsk: ask }).template), false);
+  // Chaque nom est dans un <bdi> : un nom écrit de droite à gauche ne réordonne pas ce qui l'entoure.
+  assert.ok(queryAll(shown.tree, '.row .t1 bdi').length > queryAll(shown.tree, '.plast bdi').length, 'le titre de la ligne isole le nom');
+  assert.ok(queryAll(shown.tree, '.plast bdi').length >= 1, 'la carte « Dernier effacement » isole le nom');
+  assert.ok(queryAll(dialog({ privacy: hostile, privacyAsk: ask }).tree, 'li bdi').length >= 1, 'la confirmation isole le nom');
+  assert.ok(htmlOf(dialog({ privacy: hostile, privacyAsk: ask }).template).includes('<bdi>'));
+  // Le détecteur sait voir un `unsafeHTML`.
+  assert.equal(usesUnsafeHtml(html`<p>${unsafeHTML(HOSTILE)}</p>`), true);
+});
+
+test('une seule trace cochée : la confirmation parle au singulier ; plusieurs : au pluriel', () => {
+  const one = dialog({ privacyAsk: askFor(FULL, ['edge:0-h']) });
+  const said = flat(textOf(one.template));
+  assert.ok(said.includes('Effacer cette trace ?'));
+  assert.ok(said.includes('Elle est supprimée directement, sans passer par la Corbeille.'));
+  assert.ok(!said.includes('Effacer ces traces'));
+  const many = flat(textOf(dialog().template));
+  assert.ok(many.includes('Effacer ces traces ?'));
+  assert.ok(many.includes('Elles sont supprimées directement, sans passer par la Corbeille.'));
+});
+
+test('« Effacement en cours » n’est annoncé qu’une fois : une seule région vivante, la note visible n’en est pas une', () => {
+  const busy = page({ privacyBusy: true });
+  assert.equal(queryAll(busy.tree, '[aria-live]').length, 1);
+  assert.equal(queryAll(busy.tree, '[role="status"]').length, 0);
+  assert.ok(flat(textOfNode(query(busy.tree, '.pwait') as Node)).includes(flat(fr.privacy.working)));
+});
+
+test('les noms longs passent à la ligne : ligne, confirmation et « Dernier effacement »', () => {
+  const css = readFileSync(new URL('../src/styles/privacy.css', import.meta.url), 'utf8');
+  assert.match(css, /\.privacy \.row \.t1,\s*\.privacy \.plast \.t1,\s*\.asklist li \{\s*overflow-wrap: anywhere;/);
+  assert.match(css, /\.privacy \.row \.tx \{\s*min-width: 0;/);
+  assert.match(css, /\.privacy \.pblock \.sub \{[^}]*overflow-wrap: anywhere;/);
+  assert.match(css, /\.askname \{[^}]*overflow-wrap: anywhere;/);
+});
+
+test('« Pas encore pris en charge » nomme aussi les fichiers récents d’Office et des autres apps', () => {
+  assert.match(fr.privacy.untouched.outside, /fichiers récents d’Office et des autres apps/);
+});
+
+test('un refus « la liste a changé » est dit, sans promettre ce que Shinku n’a pas fait', () => {
+  assert.equal(fr.privacy.refused.listChanged, 'La liste a changé : regarde de nouveau.'.replace(' :', `${NBSP}:`));
+  const shown = page({ privacyRefused: 'listChanged' }).text;
+  assert.ok(flat(shown).includes('La liste a changé : regarde de nouveau.'));
+  assert.ok(fr.privacy.refused.busy.includes('mise à la corbeille de restes'));
 });

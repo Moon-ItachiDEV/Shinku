@@ -24,6 +24,17 @@
   max-width: 45%;
 }
 
+/* Un nom de profil de 80 caractères sans espace ne déborde pas : il passe à la ligne. */
+.privacy .row .tx {
+  min-width: 0;
+}
+
+.privacy .row .t1,
+.privacy .plast .t1,
+.asklist li {
+  overflow-wrap: anywhere;
+}
+
 /* Ce qu'on perd : un texte à lire en entier, il passe à la ligne et n'est jamais coupé. */
 .privacy .row .t2 {
   white-space: normal;

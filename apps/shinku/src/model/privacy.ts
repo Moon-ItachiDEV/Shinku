@@ -24,19 +24,32 @@ import { fr } from '../i18n/fr.ts';
  * Le nom d'un profil : celui que le navigateur lui donne, inséré tel quel (jamais retouché par la typographie),
  * sinon « Profil principal » pour `Default` et « Profil N » pour `Profile N`.
  */
-export function profileLabel(group: PrivacyGroup): string {
-  if (group.profile !== null) {
-    return group.profile;
+export function profileLabel(group: PrivacyGroup, view?: PrivacyView): string {
+  const own = ownLabel(group);
+  if (view === undefined || group.app === null) {
+    return own;
   }
+  // Deux profils du même nom dans le même navigateur : on ajoute le nom du dossier, seulement alors.
+  const twins = view.groups.filter((other) => other.app === group.app && ownLabel(other) === own);
+  return twins.length > 1 ? fr.privacy.twinProfile(own, folderLabel(group)) : own;
+}
+
+/** Le nom du dossier du profil : « Profil principal » pour `Default`, « Profil N » pour `Profile N`. */
+function folderLabel(group: PrivacyGroup): string {
   return group.slot === 0 || group.slot === null ? fr.privacy.mainProfile : fr.privacy.numberedProfile(group.slot);
 }
 
+/** Le nom que le navigateur a donné ; vide ou fait d'espaces, c'est comme s'il n'y en avait pas. */
+function ownLabel(group: PrivacyGroup): string {
+  return group.profile !== null && group.profile.trim() !== '' ? group.profile : folderLabel(group);
+}
+
 /** Le titre d'un bloc : « Chrome · Léa », ou « Windows ». */
-export function groupTitle(group: PrivacyGroup): string {
+export function groupTitle(group: PrivacyGroup, view?: PrivacyView): string {
   if (group.kind === 'windows' || group.app === null) {
     return fr.privacy.windows;
   }
-  return fr.privacy.blockTitle(fr.privacy.browser[group.app], profileLabel(group));
+  return fr.privacy.blockTitle(fr.privacy.browser[group.app], profileLabel(group, view));
 }
 
 /** Le nom court du navigateur d'un bloc (« Chrome »), pour la phrase « Ferme Chrome… ». */
@@ -47,11 +60,11 @@ export function browserName(group: PrivacyGroup): string {
 export const traceName = (kind: TraceKind): string => fr.privacy.trace[kind];
 
 /** Le nom accessible complet de la case : le bloc, puis la trace (« Chrome · Léa, Historique de navigation »). */
-export function checkLabel(group: PrivacyGroup, item: TraceItem): string {
+export function checkLabel(group: PrivacyGroup, item: TraceItem, view?: PrivacyView): string {
   if (group.kind === 'browser' && group.app !== null) {
     return fr.privacy.checkLabelProfile(
       fr.privacy.browser[group.app],
-      profileLabel(group),
+      profileLabel(group, view),
       traceName(item.kind).toLocaleLowerCase('fr'),
     );
   }
@@ -131,9 +144,13 @@ export function checkableIds(view: PrivacyView): string[] {
   return view.groups.flatMap((group) => group.items.filter((item) => isCheckable(group, item)).map((item) => item.id));
 }
 
-/** Rien n'est à effacer nulle part : la page le dit une fois en tête. */
-export function nothingToErase(view: PrivacyView): boolean {
-  return view.groups.every((group) => group.items.every((item) => item.state !== 'present'));
+/** Rien ne se coche dans toute la page : tout est vide, illisible ou d'un navigateur ouvert. */
+export const nothingToErase = (view: PrivacyView): boolean => checkableIds(view).length === 0;
+
+/** La confirmation vaut encore : chacune de ses traces se coche toujours dans la vue. Sinon, la personne n'a pas vu la liste telle qu'elle partirait. */
+export function askHolds(view: PrivacyView, ask: PrivacyAsk): boolean {
+  const open = checkableIds(view);
+  return ask.ids.every((id) => open.includes(id));
 }
 
 /** La trace et son bloc, par identifiant. */
@@ -175,6 +192,10 @@ export interface AskTrace {
   label: string;
   /** Le nom court du navigateur, `null` pour Windows. */
   browser: string | null;
+  /** Le nom du profil (posé en texte, isolé par `<bdi>`), `null` pour Windows. */
+  profile: string | null;
+  /** Ce qui suit le nom du profil dans la puce : « : historique de navigation ». */
+  tail: string;
 }
 
 /** Un bloc de la confirmation : un navigateur (tous ses profils cochés), ou Windows. */
@@ -190,18 +211,22 @@ export interface PrivacyAsk {
   blocks: AskBlock[];
 }
 
-function askTrace(group: PrivacyGroup, item: TraceItem): AskTrace {
+function askTrace(view: PrivacyView, group: PrivacyGroup, item: TraceItem): AskTrace {
   const trace = traceName(item.kind);
   if (group.kind === 'browser' && group.app !== null) {
+    const profile = profileLabel(group, view);
+    const lower = trace.toLocaleLowerCase('fr');
     return {
       id: item.id,
-      name: fr.privacy.askLine(profileLabel(group), trace.toLocaleLowerCase('fr')),
+      name: fr.privacy.askLine(profile, lower),
       trace,
-      label: groupTitle(group),
+      label: groupTitle(group, view),
       browser: fr.privacy.browser[group.app],
+      profile,
+      tail: fr.privacy.askTail(lower),
     };
   }
-  return { id: item.id, name: trace, trace, label: groupTitle(group), browser: null };
+  return { id: item.id, name: trace, trace, label: groupTitle(group), browser: null, profile: null, tail: '' };
 }
 
 /** La confirmation de ce qui est coché : un bloc par navigateur, puis Windows ; `null` si rien de cochable n'est coché. */
@@ -211,7 +236,7 @@ export function askFor(view: PrivacyView, checked: readonly string[]): PrivacyAs
     return null;
   }
   const picked = (group: PrivacyGroup): AskTrace[] =>
-    group.items.filter((item) => isCheckable(group, item) && wanted.includes(item.id)).map((item) => askTrace(group, item));
+    group.items.filter((item) => isCheckable(group, item) && wanted.includes(item.id)).map((item) => askTrace(view, group, item));
   const blocks: AskBlock[] = [];
   for (const section of browserSections(view)) {
     const traces = section.groups.flatMap(picked);
@@ -238,38 +263,58 @@ export interface LastLine {
   trace: string;
   /** Le nom court du navigateur pour une trace de navigateur, sinon `null`. */
   browser: string | null;
-  outcome: TraceOutcome;
+  /** Le nom du profil pour une trace de navigateur, sinon `null`. */
+  profile: string | null;
+  outcome: LineOutcome;
 }
 
-/** Une issue par trace demandée, dans l'ordre de la confirmation ; une issue pour un identifiant qu'on n'a pas demandé est ignorée. */
+/** Les six issues du cœur, et « inconnue » : une issue que la page ne connaît pas, ou une trace dont le cœur n'a rien dit. */
+export type LineOutcome = TraceOutcome | 'unknown';
+
+const KNOWN: readonly string[] = ['erased', 'nothing', 'inUse', 'changed', 'partial', 'failed'];
+
+/**
+ * Une ligne pour chaque trace de la confirmation, dans son ordre. Une trace dont le cœur ne dit rien, ou dont l'issue
+ * n'est pas l'une des six, est « inconnue » : jamais « Effacé » par défaut. Une issue pour un identifiant qu'on n'a pas
+ * demandé est ignorée.
+ */
 export function lastLines(ask: PrivacyAsk, results: readonly EraseResult[]): LastLine[] {
-  const lines: LastLine[] = [];
-  for (const block of ask.blocks) {
-    for (const trace of block.traces) {
+  return ask.blocks.flatMap((block) =>
+    block.traces.map((trace): LastLine => {
       const found = results.find((result) => result.id === trace.id);
-      if (found !== undefined) {
-        lines.push({ id: trace.id, block: trace.label, trace: trace.trace, browser: trace.browser, outcome: found.outcome });
-      }
-    }
-  }
-  return lines;
+      const known = found !== undefined && typeof found.outcome === 'string' && KNOWN.includes(found.outcome);
+      return {
+        id: trace.id,
+        block: trace.label,
+        trace: trace.trace,
+        browser: trace.browser,
+        profile: trace.profile,
+        outcome: known ? found.outcome : 'unknown',
+      };
+    }),
+  );
 }
 
-/** L'issue en phrase entière : pour les lecteurs d'écran. */
-export const outcomeText = (outcome: TraceOutcome): string => fr.privacy.outcome[outcome];
-
-/** L'issue en deux mots : « En cours d'utilisation », « Profil changé »… */
-export const outcomeShort = (outcome: TraceOutcome): string => fr.privacy.outcomeShort[outcome];
+/** L'issue en deux mots : « En cours d'utilisation », « Profil changé »… `changed` d'une trace de Windows : « A changé ». */
+export function outcomeShort(outcome: LineOutcome, windows = false): string {
+  if (windows && outcome === 'changed') {
+    return fr.privacy.outcomeShortWindows.changed;
+  }
+  return fr.privacy.outcomeShort[outcome];
+}
 
 /** L'issue sous une trace : « En cours d'utilisation. Ferme Chrome et recommence. » */
 export function outcomeLine(line: Pick<LastLine, 'browser' | 'outcome'>): string {
   const help = outcomeHelp(line);
-  return help === null ? outcomeShort(line.outcome) : `${outcomeShort(line.outcome)}. ${help}`;
+  const short = outcomeShort(line.outcome, line.browser === null);
+  return help === null ? short : `${short}. ${help}`;
 }
 
 /** La phrase d'aide sous une issue qui demande quelque chose ; `null` quand il n'y a rien à ajouter. */
 export function outcomeHelp(line: Pick<LastLine, 'browser' | 'outcome'>): string | null {
   switch (line.outcome) {
+    case 'unknown':
+      return fr.privacy.help.lookAgain;
     case 'inUse':
       return line.browser === null ? fr.privacy.help.closeApp : fr.privacy.help.closeBrowser(line.browser);
     case 'changed':
@@ -284,7 +329,7 @@ export function outcomeHelp(line: Pick<LastLine, 'browser' | 'outcome'>): string
 /** La phrase de la région vivante : toutes les issues, une par trace. */
 export function announceLines(lines: readonly LastLine[]): string {
   return fr.privacy.announce(
-    lines.map((line) => fr.privacy.lastLine(line.block, line.trace, outcomeText(line.outcome))).join('. '),
+    lines.map((line) => fr.privacy.lastLine(line.block, line.trace, outcomeLine(line)).replace(/\.$/, '')).join('. '),
   );
 }
 

@@ -143,9 +143,9 @@ export interface AppState {
   privacyAsk: PrivacyAsk | null;
   /** Un effacement est parti : la page est inerte jusqu'à sa réponse. */
   privacyBusy: boolean;
-  /** Le dernier refus du cœur (`busy`, `tooMany`), dit sur la page ; rien n'a été effacé. */
-  privacyRefused: PrivacyRefusal | null;
-  /** L'issue de chaque trace du dernier effacement. */
+  /** Le dernier refus du cœur (`busy`, `tooMany`), ou `listChanged` (la liste de la confirmation ne valait plus), dit sur la page ; rien n'a été effacé. */
+  privacyRefused: PrivacyRefusal | 'listChanged' | null;
+  /** L'issue de chaque trace du dernier effacement : gardée jusqu'au prochain effacement, même si la personne quitte la page. */
   privacyLast: readonly LastLine[];
   /** La phrase de la région vivante : les issues du dernier effacement, annoncées une fois. */
   privacyAnnounce: string;

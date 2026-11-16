@@ -681,6 +681,7 @@ export const fr = typeset({
     title: 'Confidentialité',
     intro: 'Des traces de ton activité sur ce PC, dans ton compte. Rien n’est coché d’avance.',
     erase: 'Effacer ce qui est coché',
+    nothingNow: 'Rien à effacer pour l’instant.',
     eraseHint: 'Coche au moins une trace pour pouvoir l’effacer.',
     checked: (count: number) => `${countOf(count, 'trace cochée', 'traces cochées')}.`,
     retry: 'Réessayer',
@@ -697,6 +698,10 @@ export const fr = typeset({
     /** Celui d'une case de navigateur : « Chrome, Léa, historique de navigation ». */
     checkLabelProfile: exact((app: string, profile: string, trace: string) => [`${app}`, ', ', verbatim(`${profile}`), ', ', `${trace}`]),
     /** La puce de la confirmation : « Léa : historique de navigation ». */
+    /** Ce qui suit le nom du profil dans la puce (le nom, lui, est posé à part et isolé par `<bdi>`). */
+    askTail: (trace: string) => ` : ${trace}`,
+    /** Deux profils du même nom : « Léa (Profil 3) ». */
+    twinProfile: exact((name: string, folder: string) => [verbatim(`${name}`), ' (', `${folder}`, ')']),
     askLine: exact((profile: string, trace: string) => [verbatim(`${profile}`), ' : ', `${trace}`]),
     browsers: {
       title: 'Navigateurs',
@@ -722,7 +727,6 @@ export const fr = typeset({
       history: (count: number) => countOf(count, 'élément', 'éléments'),
       recent: (count: number) => countOf(count, 'raccourci', 'raccourcis'),
       typed: (count: number) => countOf(count, 'élément', 'éléments'),
-      clipboard: (count: number) => countOf(count, 'élément', 'éléments'),
     },
     nothing: 'Rien à effacer',
     unreadable: 'Shinku n’a pas pu lire cette trace : elle n’est pas proposée.',
@@ -772,26 +776,19 @@ export const fr = typeset({
         backups: 'Les copies gardées dans tes sauvegardes et tes points de restauration',
       },
       outside:
-        'Pas encore pris en charge : Opera et Opera GX, les versions Beta, Dev et Canary des navigateurs, les autres comptes de ce PC.',
+        'Pas encore pris en charge : Opera et Opera GX, les versions Beta, Dev et Canary des navigateurs, les fichiers récents d’Office et des autres apps, les autres comptes de ce PC.',
     },
 
     confirm: {
       title: 'Effacer ces traces ?',
+      titleOne: 'Effacer cette trace ?',
       intro: 'Tu vas effacer :',
       direct: 'Elles sont supprimées directement, sans passer par la Corbeille.',
+      directOne: 'Elle est supprimée directement, sans passer par la Corbeille.',
       confirm: 'Effacer',
       cancel: 'Annuler',
     },
 
-    // L'issue de chaque trace cochée.
-    outcome: {
-      erased: 'Effacé',
-      nothing: 'Rien à effacer',
-      inUse: 'En cours d’utilisation : ferme l’app et recommence',
-      changed: 'Ce profil a changé : regarde de nouveau',
-      partial: 'Effacé en partie : il en reste',
-      failed: 'Pas pu être effacé',
-    },
     lastTitle: 'Dernier effacement',
     // Dans la carte « Dernier effacement » et sous une ligne : l'issue en deux mots, puis l'aide quand il y en a une.
     outcomeShort: {
@@ -801,7 +798,9 @@ export const fr = typeset({
       changed: 'Profil changé',
       partial: 'Effacé en partie',
       failed: 'Pas pu être effacé',
+      unknown: 'Résultat inconnu',
     },
+    outcomeShortWindows: { changed: 'A changé' },
     help: {
       closeBrowser: (app: string) => `Ferme ${app} et recommence.`,
       closeApp: 'Ferme l’app et recommence.',
@@ -812,7 +811,8 @@ export const fr = typeset({
     /** `issues` : les phrases des issues, déjà jointes (voir `announceLines`). */
     announce: (issues: string) => `Effacement terminé. ${issues}.`,
     refused: {
-      busy: 'Un grand vide ou un autre effacement est en cours : attends qu’il se termine, puis recommence. Rien n’a été effacé.',
+      busy: 'Un grand vide, une mise à la corbeille de restes ou un autre effacement est en cours : attends qu’il se termine, puis recommence. Rien n’a été effacé.',
+      listChanged: 'La liste a changé : regarde de nouveau.',
       tooMany: 'Trop de traces cochées d’un coup (64 au plus) : décoche-en quelques-unes, puis recommence. Rien n’a été effacé.',
     },
   },
