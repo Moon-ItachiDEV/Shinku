@@ -265,6 +265,8 @@ export class App {
   /** La page Confidentialité est affichée : sa vue se charge à l'arrivée et au retour du focus, jamais en boucle. */
   private privacyWatching = false;
   private privacyVisit = 0;
+  /** L'annonce d'un effacement terminé hors de la page, gardée pour le retour. */
+  private privacyPendingAnnounce = '';
   /** Change au départ et à la réponse de chaque effacement : une vue demandée avant lui et arrivée après est ignorée. */
   private privacyAction = 0;
   /** Le numéro de la dernière demande de vue : seule sa réponse compte. */
@@ -1921,6 +1923,11 @@ export class App {
     this.privacyLoadedAt = 0;
     this.privacyRetried = false;
     this.dropPrivacy();
+    // Un effacement fini pendant que la personne était ailleurs : annoncé une fois à son retour, puis plus.
+    if (this.privacyPendingAnnounce !== '') {
+      this.set({ privacyAnnounce: this.privacyPendingAnnounce });
+      this.privacyPendingAnnounce = '';
+    }
     void this.refreshPrivacy(true);
   }
 
@@ -1944,6 +1951,7 @@ export class App {
       privacyAsk: null,
       privacyRefused: null,
       privacyAnnounce: '',
+      privacyLineOutcomes: false,
     });
   }
 
@@ -2018,6 +2026,8 @@ export class App {
   /** La confirmation ne vaut plus : elle se referme, rien n'est envoyé, et la page le dit. */
   private closeAskChanged(): void {
     this.set({ privacyAsk: null, privacyRefused: 'listChanged', privacyAnnounce: fr.privacy.refused.listChanged });
+    // Le bouton qui avait ouvert la confirmation peut avoir disparu avec les cases : le focus va sur celui de l'en-tête, toujours là.
+    this.focusKey(privacyFocus.erase);
   }
 
   private toggleTrace(id: string): void {
@@ -2025,7 +2035,7 @@ export class App {
     if (view === null || this.state.privacyBusy) {
       return;
     }
-    this.set({ privacyChecked: toggledTrace(view, this.state.privacyChecked, id), privacyRefused: null });
+    this.set({ privacyChecked: toggledTrace(view, this.state.privacyChecked, id), privacyRefused: null, privacyLineOutcomes: false });
   }
 
   /** « Effacer ce qui est coché » : la confirmation liste ce qui partira. Rien ne part encore. */
@@ -2066,7 +2076,7 @@ export class App {
     // Une vue en vol est périmée par ce geste.
     this.privacyAction += 1;
     this.privacyLoading = false;
-    this.set({ privacyAsk: null, privacyBusy: true, privacyRefused: null, privacyLast: [], privacyAnnounce: '' });
+    this.set({ privacyAsk: null, privacyBusy: true, privacyRefused: null, privacyLast: [], privacyLastAt: null, privacyLineOutcomes: false, privacyAnnounce: '' });
     try {
       const answer = await this.backend.eraseTraces(ask.ids);
       this.privacyAction += 1;
@@ -2074,7 +2084,13 @@ export class App {
       if (!here) {
         // La personne est partie, ou revenue : la vue de cette réponse n'est pas celle de sa visite, mais l'issue est gardée
         // pour la carte « Dernier effacement », qui l'attend à son retour.
-        this.set({ privacyBusy: false, privacyChecked: [], privacyLast: lastLines(ask, answer.results) });
+        const away = lastLines(ask, answer.results);
+        this.set({ privacyBusy: false, privacyChecked: [], privacyLast: away, privacyLastAt: Date.now(), privacyLineOutcomes: false });
+        if (this.state.route === 'privacy') {
+          this.set({ privacyAnnounce: announceLines(away) });
+        } else {
+          this.privacyPendingAnnounce = announceLines(away);
+        }
         void this.refreshPrivacy(true);
         return;
       }
@@ -2085,6 +2101,8 @@ export class App {
         privacyFailed: false,
         privacyChecked: [],
         privacyLast: lines,
+        privacyLastAt: Date.now(),
+        privacyLineOutcomes: true,
         privacyAnnounce: announceLines(lines),
       });
       this.focusKey(privacyFocus.erase);

@@ -1618,7 +1618,7 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
     ...appsBackend(options.apps),
     privacyView: async () => privacyView(),
     eraseTraces: async (ids): Promise<ErasedTraces> => {
-      // L'ordre du cœur : un grand vide, une mise à la corbeille de restes ou un autre effacement en cours d'abord, puis le nombre.
+      // Le même ordre que le cœur, pour ce que la démo sait : un grand vide ou un autre effacement en cours est refusé (`busy`) avant le nombre (`tooMany`). Elle ne connaît pas la mise à la corbeille de restes.
       if (erasing || cleanRunning()) {
         return privacyRefused('busy');
       }

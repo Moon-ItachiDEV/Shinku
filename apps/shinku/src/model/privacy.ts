@@ -31,7 +31,8 @@ export function profileLabel(group: PrivacyGroup, view?: PrivacyView): string {
   }
   // Deux profils du même nom dans le même navigateur : on ajoute le nom du dossier, seulement alors.
   const twins = view.groups.filter((other) => other.app === group.app && ownLabel(other) === own);
-  return twins.length > 1 ? fr.privacy.twinProfile(own, folderLabel(group)) : own;
+  // Un profil sans nom lu s'appelle déjà comme son dossier : rien à ajouter.
+  return twins.length > 1 && hasName(group) ? fr.privacy.twinProfile(own, folderLabel(group)) : own;
 }
 
 /** Le nom du dossier du profil : « Profil principal » pour `Default`, « Profil N » pour `Profile N`. */
@@ -41,7 +42,11 @@ function folderLabel(group: PrivacyGroup): string {
 
 /** Le nom que le navigateur a donné ; vide ou fait d'espaces, c'est comme s'il n'y en avait pas. */
 function ownLabel(group: PrivacyGroup): string {
-  return group.profile !== null && group.profile.trim() !== '' ? group.profile : folderLabel(group);
+  return hasName(group) ? (group.profile as string) : folderLabel(group);
+}
+
+function hasName(group: PrivacyGroup): boolean {
+  return group.profile !== null && group.profile.trim() !== '';
 }
 
 /** Le titre d'un bloc : « Chrome · Léa », ou « Windows ». */
@@ -133,7 +138,7 @@ export function traceSize(item: TraceItem): string | null {
   if (item.bytes !== null) {
     return formatBytes(item.bytes);
   }
-  if (item.count !== null) {
+  if (item.count !== null && item.kind !== 'history') {
     return fr.privacy.count[item.kind](item.count);
   }
   return null;

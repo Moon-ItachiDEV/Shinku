@@ -129,7 +129,7 @@ test('essai de la Confidentialité : après un effacement, la carte « Dernier e
     { id: 'w-typed', outcome: 'erased' },
   ] as never);
   assert.equal(lines.length, 2);
-  const tree = page({ privacyLast: lines });
+  const tree = page({ privacyLast: lines, privacyLineOutcomes: true });
   const last = found(tree, DOM.last, 'lignes du dernier effacement');
   assert.equal(last.length, 2);
   const [first, second] = last as [Node, Node];

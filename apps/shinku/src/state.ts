@@ -147,6 +147,10 @@ export interface AppState {
   privacyRefused: PrivacyRefusal | 'listChanged' | null;
   /** L'issue de chaque trace du dernier effacement : gardée jusqu'au prochain effacement, même si la personne quitte la page. */
   privacyLast: readonly LastLine[];
+  /** L'heure (`Date.now()`) à laquelle la réponse du cœur est arrivée : elle date la carte « Dernier effacement ». `null` sans effacement. */
+  privacyLastAt: number | null;
+  /** L'issue ne vaut sous les lignes que pour la visite où elle est arrivée, et jusqu'à ce que la personne recoche quelque chose. */
+  privacyLineOutcomes: boolean;
   /** La phrase de la région vivante : les issues du dernier effacement, annoncées une fois. */
   privacyAnnounce: string;
   /** L'heure qu'il est, rafraîchie de temps en temps : pour « il y a 8 mois ». */
@@ -210,6 +214,8 @@ export function initialState(now: number): AppState {
     privacyBusy: false,
     privacyRefused: null,
     privacyLast: [],
+    privacyLastAt: null,
+    privacyLineOutcomes: false,
     privacyAnnounce: '',
     now,
   };

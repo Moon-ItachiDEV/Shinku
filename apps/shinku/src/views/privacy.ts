@@ -91,7 +91,7 @@ function lastCard(state: AppState): Content {
   ${lines.length === 0
     ? nothing
     : html`<section class="psec" aria-labelledby="privacy-last-title">
-        <h2 class="sub flat" id="privacy-last-title">${fr.privacy.lastTitle}</h2>
+        <h2 class="sub flat" id="privacy-last-title">${lastTitle(state)}</h2>
         <div class="card pcard">
           <ul class="plist">
             ${repeat(
@@ -109,7 +109,7 @@ function lastCard(state: AppState): Content {
                     <span class="t2">${line.trace}</span>
                     ${help === null ? nothing : html`<span class="t2 phelp">${help}</span>`}
                   </span>
-                  <span class="val pres ${line.outcome === 'erased' || line.outcome === 'nothing' ? '' : 'pbad'}">${outcomeShort(line.outcome)}</span>
+                  <span class="val pres ${line.outcome === 'erased' || line.outcome === 'nothing' ? '' : 'pbad'}">${outcomeShort(line.outcome, line.browser === null)}</span>
                 </li>`;
               },
             )}
@@ -118,10 +118,19 @@ function lastCard(state: AppState): Content {
       </section>`}`;
 }
 
+/** « Dernier effacement, à 14 h 32 » : l'heure locale de la réponse du cœur. */
+function lastTitle(state: AppState): string {
+  if (state.privacyLastAt === null) {
+    return fr.privacy.lastTitle;
+  }
+  const at = new Date(state.privacyLastAt);
+  return fr.privacy.lastTitleAt(at.getHours(), at.getMinutes());
+}
+
 // ── Lignes ─────────────────────────────────────────────────────────────────
 
 function outcomeOf(state: AppState, item: TraceItem): Content {
-  const line = state.privacyLast.find((one) => one.id === item.id);
+  const line = state.privacyLineOutcomes ? state.privacyLast.find((one) => one.id === item.id) : undefined;
   return line === undefined ? nothing : html`<span class="t2 pout" id="${rowId(item)}-o">${outcomeLine(line)}</span>`;
 }
 
@@ -165,7 +174,7 @@ function row(state: AppState, group: PrivacyGroup, item: TraceItem, actions: Act
         data-fk=${privacyFocus.check(item.id)}
         .checked=${checked}
         aria-label=${checkLabel(group, item, state.privacy ?? undefined)}
-        aria-describedby="${base}-d${state.privacyLast.some((one) => one.id === item.id) ? ` ${base}-o` : ''}"
+        aria-describedby="${base}-d${state.privacyLineOutcomes && state.privacyLast.some((one) => one.id === item.id) ? ` ${base}-o` : ''}"
         aria-disabled=${isBusy(state) ? 'true' : nothing}
         @click=${(event: Event) => {
           // Pendant un effacement, la case ne bouge pas : l'écran et l'état disent la même chose.

@@ -681,7 +681,7 @@ export const fr = typeset({
     title: 'Confidentialité',
     intro: 'Des traces de ton activité sur ce PC, dans ton compte. Rien n’est coché d’avance.',
     erase: 'Effacer ce qui est coché',
-    nothingNow: 'Rien à effacer pour l’instant.',
+    nothingNow: 'Rien à cocher pour l’instant.',
     eraseHint: 'Coche au moins une trace pour pouvoir l’effacer.',
     checked: (count: number) => `${countOf(count, 'trace cochée', 'traces cochées')}.`,
     retry: 'Réessayer',
@@ -697,11 +697,11 @@ export const fr = typeset({
     checkLabel: exact((block: string, trace: string) => [verbatim(`${block}`), ', ', `${trace}`]),
     /** Celui d'une case de navigateur : « Chrome, Léa, historique de navigation ». */
     checkLabelProfile: exact((app: string, profile: string, trace: string) => [`${app}`, ', ', verbatim(`${profile}`), ', ', `${trace}`]),
-    /** La puce de la confirmation : « Léa : historique de navigation ». */
     /** Ce qui suit le nom du profil dans la puce (le nom, lui, est posé à part et isolé par `<bdi>`). */
     askTail: (trace: string) => ` : ${trace}`,
     /** Deux profils du même nom : « Léa (Profil 3) ». */
     twinProfile: exact((name: string, folder: string) => [verbatim(`${name}`), ' (', `${folder}`, ')']),
+    /** La puce de la confirmation, en une pièce : « Léa : historique de navigation ». */
     askLine: exact((profile: string, trace: string) => [verbatim(`${profile}`), ' : ', `${trace}`]),
     browsers: {
       title: 'Navigateurs',
@@ -724,7 +724,6 @@ export const fr = typeset({
       clipboard: 'Ce que tu viens de copier, et l’historique (Windows+V).',
     },
     count: {
-      history: (count: number) => countOf(count, 'élément', 'éléments'),
       recent: (count: number) => countOf(count, 'raccourci', 'raccourcis'),
       typed: (count: number) => countOf(count, 'élément', 'éléments'),
     },
@@ -790,6 +789,9 @@ export const fr = typeset({
     },
 
     lastTitle: 'Dernier effacement',
+    /** Le titre de la carte, daté : « Dernier effacement, à 14 h 32 » (heure locale). */
+    lastTitleAt: (hours: number, minutes: number) =>
+      `Dernier effacement, à ${hours}${NBSP}h${NBSP}${`${minutes}`.padStart(2, '0')}`,
     // Dans la carte « Dernier effacement » et sous une ligne : l'issue en deux mots, puis l'aide quand il y en a une.
     outcomeShort: {
       erased: 'Effacé',

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 
 import type { Backend, PrivacyGroup, PrivacyView, TraceItem } from '../src/backend/types.ts';
 import { fr } from '../src/i18n/fr.ts';
-import { checkableIds, PRIVACY_RELOAD_GAP } from '../src/model/privacy.ts';
+import { checkableIds, PRIVACY_RELOAD_GAP, privacyFocus } from '../src/model/privacy.ts';
 import { IDLE_SESSION } from '../src/state.ts';
 
 // ── Un faux environnement de page ──────────────────────────────────────────
@@ -588,6 +588,107 @@ test('quitter puis revenir sur la page garde « Dernier effacement » ; un nouve
   page.actions.navigate('privacy');
   assert.equal(page.state().privacyLast.length, 1);
   assert.deepEqual(page.state().privacyChecked, []);
+});
+
+test('la confirmation se referme parce que la liste a changé : le focus va sur « Effacer ce qui est coché » de l’en-tête, jamais sur le corps', async () => {
+  const fake = fakeBackend();
+  const focused: string[] = [];
+  const buttons = [{ dataset: { fk: 'autre' }, focus: () => focused.push('autre') }, { dataset: { fk: privacyFocus.erase }, focus: () => focused.push('erase') }];
+  const root = { querySelectorAll: () => buttons } as unknown as HTMLElement;
+  const app = new App(fake.backend, root, () => {});
+  const actions = app['actions'];
+  actions.navigate('privacy');
+  fake.of('privacyView')[0]?.resolve(view());
+  await flush();
+  actions.toggleTrace('t-chrome');
+  actions.askErase();
+  app['set']({ privacy: view([RUNNING_CHROME, EDGE, WINDOWS]) });
+  environment.active = null;
+  actions.confirmErase();
+  await flush();
+  assert.deepEqual(focused, ['erase']);
+});
+
+test('seul un poids change dans la vue relue : la confirmation reste ouverte, sa liste est la même, aucun refus', async () => {
+  const page = start();
+  await page.boot();
+  await page.open();
+  page.actions.toggleTrace('t-chrome');
+  page.actions.toggleTrace('t-recent');
+  page.actions.askErase();
+  const before = page.state().privacyAsk;
+  mock.timers.tick(PRIVACY_RELOAD_GAP);
+  page.focusWindow();
+  page.of('privacyView')[1]?.resolve(
+    view([group('chrome:0', 'chrome', [item('t-chrome', { bytes: 4096 })]), EDGE, group('windows', null, [item('t-recent', { kind: 'recent', bytes: null, count: 9 }), item('t-typed', { kind: 'typed', bytes: null, count: 3 }), item('t-clip', { kind: 'clipboard', bytes: null })])]),
+  );
+  await flush();
+  assert.equal(page.state().privacyAsk, before, 'la confirmation est celle d’avant');
+  assert.equal(page.state().privacyRefused, null);
+  page.actions.confirmErase();
+  assert.deepEqual(page.of('eraseTraces')[0]?.args, [['t-chrome', 't-recent']]);
+});
+
+test('au retour sur la page : la carte reste avec son heure, aucune ligne ne porte l’issue ; recocher la retire aussi', async () => {
+  const page = start();
+  await page.boot();
+  await page.open();
+  page.actions.toggleTrace('t-chrome');
+  page.actions.askErase();
+  page.actions.confirmErase();
+  page.of('eraseTraces')[0]?.resolve({ view: view(), results: [{ id: 't-chrome', outcome: 'erased' }] });
+  await flush();
+  assert.equal(page.state().privacyLineOutcomes, true);
+  assert.equal(page.state().privacyLastAt, NOW);
+  page.actions.toggleTrace('t-edge');
+  assert.equal(page.state().privacyLineOutcomes, false, 'cocher de nouveau retire l’issue des lignes');
+  assert.equal(page.state().privacyLast.length, 1, 'la carte reste');
+  // Retour sur la page : même chose.
+  page.actions.askErase();
+  page.actions.confirmErase();
+  page.of('eraseTraces')[1]?.resolve({ view: view(), results: [{ id: 't-edge', outcome: 'erased' }] });
+  await flush();
+  assert.equal(page.state().privacyLineOutcomes, true);
+  page.actions.navigate('home');
+  page.actions.navigate('privacy');
+  assert.equal(page.state().privacyLineOutcomes, false);
+  assert.equal(page.state().privacyLast.length, 1);
+  assert.equal(page.state().privacyLastAt, NOW);
+});
+
+test('une issue arrivée pendant que la personne était ailleurs est annoncée une fois au retour, puis plus', async () => {
+  const page = start();
+  await page.boot();
+  await page.open();
+  page.actions.toggleTrace('t-chrome');
+  page.actions.askErase();
+  page.actions.confirmErase();
+  page.actions.navigate('home');
+  page.of('eraseTraces')[0]?.resolve({ view: erased(view(), ['t-chrome']), results: [{ id: 't-chrome', outcome: 'erased' }] });
+  await flush();
+  assert.equal(page.state().privacyAnnounce, '', 'pas d’annonce ailleurs');
+  page.actions.navigate('privacy');
+  assert.ok(page.state().privacyAnnounce.includes('Effacement terminé'));
+  page.actions.navigate('home');
+  page.actions.navigate('privacy');
+  assert.equal(page.state().privacyAnnounce, '', 'puis plus');
+});
+
+test('revenue sur la page avant la réponse : l’issue est annoncée tout de suite, et pas une seconde fois à un autre retour', async () => {
+  const page = start();
+  await page.boot();
+  await page.open();
+  page.actions.toggleTrace('t-chrome');
+  page.actions.askErase();
+  page.actions.confirmErase();
+  page.actions.navigate('home');
+  page.actions.navigate('privacy');
+  page.of('eraseTraces')[0]?.resolve({ view: erased(view(), ['t-chrome']), results: [{ id: 't-chrome', outcome: 'erased' }] });
+  await flush();
+  assert.ok(page.state().privacyAnnounce.includes('Effacement terminé'));
+  page.actions.navigate('home');
+  page.actions.navigate('privacy');
+  assert.equal(page.state().privacyAnnounce, '');
 });
 
 // ── Dans Windows ───────────────────────────────────────────────────────────

@@ -246,6 +246,41 @@ test('la confirmation vaut tant que chacune de ses traces se coche encore', () =
   assert.equal(askHolds(view([{ ...CHROME_MAIN, items: [trace('chrome:0-h', 'history', { state: 'unreadable' })] }, EDGE]), ask), false, 'trace devenue illisible');
 });
 
+test('un profil sans nom lu garde le nom de son dossier : jamais « Profil 2 (Profil 2) »', () => {
+  const named = browser('chrome', 0, 'Profil 2', { bytes: 1 });
+  const bare = browser('chrome', 2, null, { bytes: 2 });
+  const shown = view([named, bare, WINDOWS]);
+  assert.equal(profileLabel(named, shown), 'Profil 2 (Profil principal)');
+  assert.equal(profileLabel(bare, shown), 'Profil 2');
+  const blank = browser('chrome', 2, '   ', { bytes: 2 });
+  assert.equal(profileLabel(blank, view([named, blank, WINDOWS])), 'Profil 2');
+});
+
+test('rien ne se coche : « Rien à cocher pour l’instant. », aussi quand un navigateur ouvert rend ses lignes inertes', () => {
+  assert.equal(fr.privacy.nothingNow, 'Rien à cocher pour l’instant.');
+});
+
+test('la carte « Dernier effacement » porte l’heure locale ; les lignes n’ont plus d’issue quand elle date d’une autre visite', () => {
+  const ask = askFor(FULL, ['chrome:0-h', 'w-recent']);
+  assert.ok(ask !== null);
+  const lines = lastLines(ask, [
+    { id: 'chrome:0-h', outcome: 'erased' },
+    { id: 'w-recent', outcome: 'changed' },
+  ]);
+  const at = new Date(2026, 10, 16, 9, 5).getTime();
+  const old = page({ privacyLast: lines, privacyLastAt: at, privacyLineOutcomes: false });
+  assert.equal(flat(textOfNode(query(old.tree, '[id="privacy-last-title"]') as Node)), flat(`Dernier effacement, à 9${NBSP}h${NBSP}05`));
+  assert.equal(queryAll(old.tree, '.plast').length, 2, 'la carte reste');
+  assert.equal(queryAll(old.tree, '.pout').length, 0, 'aucune ligne ne porte « Effacé »');
+  assert.ok(!markupOf(old.template).includes('-o"'), 'et aucune ne s’y réfère');
+  const windows = queryAll(old.tree, '.plast')[1] as Node;
+  assert.equal(flat(textOfNode(query(windows, '.pres') as Node)), 'A changé', 'Windows : « A changé », pas « Profil changé »');
+  const fresh = page({ privacyLast: lines, privacyLastAt: at, privacyLineOutcomes: true });
+  assert.ok(queryAll(fresh.tree, '.pout').length >= 1);
+  const afternoon = page({ privacyLast: lines, privacyLastAt: new Date(2026, 10, 16, 14, 32).getTime() });
+  assert.ok(flat(textOfNode(query(afternoon.tree, '[id="privacy-last-title"]') as Node)).includes(flat(`à 14${NBSP}h${NBSP}32`)));
+});
+
 test('deux profils du même nom dans le même navigateur : le dossier s’ajoute, seulement alors', () => {
   const lea0 = browser('chrome', 0, 'Léa', { bytes: 1 });
   const lea3 = browser('chrome', 3, 'Léa', { bytes: 2 });
@@ -572,12 +607,13 @@ test('après un effacement : une issue par ligne dans la carte, dans la région 
     ask,
     ask.ids.map((id, index) => ({ id, outcome: outcomes[index] as TraceOutcome })),
   );
-  const { tree, text } = page({ privacyLast: lines, privacyAnnounce: announceLines(lines) });
+  const { tree, text } = page({ privacyLast: lines, privacyLineOutcomes: true, privacyAnnounce: announceLines(lines) });
   const card = queryAll(tree, '.plast');
   assert.equal(card.length, 5);
   for (const [index, line] of card.entries()) {
     const outcome = outcomes[index] as TraceOutcome;
-    assert.ok(flat(textOfNode(query(line, '.pres') as Node)) === flat(outcomeShort(outcome)));
+    // Une trace de Windows qui a changé dit « A changé », pas « Profil changé ».
+    assert.equal(flat(textOfNode(query(line, '.pres') as Node)), flat(outcomeShort(outcome, index >= 2)));
     // Le nom d'abord, la trace ensuite ; jamais deux deux-points ni une majuscule au milieu d'une phrase.
     assert.ok(!/:.*:/.test(textOfNode(line)), textOfNode(line));
   }
