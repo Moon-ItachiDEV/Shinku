@@ -1,0 +1,7 @@
+Le paquet selectors 0.38.0 déclare la licence MPL-2.0 (Cargo.toml) mais ne contient aucun
+fichier de licence, ni sur crates.io ni dans son dépôt d'origine
+(https://github.com/servo/stylo, dossier selectors, commit
+572ecba2d1600e7c3d490586692a209faf703baa enregistré par cargo).
+Le texte joint est celui de la Mozilla Public License 2.0, le même pour tout logiciel sous
+cette licence : il est recopié tel quel du fichier LICENSE du paquet cssparser 0.38.0 (même
+organisation, même licence), présent dans le graphe de Shinku.

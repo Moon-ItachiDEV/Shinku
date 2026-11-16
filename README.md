@@ -121,6 +121,7 @@ npm run check      # les types
 npm test           # les tests de l'interface, du contrat et du câblage
 npm run tauri dev  # Windows : la vraie fenêtre, rechargée à chaque changement
 npm run tauri build  # Windows : shinku.exe, shinku-agent.exe et l'installeur
+node scripts/licences-tiers.mjs  # fabrique LICENCES-TIERS.txt ; avec --verifier : seulement la garde des licences
 ```
 
 L'installeur est écrit dans `target/release/bundle/nsis/`. Son habillage

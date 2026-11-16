@@ -621,9 +621,11 @@ du PC ne l'est pas (voir « Limites connues »).
   reprise sur place tourne alors en même temps que l'agent, et l'agent continue
   ensuite de tourner. Fenêtre de quelques centaines de millisecondes.
 - **Une désinstallation élevée par un autre compte** que celui de la personne
-  (un compte standard élevé avec les identifiants d'un administrateur) vise le
-  profil de l'administrateur : `--retirer` ne trouve pas le `game.json` de la
-  personne et ne remet rien. La valeur `Run` qui resterait pointe sur un
+  (un compte standard élevé avec les identifiants d'un administrateur), quand
+  aucun agent de la personne ne répond à l'ordre, vise le profil de
+  l'administrateur : `--retirer` ne trouve pas le `game.json` de la personne et
+  ne remet rien (si son agent tourne, il reçoit l'ordre : voir « Avant une version
+  publique »). La valeur `Run` qui resterait pointe sur un
   programme absent, donc inerte ; le journal resté est repris au prochain
   démarrage de l'agent si Shinku est réinstallé.
 - **La valeur `Run` des autres comptes du PC reste** après la désinstallation :
@@ -1994,12 +1996,15 @@ repris.
   dit à la personne.
 - **« Mes réglages » sont ceux de la personne devant le bureau.** Les réglages des
   autres comptes du PC restent.
-- **L'agent a le même défaut de cible** : `--retirer` est lancé par le
-  désinstalleur élevé. Avec un autre compte d'élévation, il remet en place et
-  retire la valeur de démarrage du mauvais compte. Non traité ici (cela change un
-  passage prouvé sur le vrai Windows, utilisé aussi à l'installation) ; la
-  solution est le même lancement par `RunAsUser`. À faire avant la sortie
-  publique, une fois ce lot prouvé.
+- **L'agent retiré dans le mauvais compte : une limite connue, non corrigée.**
+  `--retirer` est lancé par le désinstalleur élevé. Avec un agent en marche, c'est
+  l'agent de la personne qui reçoit l'ordre (fenêtre cachée du même bureau, mutex
+  de la session) : il remet tout en place et efface sa valeur `Run` dans le bon
+  compte, même si l'élévation s'est faite avec un autre compte. Sans agent qui
+  réponde **et** avec une élévation par un autre compte, le programme élevé fait
+  la reprise et efface la valeur `Run` dans le profil du compte élevé : le
+  journal de la personne n'est pas repris, et sa valeur `Run` reste, pointée vers
+  un fichier supprimé (Windows l'ignore). Voir « Avant une version publique ».
 - **Le modèle de Tauri touche encore le profil du compte qui a élevé**, hors de la
   case : il retire les raccourcis, l'épinglage et la valeur `Run` de `HKCU` (des
   appels ciblés, sans récursion). Même défaut de cible que l'agent quand
@@ -2265,17 +2270,131 @@ d'utilisateur (`apps/shinku/scripts/lancer-en-utilisateur.ps1`) : ce sont les
 droits qu'il a sur le PC de quelqu'un, et WebView2 n'écoute cette variable
 d'environnement que dans un programme sans droits d'administrateur.
 
+## Licences des dépendances
+
+Shinku embarque des composants écrits par d'autres : des paquets Rust (MIT,
+Apache-2.0, BSD, Unicode-3.0, Zlib, MPL-2.0…), `lit-html`, `@tauri-apps/api`,
+deux polices sous licence OFL et quelques composants de l'installeur. Presque
+toutes ces licences demandent que leur texte accompagne chaque copie distribuée.
+L'installeur dépose donc `LICENCES-TIERS.txt` à côté de `shinku.exe`.
+
+**Ce que fait `apps/shinku/scripts/licences-tiers.mjs`** (Node 22, sans
+dépendance). Il fabrique le fichier, par défaut dans
+`apps/shinku/src-tauri/licences/LICENCES-TIERS.txt` (ignoré par git) :
+
+- *Les paquets Rust* : l'union de `cargo tree --locked -e normal,build --target
+  x86_64-pc-windows-msvc --prefix none` lancé comme la fabrication compile, une
+  fois pour la fenêtre (`-p shinku`, ce que `tauri build` compile) et une fois
+  pour l'agent et l'assistant (`-p shinku-agent -p shinku-helper`, ce que
+  `beforeBuildCommand` compile). Les paquets du dépôt (sans `source`) sont
+  écartés ; le dossier, l'expression de licence et l'adresse du dépôt de chacun
+  viennent de `cargo metadata --format-version 1 --locked`. `--hors-ligne` (ou
+  `SHINKU_CARGO_HORS_LIGNE=1`) ajoute `--offline` aux appels de cargo.
+- *Les paquets de la page* : les `dependencies` de `package-lock.json` (donc leurs
+  dépendances transitives) et les deux polices, nommées dans `PAGE_DEV_PACKAGES`
+  parce qu'elles sont en `devDependencies` mais que leur contenu part dans la page.
+  Un essai échoue si `src` importe (code ou CSS) un paquet qui n'est dans aucune
+  des deux listes.
+- *Les textes* : les fichiers `LICENSE*`, `LICENCE*`, `COPYING*`, `NOTICE*` et
+  `UNLICENSE*` de la racine du paquet (casse ignorée, liens non suivis, 256 Kio au
+  plus). Les textes identiques (fins de ligne normalisées) ne sont écrits
+  qu'une fois ; chaque paquet renvoie aux siens par un numéro.
+- *La section fixe* : `src-tauri/licences/section-fixe.txt`, écrite à la main,
+  recopiée en tête : la bibliothèque standard de Rust, NSIS, le greffon
+  `nsis_tauri_utils`, le chargeur du SDK WebView2, l'amorce de WebView2 et la
+  bibliothèque d'exécution Visual C++. Les textes qu'on n'a pas pu tirer d'une
+  source sûre ne sont pas écrits : la section nomme le composant, d'où il vient,
+  et renvoie à l'adresse officielle de sa licence.
+- *MPL-2.0* : chaque paquet sous MPL-2.0 porte la phrase qui dit où obtenir le
+  code source de sa version (adresse du dépôt et version).
+- La sortie est triée, sans date ni chemin de la machine : deux passages donnent
+  le même fichier, octet pour octet.
+
+**La garde** : `node scripts/licences-tiers.mjs --verifier` n'écrit rien et sort
+en erreur, en nommant chaque paquet fautif, si une expression de licence n'est pas
+satisfaite par la liste permise (`ALLOWED_LICENSES`, dans le script : MIT, MIT-0,
+Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib,
+0BSD, Unlicense, CC0-1.0, Unicode-3.0, Unicode-DFS-2016, BSL-1.0, MPL-2.0,
+OFL-1.1 ; `OR` et l'ancien `/` : une suffit ; `AND` : toutes ; `WITH` fait partie
+du nom), si une expression est illisible ou absente, ou si un paquet n'a aucun
+texte de licence. Fabriquer le fichier lance la même garde et n'écrit rien si elle
+échoue. Un essai de `npm test` la lance sur le vrai dépôt ; il échoue (il ne saute
+pas) si `cargo` manque. En CI, `cargo metadata` donne le dossier de chaque paquet :
+cela suppose que cargo ait téléchargé les sources (non vérifié ici, hors ligne).
+
+**Les compléments à la main.** Un paquet dont le dossier ne contient aucun texte
+reçoit un dossier `src-tauri/licences/complements/<nom du paquet>/` (versionné) :
+le fichier de licence, pris dans le dépôt d'origine (à l'étiquette ou au commit de
+la version utilisée) ou, à défaut, dans une autre source sûre, jamais écrit de
+mémoire, et un `SOURCE.txt` qui dit d'où il vient. Un complément s'ajoute aux textes du dossier du paquet, par nom (toutes ses
+versions) ; un complément dont le paquet n'est plus dans le graphe est une erreur.
+Aujourd'hui : `alloc-stdlib`, `selectors` (voir les limites), `webview2-com`,
+`webview2-com-macros` et `webview2-com-sys`.
+
+**Ajouter une dépendance.** Rien à faire si sa licence est dans la liste et si son
+dossier contient son texte : le fichier la reprend à la prochaine fabrication.
+Sinon, `npm test` (ou `--verifier`) échoue en la nommant : soit on ajoute un
+complément (texte pris d'une source sûre, avec son `SOURCE.txt`), soit une
+personne décide d'accepter la licence et l'ajoute à `ALLOWED_LICENSES` (avec
+son essai). Une dépendance de la page qui n'est pas dans `dependencies` mais dont
+le contenu part dans la page va dans `PAGE_DEV_PACKAGES`.
+
+**Dans l'installeur.** `beforeBuildCommand` lance le script après les compilations.
+`installeur/licences.nsh` (sur le modèle de `helper.nsh`) copie le fichier après
+l'installation et le supprime avant la désinstallation, après l'agent et
+l'assistant ; ce n'est pas une ressource de Tauri (un fichier manquant casserait
+toute compilation Windows, y compris `cargo build` et `clippy` ; seul `makensis`
+l'exige). L'essai de l'installeur sur le vrai Windows vérifie que le fichier est
+posé, non vide, et nomme `serde` ; l'aller-retour silencieux, qu'il est posé puis
+retiré avec le dossier.
+
+**Limites, écrites telles quelles.**
+
+- **`selectors` n'a pas de texte de licence à lui** : le paquet publié n'en
+  contient pas, et son dépôt d'origine (`servo/stylo`), lu le 16 novembre 2026, n'en
+  a ni à la racine ni dans le dossier `selectors`. Son complément est le texte de la
+  MPL-2.0 (le même pour tout logiciel sous cette licence), recopié du paquet
+  `cssparser` qui est dans le graphe ; son `SOURCE.txt` le dit.
+- **La section fixe est écrite à la main** et ne vieillit pas toute seule. Le
+  texte du SDK WebView2 (licence et notices) vient du paquet NuGet officiel
+  `Microsoft.Web.WebView2` 1.0.3800.47, la version que le dépôt de
+  `webview2-com-sys` désigne ; à reprendre quand ce paquet change de SDK. Les
+  textes de l'amorce de WebView2 et de la bibliothèque d'exécution Visual C++ n'y
+  sont pas (ce sont des composants que Microsoft laisse redistribuer sous ses
+  propres conditions ; leur texte n'a pas pu être obtenu d'une source sûre). Le
+  texte de NSIS vient du paquet Debian 3.09, pas de la version que Tauri
+  télécharge.
+- **La garde lit ce que les paquets déclarent** (leur expression de licence et
+  leurs fichiers) ; elle ne lit pas leur code, et elle ne vérifie pas qu'un texte
+  fourni est bien celui de la licence déclarée.
+- **Les textes de licence reproduisent leurs notices de droits d'auteur
+  telles quelles**, noms de personnes compris : ils sont la licence.
+- Les licences ne sont pas encore montrées dans la fenêtre (page « À propos »,
+  plus tard), et le choix de la licence de Shinku reste à la personne.
+
 ## Avant une version publique
 
 - **Signature du code.** L'installeur et les exécutables ne sont pas signés.
   Voir la décision prise sur le certificat individuel.
-- **L'agent `--retirer` lancé par le désinstalleur élevé vise le mauvais compte
-  quand l'élévation s'est faite avec un autre compte** (point ouvert). Il remet
-  en place et retire la valeur de démarrage du compte élevé, pas de la personne
-  devant le bureau. La solution est le même lancement par `RunAsUser` que pour
-  `--oublier` ; elle change un passage prouvé sur le vrai Windows, utilisé aussi
-  à l'installation. `--oublier` y est passé le 16 novembre 2026 : c'est le
-  chantier suivant.
+- **L'agent `--retirer` dans le mauvais compte : une limite, écrite telle quelle
+  (non corrigée dans ce lot).** Les faits : avec un agent en marche, c'est
+  l'agent de la personne qui reçoit l'ordre (fenêtre cachée du même bureau, mutex
+  de la session) et il remet tout en place et efface sa valeur `Run` dans le bon
+  compte, même si l'élévation s'est faite avec un autre compte. Sans agent qui
+  réponde **et** avec une élévation par un autre compte, le programme élevé fait
+  la reprise et efface la valeur `Run` dans le profil du compte élevé : le
+  journal de la personne n'est pas repris, et sa valeur `HKCU\…\Run\Shinku`
+  reste, pointée vers un fichier supprimé (Windows l'ignore). Le seul dommage
+  durable est ce journal non repris ; il l'est au prochain démarrage de l'agent si
+  Shinku est réinstallé. Pourquoi ce n'est pas corrigé : le gain demande trois
+  conditions à la fois (deux comptes, aucun agent en marche, une élévation par
+  l'autre compte) ; la correction ajoute une seconde attente sans poignée ni code,
+  un risque de boîte d'erreur de l'Explorateur si le lancement arrive après la
+  suppression du fichier, et surtout elle ne peut pas être essayée : la machine de
+  GitHub n'a qu'un compte, tout élevé. La forme minimale retenue pour plus tard,
+  avec la signature : `RunAsUser`, une seconde de vie minimale pour l'ordre
+  `--retirer` (comme `--oublier`), une attente recopiée et non partagée avec
+  `oublier.nsh`, et un essai à deux comptes fait à la main.
 - **`--oublier` sur le PC de quelqu'un.** Les trois étapes de l'installeur sont
   vertes sur le vrai Windows de l'intégration continue, mais tout y est élevé : la
   baisse des droits par `RunAsUser` et le refus (code 2) ne s'y voient pas (voir
@@ -2338,10 +2457,19 @@ d'environnement que dans un programme sans droits d'administrateur.
   sur un PC sans Visual C++ installé reste à faire pour le dire prouvé.
 - **ARM64.** Le code ne dépend pas de l'architecture, mais seul l'installeur
   x64 est fabriqué et testé.
-- **Intégration continue.** Désigner les actions GitHub par l'empreinte de
-  leur commit plutôt que par leur numéro de version.
-- **Licences.** Choisir la licence de Shinku, et produire la liste complète
-  des licences des dépendances Rust.
+- **Intégration continue.** Les actions GitHub sont désignées par l'empreinte de
+  leur commit (`propriétaire/dépôt@<40 hexadécimaux> # vX.Y.Z`, la dernière
+  version de la même version majeure le 16 novembre 2026) ; un essai de
+  `npm test` refuse toute autre forme. **Limite** : rien ne vérifie que le
+  commentaire dit la bonne version de l'empreinte, et les empreintes vieillissent
+  (pas de Dependabot tant que la personne ne l'a pas demandé : il ouvre des
+  demandes de fusion à son nom) : les relever de nouveau à la main de temps en
+  temps. L'artefact `shinku-installeur-x64` porte aussi `SHA256SUMS.txt` et
+  `LICENCES-TIERS.txt`.
+- **Licences.** La liste des licences des dépendances est fabriquée et vérifiée
+  (voir « Licences des dépendances »). Reste : choisir la licence de Shinku
+  (à la personne), régler le cas de `selectors` (voir les limites de cette
+  section) et décider de ce que disent les licences de Microsoft de la section fixe.
 - **Icône.** L'icône actuelle reprend le signe de l'interface
   (`scripts/icone.mjs`). Le logo définitif reste à choisir dans le canevas.
 - **Identifiant.** `fr.shinku.app` nomme le dossier du cache de WebView2 : le

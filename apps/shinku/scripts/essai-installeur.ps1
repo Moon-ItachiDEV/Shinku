@@ -10,7 +10,8 @@
 # Cinq étapes, à enchaîner dans cet ordre sur une machine jetable :
 #   installer     Bienvenue, Dossier, Installation, Terminé ; puis vérifie le
 #                 code de sortie, shinku.exe, shinku-agent.exe,
-#                 shinku-helper.exe, uninstall.exe,
+#                 shinku-helper.exe, uninstall.exe, LICENCES-TIERS.txt (non vide,
+#                 il nomme serde),
 #                 l'absence de raccourci sur le bureau et le raccourci du menu
 #                 Démarrer ;
 #   deja-installe relance l'installeur : la page « Shinku est déjà installé »,
@@ -638,6 +639,13 @@ function Etape-Installer {
     Verifier-Existe (Join-Path $dossier 'shinku-agent.exe') 'shinku-agent.exe'
     Verifier-Existe (Join-Path $dossier 'shinku-helper.exe') 'shinku-helper.exe'
     Verifier-Existe (Join-Path $dossier 'uninstall.exe') 'uninstall.exe'
+    # La liste des licences des composants tiers : posée à côté de shinku.exe, non vide, et elle nomme serde.
+    $fichierLicences = Join-Path $dossier 'LICENCES-TIERS.txt'
+    Verifier-Existe $fichierLicences 'LICENCES-TIERS.txt'
+    $texteLicences = [System.IO.File]::ReadAllText($fichierLicences, [System.Text.Encoding]::UTF8)
+    if ($texteLicences.Length -eq 0) { Echouer 'LICENCES-TIERS.txt est posé mais vide.' }
+    if ($texteLicences -notmatch '(?m)^serde \d') { Echouer 'LICENCES-TIERS.txt ne nomme pas le paquet serde.' }
+    Fait ("LICENCES-TIERS.txt est posé à côté de shinku.exe : {0} caractères, il nomme le paquet serde" -f $texteLicences.Length)
     $surBureau = @(Raccourcis $bureaux)
     if ($surBureau.Count -gt 0) {
         Echouer ('Un raccourci a été créé sur le bureau, alors que la case était décochée : ' + ($surBureau -join ', '))

@@ -44,8 +44,8 @@ test("la configuration de l'installeur pointe sur des fichiers qui existent", ()
   assert.equal(nsis.headerImage, 'installeur/images/signe-100.bmp');
 });
 
-test("habillage.nsh, agent.nsh, helper.nsh et oublier.nsh sont en ASCII : les textes n'y dépendent pas de l'option -INPUTCHARSET que Tauri passe à makensis", () => {
-  for (const name of ['habillage.nsh', 'agent.nsh', 'helper.nsh', 'oublier.nsh']) {
+test("habillage.nsh, agent.nsh, helper.nsh, licences.nsh et oublier.nsh sont en ASCII : les textes n'y dépendent pas de l'option -INPUTCHARSET que Tauri passe à makensis", () => {
+  for (const name of ['habillage.nsh', 'agent.nsh', 'helper.nsh', 'licences.nsh', 'oublier.nsh']) {
     const bytes = readFileSync(new URL(name, folder));
     const outside = bytes.findIndex((byte) => byte > 0x7f);
     assert.equal(outside, -1, `${name} : octet non ASCII à la position ${outside} (les textes vont dans textes.nsh)`);
@@ -78,7 +78,7 @@ test("les quatre hooks de Tauri sont dans habillage.nsh et appellent ceux de l'a
     assert.match(withoutWindowClose(macro(hook)).trimStart(), new RegExp(`^!insertmacro ${agent}\\n`), `${hook} doit commencer par ${agent}`);
   }
   // Tauri n'accepte qu'un fichier de hooks : aucun autre ne doit en définir.
-  for (const name of ['agent.nsh', 'helper.nsh', 'oublier.nsh', 'textes.nsh', 'francais.nsh']) {
+  for (const name of ['agent.nsh', 'helper.nsh', 'licences.nsh', 'oublier.nsh', 'textes.nsh', 'francais.nsh']) {
     assert.doesNotMatch(read(name), /^!macro NSIS_HOOK_/m, `${name} définit un hook de Tauri`);
   }
 });
@@ -130,11 +130,78 @@ test("l'assistant élevé est arrêté avant d'être copié ou supprimé, et le 
   assert.deepEqual(helperLines('ShinkuHelperPostUninstall'), [stop, remove, '${If} $UpdateMode <> 1', 'RMDir "$INSTDIR"', '${EndIf}']);
 });
 
+test("licences.nsh : deux macros, appelées après celles de l'agent et de l'assistant, sans changer l'ordre des appels existants", () => {
+  assert.match(read('habillage.nsh'), /^!include "\$\{SHINKU_INSTALLEUR\}\\licences\.nsh"$/m);
+  assert.equal(code('licences.nsh').match(/^!macro (\w+)/gm)?.length, 2, 'licences.nsh ne définit que deux macros');
+  // Après l'installation : l'agent, l'assistant, puis la liste des licences, puis la fin automatique de la page.
+  assert.deepEqual(macroLines('habillage.nsh', 'NSIS_HOOK_POSTINSTALL'), [
+    '!insertmacro ShinkuAgentPostInstall',
+    '!insertmacro ShinkuHelperPostInstall',
+    '!insertmacro ShinkuLicencesPostInstall',
+    'SetAutoClose true',
+  ]);
+  // Avant l'installation et après la désinstallation : rien pour les licences (le fichier part avant, avec les autres).
+  assert.deepEqual(macroLines('habillage.nsh', 'NSIS_HOOK_PREINSTALL'), ['!insertmacro ShinkuAgentPreInstall', '!insertmacro ShinkuHelperPreInstall']);
+  assert.deepEqual(macroLines('habillage.nsh', 'NSIS_HOOK_POSTUNINSTALL'), [
+    '!insertmacro ShinkuAgentPostUninstall',
+    '!insertmacro ShinkuHelperPostUninstall',
+    '!insertmacro ShinkuOublierPostUninstall',
+  ]);
+  // Les macros existent, sous les noms que les crochets appellent.
+  for (const name of ['ShinkuLicencesPostInstall', 'ShinkuLicencesPreUninstall']) {
+    assert.match(read('licences.nsh'), new RegExp(`^!macro ${name}$`, 'm'), `licences.nsh ne définit pas ${name}`);
+  }
+});
+
+test("licences.nsh : le fichier est copié à côté de shinku.exe après l'installation, et supprimé sous $INSTDIR avant la désinstallation", () => {
+  assert.deepEqual(macroLines('licences.nsh', 'ShinkuLicencesPostInstall'), ['SetOutPath "$INSTDIR"', 'File "${SHINKU_LICENCES_SOURCE}"']);
+  assert.deepEqual(macroLines('licences.nsh', 'ShinkuLicencesPreUninstall'), ['Delete "$INSTDIR\\LICENCES-TIERS.txt"']);
+  const text = code('licences.nsh');
+  assert.doesNotMatch(text, /\/REBOOTOK/i);
+  assert.doesNotMatch(text, /\bRMDir\b/i, "le dossier d'installation reste l'affaire du modèle et de helper.nsh");
+});
+
+test("licences.nsh : le chemin du fichier vient de ${__FILEDIR__} lu hors de toute macro, et un !define peut le remplacer", () => {
+  const text = code('licences.nsh');
+  const define = /^!ifndef SHINKU_LICENCES_SOURCE\n\s*!define SHINKU_LICENCES_SOURCE "\$\{__FILEDIR__\}\\\.\.\\licences\\LICENCES-TIERS\.txt"\n!endif$/m;
+  assert.match(text, define);
+  const macros = [...text.matchAll(/^!macro [\s\S]*?^!macroend/gm)].map((one) => one[0]).join('\n');
+  assert.doesNotMatch(macros, /__FILEDIR__/, '__FILEDIR__ lu dans une macro serait relu là où la macro est insérée');
+  // Le dossier visé est celui que le script fabrique, et que tauri.conf.json ne déclare pas comme ressource.
+  assert.ok(existsSync(new URL('licences/', tauri)));
+  assert.equal((config as { bundle: Record<string, unknown> }).bundle.resources, undefined, "pas de ressource Tauri : un fichier absent casserait toute compilation Windows");
+});
+
+test("tauri.conf.json : beforeBuildCommand fabrique la liste des licences après les compilations", () => {
+  const command = (JSON.parse(readFileSync(new URL('tauri.conf.json', tauri), 'utf8')) as { build: { beforeBuildCommand: string } }).build.beforeBuildCommand;
+  assert.match(command, /^npm run build && cargo build --release --locked -p shinku-agent -p shinku-helper && node scripts\/licences-tiers\.mjs$/);
+  assert.ok(existsSync(new URL('scripts/licences-tiers.mjs', root)));
+});
+
+test(".gitignore : le fichier fabriqué est ignoré, les compléments et la section fixe sont versionnés", () => {
+  const lines = readFileSync(new URL('../../.gitignore', root), 'utf8').split('\n').map((line) => line.trim());
+  assert.ok(lines.includes('apps/shinku/src-tauri/licences/LICENCES-TIERS.txt'), 'le fichier fabriqué doit être ignoré');
+  for (const line of lines.filter((one) => one !== '' && !one.startsWith('#'))) {
+    assert.ok(!/licences\/(?:section-fixe|complements)/.test(line) && !/^\*\*?\/?licences\/?$/.test(line) && line !== 'licences/', `.gitignore ignore la section fixe ou les compléments : ${line}`);
+  }
+  assert.ok(existsSync(new URL('licences/section-fixe.txt', tauri)));
+});
+
+test("essai-installeur.ps1 : après l'installation, LICENCES-TIERS.txt est là, non vide, et nomme serde ; le script garde une seule marque BOM", () => {
+  const text = script.toString('utf8');
+  assert.match(text, /\$fichierLicences = Join-Path \$dossier 'LICENCES-TIERS\.txt'\n\s+Verifier-Existe \$fichierLicences 'LICENCES-TIERS\.txt'/);
+  assert.match(text, /if \(\$texteLicences\.Length -eq 0\) \{ Echouer /);
+  assert.match(text, /if \(\$texteLicences -notmatch '\(\?m\)\^serde \\d'\) \{ Echouer /);
+  assert.match(text, /^\s*Fait \("LICENCES-TIERS\.txt est posé à côté de shinku\.exe/m);
+  // La preuve est dans l'étape « installer », avant les raccourcis.
+  assert.ok(text.indexOf('$texteLicences = ') < text.indexOf('$surBureau = @(Raccourcis $bureaux)'));
+});
+
 /** Un fichier .nsh sans ses commentaires (lignes qui commencent par « ; »). */
 const code = (name: string): string => read(name).replace(/^\s*;.*$/gm, '');
 
 /** Tous les fichiers .nsh de l'installeur. */
-const NSH_FILES = ['habillage.nsh', 'agent.nsh', 'helper.nsh', 'oublier.nsh', 'textes.nsh', 'francais.nsh'];
+const NSH_FILES = ['habillage.nsh', 'agent.nsh', 'helper.nsh', 'licences.nsh', 'oublier.nsh', 'textes.nsh', 'francais.nsh'];
 
 /** Les lignes de code (sans commentaire ni blanc, indentation retirée) d'une macro d'un fichier .nsh. */
 function macroLines(file: string, name: string): string[] {
@@ -155,11 +222,12 @@ const linesOf = (text: string): string[] =>
 
 const RUN_AS_USER = 'nsis_tauri_utils::RunAsUser "$INSTDIR\\${MAINBINARYNAME}.exe" "--oublier"';
 
-test("NSIS_HOOK_PREUNINSTALL : la fenêtre de Shinku, l'agent, l'assistant, puis --oublier, dans cet ordre", () => {
+test("NSIS_HOOK_PREUNINSTALL : la fenêtre de Shinku, l'agent, l'assistant, la liste des licences, puis --oublier, dans cet ordre", () => {
   assert.deepEqual(macroLines('habillage.nsh', 'NSIS_HOOK_PREUNINSTALL'), [
     '!insertmacro CheckIfAppIsRunning "$INSTDIR\\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"',
     '!insertmacro ShinkuAgentPreUninstall',
     '!insertmacro ShinkuHelperPreUninstall',
+    '!insertmacro ShinkuLicencesPreUninstall',
     '!insertmacro ShinkuOublierPreUninstall',
   ]);
   // La macro du modèle n'est insérée qu'une fois par nos fichiers : le modèle la rejoue juste après le crochet.
@@ -624,7 +692,7 @@ test("l'intégration continue joue les trois essais de --oublier sur le vrai dé
 
 test("essai-installeur.ps1 : chaque preuve est une ligne « FAIT : » qui dit ce qui a été mesuré, et la boîte d'échec de --oublier fait échouer l'essai", () => {
   const text = script.toString('utf8');
-  assert.equal(text.match(/^\s*Fait \(?"/gm)?.length, 4, 'une ligne FAIT par preuve : à la main (droits ordinaires), refus élevé, jonction, fenêtre ouverte');
+  assert.equal(text.match(/^\s*Fait \(?"/gm)?.length, 5, 'une ligne FAIT par preuve : la liste des licences posée, à la main (droits ordinaires), refus élevé, jonction, fenêtre ouverte');
   assert.match(text, /function Fait\(\[string\]\$ligne\) \{ Write-Host "FAIT : \$ligne" \}/);
   assert.match(text, /Shinku n'a pas pu supprimer tes réglages/);
   // La boîte est fermée (l'essai ne reste pas bloqué), puis l'essai échoue.
@@ -743,7 +811,7 @@ test("francais.nsh ne dépend d'aucun chemin relatif : Tauri en fait une copie a
 test("aucun fichier de l'installeur ne vouvoie", () => {
   const formal = /(?<![\p{L}\p{N}_])(vous|votre|vos|veuillez|cliquez|choisissez|sélectionnez)(?![\p{L}\p{N}_])/giu;
   const files = readdirSync(folder).filter((name) => name.endsWith('.nsh'));
-  assert.deepEqual(files.sort(), ['agent.nsh', 'francais.nsh', 'habillage.nsh', 'helper.nsh', 'oublier.nsh', 'textes.nsh']);
+  assert.deepEqual(files.sort(), ['agent.nsh', 'francais.nsh', 'habillage.nsh', 'helper.nsh', 'licences.nsh', 'oublier.nsh', 'textes.nsh']);
   for (const name of files) {
     for (const [number, line] of read(name).split('\n').entries()) {
       const found = line.match(formal);
