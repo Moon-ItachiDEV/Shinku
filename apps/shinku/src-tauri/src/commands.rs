@@ -17,6 +17,7 @@
 
 use std::path::Path;
 
+use shinku_core::apps::view::{AppsView, RemoveLeftovers};
 use shinku_core::backend::{Backend, BackendError, DuplicatesPage, LargeFilesPage, Overview};
 use shinku_core::clean::{CleanPreview, CleanRequest};
 use shinku_core::game::view::{GameOption, GameStatus, GameView, OpenApp};
@@ -254,7 +255,44 @@ pub fn set_startup_entry(
     backend.set_startup_entry(&id, enabled)
 }
 
-/// Ouvre l'une des trois pages des réglages de Windows que la page propose.
+/// Tout ce que la page « Désinstallation » affiche : les apps installées et où
+/// en est la désinstallation en cours. La page la rappelle toutes les deux
+/// secondes pendant qu'elle attend.
+#[tauri::command(async)]
+pub fn apps_view(backend: State<'_, Backend>) -> AppsView {
+    backend.apps_view()
+}
+
+/// Lance le désinstalleur de l'app de cet identifiant. La commande est relue
+/// dans le registre : la page n'envoie jamais un chemin. Ne rend la main
+/// qu'après la réponse à la fenêtre de Windows.
+#[tauri::command(async)]
+pub fn start_uninstall(backend: State<'_, Backend>, id: String) -> Result<AppsView, BackendError> {
+    backend.start_uninstall(&id)
+}
+
+/// Revient à la liste. Ne tue rien, ne touche à rien.
+#[tauri::command(async)]
+pub fn stop_uninstall(backend: State<'_, Backend>) -> AppsView {
+    backend.stop_uninstall()
+}
+
+/// Cherche de nouveau ce que l'app désinstallée a laissé.
+#[tauri::command(async)]
+pub fn rescan_leftovers(backend: State<'_, Backend>) -> Result<AppsView, BackendError> {
+    backend.rescan_leftovers()
+}
+
+/// Met à la corbeille les restes de ces clés, et rien d'autre.
+#[tauri::command(async)]
+pub fn remove_leftovers(
+    backend: State<'_, Backend>,
+    keys: Vec<u32>,
+) -> Result<RemoveLeftovers, BackendError> {
+    backend.remove_leftovers(&keys)
+}
+
+/// Ouvre l'une des quatre pages des réglages de Windows que la page propose.
 #[tauri::command(async)]
 pub fn open_windows_settings(backend: State<'_, Backend>, page: WindowsPage) {
     backend.open_windows_settings(page);

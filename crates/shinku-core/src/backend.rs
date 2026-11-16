@@ -20,6 +20,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::apps::desk::AppsDesk;
+use crate::apps::host::{AppsHost, InertAppsHost};
+use crate::apps::view::{AppsView, RemoveLeftovers, UninstallRefusal};
 use crate::clean::journal::{JournalStore, Run};
 use crate::clean::{CleanPreview, CleanRefusal, CleanRequest};
 use crate::fs::{fold_path, to_display_path, to_internal_path};
@@ -175,6 +178,11 @@ pub enum BackendError {
         /// La raison.
         reason: StartupRefusal,
     },
+    /// Le module Désinstallation refuse cette demande : rien n'a été lancé.
+    UninstallRefused {
+        /// La raison.
+        reason: UninstallRefusal,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -197,6 +205,7 @@ impl fmt::Display for BackendError {
             }
             Self::GameRefused { reason } => write!(f, "mode jeu : {reason}"),
             Self::StartupRefused { reason } => write!(f, "démarrage : {reason}"),
+            Self::UninstallRefused { reason } => write!(f, "désinstallation : {reason}"),
         }
     }
 }
@@ -230,6 +239,7 @@ pub struct Backend {
     scan_defaults: ScanOptions,
     game: GameDesk,
     startup: StartupDesk,
+    apps: AppsDesk,
     /// Un seul `sync` du mode jeu à la fois, dans l'ordre d'arrivée.
     sync_lock: Mutex<()>,
     /// Pour les tests : fait attendre le prochain changement du mode jeu entre
@@ -258,7 +268,8 @@ impl Backend {
         );
         let backend = Self::new(environment, Arc::new(MemoryCache::new()), store)
             .with_game(game)
-            .with_startup(startup);
+            .with_startup(startup)
+            .with_apps(AppsDesk::new(platform::apps_host()));
         match journal {
             Some(journal) => backend.with_journal(journal),
             None => backend,
@@ -292,6 +303,7 @@ impl Backend {
             session: Session::new(Arc::clone(&environment), cache),
             game,
             startup,
+            apps: AppsDesk::new(Arc::new(InertAppsHost)),
             environment,
             store,
             journal: None,
@@ -338,6 +350,17 @@ impl Backend {
         own_command: Option<String>,
     ) -> Self {
         self.with_startup(StartupDesk::new(host, store).with_own_command(own_command))
+    }
+
+    /// Branche le module Désinstallation : la machine vue par le module.
+    pub fn with_apps(mut self, apps: AppsDesk) -> Self {
+        self.apps = apps;
+        self
+    }
+
+    /// Comme [`Backend::with_apps`], pour des tests : la machine fabriquée.
+    pub fn with_apps_parts(self, host: Arc<dyn AppsHost>) -> Self {
+        self.with_apps(AppsDesk::new(host))
     }
 
     /// Branche le journal des grands vides.
@@ -439,6 +462,13 @@ impl Backend {
     /// Les « dossiers jamais touchés » sont ceux des réglages en vigueur.
     /// Refusée, elle ne touche à rien et les résultats restent affichés.
     pub fn start_clean(&self, request: CleanRequest) -> Result<SessionView, BackendError> {
+        // Pas en même temps que des restes qui partent à la corbeille : la
+        // garde est tenue jusqu'au départ du grand vide.
+        let Some(_apps) = self.apps.try_exclusive() else {
+            return Err(BackendError::CleanNotStarted {
+                reason: "des restes d'une app partent à la corbeille".to_owned(),
+            });
+        };
         {
             let desk = self.desk();
             // Même règle que pour analyser : avec une liste de dossiers à ne
@@ -596,6 +626,40 @@ impl Backend {
         self.startup.set(id, enabled).map_err(|reason| BackendError::StartupRefused { reason })
     }
 
+    // --- Désinstallation ---
+
+    /// Tout ce que la page « Désinstallation » affiche : les apps installées et
+    /// où en est la désinstallation en cours (que cet appel relit aussi).
+    pub fn apps_view(&self) -> AppsView {
+        self.apps.view()
+    }
+
+    /// Lance le désinstalleur de l'app de cet identifiant. L'identifiant est
+    /// celui que la page a reçu : le cœur relit la commande dans le registre,
+    /// la page n'envoie jamais un chemin. Refusé pendant un grand vide.
+    pub fn start_uninstall(&self, id: &str) -> Result<AppsView, BackendError> {
+        if self.session.is_cleaning() {
+            return Err(BackendError::UninstallRefused { reason: UninstallRefusal::Busy });
+        }
+        self.apps.start(id).map_err(uninstall_refused)
+    }
+
+    /// Revient à la liste. Ne tue rien, ne touche à rien.
+    pub fn stop_uninstall(&self) -> AppsView {
+        self.apps.stop()
+    }
+
+    /// Cherche de nouveau les restes de l'app désinstallée.
+    pub fn rescan_leftovers(&self) -> Result<AppsView, BackendError> {
+        self.apps.rescan().map_err(uninstall_refused)
+    }
+
+    /// Met à la corbeille les restes de ces clés, jamais plus loin. Refusé
+    /// pendant un grand vide.
+    pub fn remove_leftovers(&self, keys: &[u32]) -> Result<RemoveLeftovers, BackendError> {
+        self.apps.remove(keys, &|| self.session.is_cleaning()).map_err(uninstall_refused)
+    }
+
     // --- Mode jeu ---
 
     /// Tout ce que la page « Mode jeu » affiche.
@@ -736,6 +800,10 @@ impl Backend {
         desk.settings = next.clone();
         Ok(next)
     }
+}
+
+fn uninstall_refused(reason: UninstallRefusal) -> BackendError {
+    BackendError::UninstallRefused { reason }
 }
 
 fn game_refused(reason: GameRefusal) -> BackendError {
@@ -1234,6 +1302,29 @@ mod tests {
         .unwrap();
         assert_eq!(json["kind"], "cleanNotStarted");
         assert_eq!(json["reason"], "plus de mémoire");
+    }
+
+    #[test]
+    fn a_clean_and_the_leftovers_of_an_app_never_run_together() {
+        let pc = pc();
+        let backend = backend(&pc);
+        backend.start_scan().unwrap();
+        wait_for_results(&backend);
+        let request = everything(&backend);
+        // Des restes partent à la corbeille : le grand vide ne démarre pas.
+        let held = backend.apps.try_exclusive().expect("libre");
+        assert!(matches!(
+            backend.start_clean(everything(&backend)).unwrap_err(),
+            BackendError::CleanNotStarted { .. }
+        ));
+        assert!(matches!(
+            backend.remove_leftovers(&[0]).unwrap_err(),
+            BackendError::UninstallRefused { reason: UninstallRefusal::Busy }
+        ));
+        drop(held);
+        // La garde rendue, le grand vide part.
+        backend.start_clean(request).unwrap();
+        wait_for_the_report(&backend);
     }
 
     #[test]

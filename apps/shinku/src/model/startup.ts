@@ -61,10 +61,10 @@ export function showsScope(view: StartupView, scope: StartupScope): boolean {
 
 // ── Une ligne ──────────────────────────────────────────────────────────────
 
-/** La lettre de la pastille ronde : l'initiale du nom en majuscule, « # » pour un chiffre ou un symbole. */
+/** La lettre de la pastille ronde : le premier caractère alphanumérique du nom (lettre ou chiffre), en majuscule ; « # » s'il n'y en a aucun. */
 export function initialOf(name: string): string {
-  const first = [...name.trim()][0];
-  if (first === undefined || !/^\p{L}/u.test(first)) {
+  const first = [...name].find((character) => /^[\p{L}\p{N}]$/u.test(character));
+  if (first === undefined) {
     return fr.startup.initialFallback;
   }
   const upper = [...first.toLocaleUpperCase('fr')][0];

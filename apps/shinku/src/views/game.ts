@@ -34,7 +34,7 @@ import {
 } from '../model/game.ts';
 import type { Actions, AppState } from '../state.ts';
 import { checkIcon, crossIcon, moduleArt } from './art.ts';
-import { openModal } from './modal.ts';
+import { closesOnVeil, openModal } from './modal.ts';
 import { stage } from './parts.ts';
 
 type Content = TemplateResult | typeof nothing;
@@ -482,7 +482,7 @@ export function pickerHandlers(actions: Pick<Actions, 'closePicker'>): {
     },
     // Un clic à côté de la boîte tombe sur le voile, donc sur le dialogue lui-même.
     onClick: (event) => {
-      if (event.target === event.currentTarget) {
+      if (closesOnVeil(event)) {
         actions.closePicker();
       }
     },

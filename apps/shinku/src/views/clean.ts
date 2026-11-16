@@ -28,7 +28,7 @@ import {
 import { mainVolume } from '../model/scan.ts';
 import type { Actions, AppState } from '../state.ts';
 import { doneArt, hole, ring } from './art.ts';
-import { openModal } from './modal.ts';
+import { closesOnVeil, openModal } from './modal.ts';
 import { CLEAN_NAMES, SEGMENT_CLASS, stage, stopCore } from './parts.ts';
 import { styles } from './style.ts';
 
@@ -86,7 +86,7 @@ export function confirmDialog(state: AppState, actions: Actions): Content {
   };
   // Un clic à côté de la boîte la referme : il tombe sur le voile, donc sur le dialogue lui-même.
   const onClick = (event: Event): void => {
-    if (event.target === event.currentTarget) {
+    if (closesOnVeil(event)) {
       actions.dismissClean();
     }
   };

@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import type {
+  AppsView,
   Backend,
   CleanPreview,
   DuplicatesPage,
@@ -12,6 +13,7 @@ import type {
   LargeFilesPage,
   OpenApp,
   Overview,
+  RemoveLeftovers,
   SessionView,
   Settings,
   StartupView,
@@ -51,6 +53,11 @@ export function tauriBackend(): Backend {
     releaseGame: () => invoke<GameView>('release_game'),
     startupView: () => invoke<StartupView>('startup_view'),
     setStartupEntry: (id, enabled) => invoke<StartupView>('set_startup_entry', { id, enabled }),
+    appsView: () => invoke<AppsView>('apps_view'),
+    startUninstall: (id) => invoke<AppsView>('start_uninstall', { id }),
+    stopUninstall: () => invoke<AppsView>('stop_uninstall'),
+    rescanLeftovers: () => invoke<AppsView>('rescan_leftovers'),
+    removeLeftovers: (keys) => invoke<RemoveLeftovers>('remove_leftovers', { keys }),
     openWindowsSettings: (page) => invoke<void>('open_windows_settings', { page }),
     minimizeWindow: () => appWindow.minimize(),
     toggleMaximizeWindow: () => appWindow.toggleMaximize(),

@@ -14,11 +14,16 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 
 import { mockBackend, type MockOptions } from '../src/backend/mock.ts';
 import type {
   AgentState,
+  AppKind,
+  AppRemoval,
+  AppScope,
+  AppsView,
+  FollowView,
   BackendError,
   CategoryState,
   CategorySummary,
@@ -34,12 +39,15 @@ import type {
   GameSource,
   GameStatus,
   JunkCategory,
+  LeftoverKind,
   LoadIssue,
   Lot,
   ModuleId,
   Phase,
   PowerOutcome,
   PowerSupport,
+  RemoveOutcome,
+  RemoveReason,
   RunState,
   SessionState,
   Settings,
@@ -53,6 +61,7 @@ import type {
   StepState,
   StopReason,
   Theme,
+  UninstallRefusal,
   WindowsPage,
 } from '../src/backend/types.ts';
 
@@ -114,6 +123,7 @@ const enums: Record<string, readonly string[]> = {
     'cleanNotStarted',
     'gameRefused',
     'startupRefused',
+    'uninstallRefused',
   ]),
   agentState: allOf<AgentState>()(['running', 'stopped', 'missing']),
   powerOutcome: allOf<PowerOutcome>()([
@@ -128,7 +138,7 @@ const enums: Record<string, readonly string[]> = {
   ]),
   powerSupport: allOf<PowerSupport>()(['available', 'unavailable', 'unsuited']),
   gameSource: allOf<GameSource>()(['added', 'library']),
-  windowsPage: allOf<WindowsPage>()(['gameMode', 'power', 'startupApps']),
+  windowsPage: allOf<WindowsPage>()(['gameMode', 'power', 'startupApps', 'apps']),
   gameStatus: allOf<GameStatus>()(['notGame', 'forgotten']),
   gameOption: allOf<GameOption>()(['auto', 'power', 'quietApps']),
   gameRefusal: allOf<GameRefusal>()(['unknownApp', 'unknownGame', 'notAGame', 'protectedApp', 'listFull']),
@@ -140,6 +150,15 @@ const enums: Record<string, readonly string[]> = {
   startupMark: allOf<StartupMark['kind']>()(['cutByShinku', 'cameBack']),
   startupHint: allOf<NonNullable<StartupEntry['hint']>>()(['sync']),
   startupRefusal: allOf<StartupRefusal>()(['unknownEntry', 'notAdjustable', 'busy', 'failed']),
+  appsScope: allOf<AppScope>()(['account', 'machine']),
+  appsKind: allOf<AppKind>()(['plain', 'runtime', 'driver']),
+  appsRemoval: allOf<AppRemoval>()(['offered', 'refused', 'own', 'needed']),
+  appsOutcome: allOf<NonNullable<AppsView['outcome']>>()(['kept']),
+  leftoverKind: allOf<LeftoverKind>()(['folder', 'data', 'shortcut']),
+  removeOutcome: allOf<RemoveOutcome>()(['removed', 'alreadyGone', 'refused', 'failed']),
+  removeReason: allOf<RemoveReason>()(['inUse', 'refused', 'partial', 'destroyed']),
+  uninstallRefusal: allOf<UninstallRefusal>()(['busy', 'vanished', 'unreadable', 'notOffered', 'broken', 'cancelled', 'failed']),
+  followPhase: allOf<FollowView['phase']>()(['idle', 'launching', 'waiting', 'settling', 'removed']),
 };
 
 test('les énumérations de l’interface sont celles du cœur', () => {
@@ -230,6 +249,7 @@ const OPTIONS: MockOptions = {
   interrupted: true,
   game: { state: 'playing', agent: 'running', power: 'available', startup: 'enabled' },
   boot: { data: 'few', fail: false, read: 'all', load: 'ok', shinku: 'on' },
+  apps: { data: 'few', load: 'ok', flow: 'idle', fail: 'none' },
 };
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -241,6 +261,73 @@ async function scanned(backend: ReturnType<typeof mockBackend>) {
   assert.equal(results.state, 'results');
   assert.ok(results.summary !== null);
   return { results, analysis: results.summary.started };
+}
+
+/**
+ * La désinstallation, déroulée par le faux cœur avec une horloge simulée : chaque phase, le bilan, le rescan,
+ * l'arrêt, la corbeille et un refus. Le contrat note la plupart de ces vues avec des lignes sans champ facultatif
+ * (taille, éditeur, version, date) : `lean` ne garde que ce que le cœur y met.
+ */
+async function appsSamples(): Promise<Record<string, unknown>> {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const tick = <T>(promise: Promise<T>, milliseconds = 1000): Promise<T> => {
+      mock.timers.tick(milliseconds);
+      return promise;
+    };
+    const demoOf = (flow: 'idle' | 'leftovers' | 'launching' | 'waiting', fail: 'none' | 'bin' | 'kept' | 'broken' = 'none') =>
+      mockBackend({ ...OPTIONS, apps: { ...OPTIONS.apps, flow, fail } });
+    const lean = (view: AppsView): AppsView => ({
+      ...view,
+      apps: view.apps.map(({ id, kind, name, removal, scope }) => ({ id, kind, name, removal, scope })),
+    });
+    /** Lance la désinstallation de Discord et attend, par pas, la vue qui répond à `until`. */
+    const reach = async (backend: ReturnType<typeof mockBackend>, until: (view: AppsView) => boolean): Promise<AppsView> => {
+      await tick(backend.startUninstall('ac:Discord'), 800);
+      for (let step = 0; step < 60; step += 1) {
+        const view = await tick(backend.appsView(), 500);
+        if (until(view)) {
+          return view;
+        }
+      }
+      assert.fail('le faux cœur n’arrive pas à la vue attendue');
+    };
+
+    const idle = await tick(demoOf('idle').appsView());
+    const launching = await tick(demoOf('launching').appsView());
+    const waiting = await tick(demoOf('waiting').appsView());
+    const settling = await reach(demoOf('idle'), (view) => view.follow.phase === 'settling');
+    const removedBackend = demoOf('leftovers');
+    const removed = await tick(removedBackend.appsView());
+    assert.equal(removed.follow.phase, 'removed');
+    const rescanned = await tick(removedBackend.rescanLeftovers());
+    const stopped = await tick(removedBackend.stopUninstall());
+    const kept = await reach(demoOf('idle', 'kept'), (view) => view.outcome === 'kept');
+
+    const binBackend = demoOf('leftovers', 'bin');
+    const bilan = await tick(binBackend.appsView());
+    assert.equal(bilan.follow.phase, 'removed');
+    const keys = bilan.follow.phase === 'removed' ? bilan.follow.leftovers.map((row) => row.key) : [];
+    const trashed = await tick(binBackend.removeLeftovers(keys));
+    const refusal: unknown = await tick(demoOf('idle', 'broken').startUninstall('ac:Discord'), 800).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    assert.deepEqual(refusal, { kind: 'uninstallRefused', reason: 'broken' });
+    return {
+      'appsView.idle': idle,
+      'appsView.launching': launching,
+      'appsView.waiting': waiting,
+      'appsView.settling': lean(settling),
+      'appsView.removed': lean(removed),
+      'appsView.rescanned': lean(rescanned),
+      'appsView.stopped': lean(stopped),
+      'appsView.kept': lean(kept),
+      removeLeftovers: { ...trashed, view: lean(trashed.view) },
+    };
+  } finally {
+    mock.timers.reset();
+  }
 }
 
 /** Les mêmes échantillons que ceux du cœur, pris cette fois dans le faux cœur de la démo. */
@@ -314,6 +401,7 @@ async function samples(): Promise<Record<string, unknown>> {
     cleanNotStarted: { kind: 'cleanNotStarted', reason: 'raison' },
     gameRefused: { kind: 'gameRefused', reason: 'unknownGame' },
     startupRefused: { kind: 'startupRefused', reason: 'unknownEntry' },
+    uninstallRefused: { kind: 'uninstallRefused', reason: 'vanished' },
   };
   assert.deepEqual(refusal, errors.gameRefused, 'le faux cœur refuse un jeu inconnu comme le cœur');
   assert.deepEqual(startupRefusal, errors.startupRefused, 'le faux cœur refuse une entrée inconnue comme le cœur');
@@ -344,6 +432,8 @@ async function samples(): Promise<Record<string, unknown>> {
     'error.gameRefused': errors.gameRefused,
     startupView,
     'error.startupRefused': errors.startupRefused,
+    'error.uninstallRefused': errors.uninstallRefused,
+    ...(await appsSamples()),
   };
 }
 

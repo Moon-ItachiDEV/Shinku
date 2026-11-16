@@ -141,13 +141,21 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # La machine est jetable : les tests y essaient aussi la vraie corbeille
-      # de Windows, sur des fichiers qu'ils fabriquent, puis la vident.
       - name: Tests du cœur sur un vrai NTFS
+        run: cargo test --locked -p shinku-core -p shinku-helper -p shinku-agent
+
+      # La machine est jetable : ces essais-là envoient des fichiers qu'ils
+      # fabriquent à la vraie corbeille de Windows, changent ses réglages pour
+      # le compte, les remettent, puis la vident. Ils tournent à part, un par
+      # un, et leur sortie est montrée : les lignes « FAIT : » disent ce que
+      # Windows fait seul quand la corbeille est trop petite.
+      - name: La vraie corbeille de Windows
         env:
           SHINKU_ESSAI_CORBEILLE: 1
           SHINKU_ESSAI_VIDE_LA_CORBEILLE: 1
-        run: cargo test --locked -p shinku-core -p shinku-helper -p shinku-agent
+        run: >-
+          cargo test --locked -p shinku-core --lib platform::windows::shell::tests
+          -- --nocapture --test-threads=1
 
       - name: Dépendances de l'interface
         working-directory: apps/shinku
@@ -183,6 +191,14 @@ jobs:
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Preparer
 
+      # La Désinstallation : des apps d'essai inscrites dans le compte (une dont
+      # le désinstalleur laisse trois restes, une voisine, une sans dossier, deux
+      # de la même famille, et un leurre). La fenêtre désinstalle la première et
+      # met ses restes à la corbeille ; le reste ne doit pas bouger.
+      - name: Préparer l'essai de la désinstallation
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-desinstallation.ps1 -Preparer
+
       # Les trois essais qui suivent tournent chacun même si un essai d'avant a
       # échoué (il suffit que Shinku soit installé) : un passage dit ainsi tout
       # ce qu'il peut dire. Le travail échoue quand même si l'un d'eux échoue.
@@ -214,6 +230,13 @@ jobs:
         if: always()
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Nettoyer
+
+      # Quoi qu'il arrive : les apps d'essai de la désinstallation, leurs
+      # inscriptions, leurs dossiers et leurs raccourcis sont retirés.
+      - name: Remettre la machine d'essai en place (désinstallation)
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-desinstallation.ps1 -Nettoyer
 
       # Les crochets de l'installeur, avec un agent qui tourne : l'installeur
       # tout juste fabriqué est relancé par-dessus l'installation (mise à jour),

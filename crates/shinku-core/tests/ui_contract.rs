@@ -22,6 +22,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
+use shinku_core::apps::fake::{DESKTOP, FakeAppsHost, FakeRecycle, ROAMING};
+use shinku_core::apps::host::RawRegistration;
+use shinku_core::apps::leftovers::{LeftoverKind, RemoveOutcome, RemoveReason};
+use shinku_core::apps::view::{FollowView, Outcome, UninstallRefusal};
+use shinku_core::apps::{Kind, Place as AppsPlace, Removal, Scope as AppsScope};
 use shinku_core::backend::{Backend, BackendError, FolderRefusal};
 use shinku_core::clean::journal::{JournalStore, Run, RunState};
 use shinku_core::clean::report::{CleanOutcome, DuplicatesStop, StepState, StopReason};
@@ -240,6 +245,49 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     cut_file.remember(EntryId::new(Place::UserRun, "Spotify"), "Spotify", 1_794_000_000_000, stamp);
     startup_store.save(&cut_file).expect("startup.json écrit");
 
+    // Les apps installées : une de chaque sorte, pour que chaque valeur des
+    // énumérations apparaisse dans un échantillon.
+    let apps_host = Arc::new(FakeAppsHost::new());
+    let app = |key: &str, name: &str| RawRegistration {
+        uninstall_string: Some(r#""C:\Windows\System32\cmd.exe" /c"#.to_owned()),
+        ..RawRegistration { display_name: Some(name.to_owned()), ..RawRegistration::new(key) }
+    };
+    apps_host.add_file(r"D:\Jeux\Hades\unins000.exe", 10);
+    apps_host.add_file(r"D:\Jeux\Hades\Hades.exe", 500);
+    apps_host.add_file(&format!(r"{ROAMING}\Hades\save.sav"), 40);
+    apps_host.add_shortcut(&format!(r"{DESKTOP}\Hades.lnk"), Some(r"D:\Jeux\Hades\Uninstall.exe"));
+    apps_host.add_registration(
+        AppsPlace::Machine64,
+        RawRegistration {
+            display_version: Some("1.38290".to_owned()),
+            publisher: Some("Supergiant Games".to_owned()),
+            install_location: Some(r"D:\Jeux\Hades".to_owned()),
+            install_date: Some("20240229".to_owned()),
+            estimated_size: Some(9_000_000),
+            uninstall_string: Some(r#""D:\Jeux\Hades\unins000.exe" /SILENT"#.to_owned()),
+            ..app("Hades", "Hades")
+        },
+    );
+    apps_host.add_registration(AppsPlace::Account, app("Notes", "Notes rapides"));
+    apps_host.add_registration(
+        AppsPlace::Machine32,
+        app("vc", "Microsoft Visual C++ 2015-2022 Redistributable (x86)"),
+    );
+    apps_host.add_registration(AppsPlace::Machine64, app("gpu", "NVIDIA Graphics Driver 551.23"));
+    apps_host.add_registration(
+        AppsPlace::Machine64,
+        RawRegistration { no_remove: Some(1), ..app("nr", "Application verrouillée") },
+    );
+    apps_host.add_registration(AppsPlace::Machine64, app("Shinku", "Shinku"));
+    apps_host.add_registration(AppsPlace::Machine64, app("wv2", "Microsoft Edge WebView2 Runtime"));
+    apps_host.add_registration(
+        AppsPlace::Machine64,
+        RawRegistration {
+            windows_installer: Some(1),
+            ..app("{1A2B3C4D-0000-1111-2222-333344445555}", "Par MSI")
+        },
+    );
+
     let mut options = ScanOptions::new(Trigger::Button);
     options.duplicate_min_size = 4096;
     options.large_threshold = 32 * 1024;
@@ -255,7 +303,8 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             startup_host.clone(),
             Some(StartupStore::at(startup_store.path())),
             Some(own_command.to_owned()),
-        );
+        )
+        .with_apps_parts(apps_host.clone());
 
     let mut samples: BTreeMap<&str, Value> = BTreeMap::new();
     samples.insert("sessionView.idle", to_json(&backend.view()));
@@ -270,6 +319,48 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         .to_owned();
     let view = backend.set_startup_entry(&steam, false).expect("Steam est coupée");
     samples.insert("startupView", to_json(&view));
+
+    // La désinstallation : la liste, puis chaque phase, puis les restes.
+    samples.insert("appsView.idle", to_json(&backend.apps_view()));
+    let (entered, release) = apps_host.block_next_launch();
+    std::thread::scope(|scope| {
+        let starting = scope.spawn(|| backend.start_uninstall("m6:Hades").map(|_| ()));
+        entered.recv().expect("le lancement est en cours");
+        samples.insert("appsView.launching", to_json(&backend.apps_view()));
+        release.send(()).expect("lancement libéré");
+        starting.join().expect("fil du lancement").expect("désinstalleur lancé");
+    });
+    samples.insert("appsView.waiting", to_json(&backend.apps_view()));
+    apps_host.remove_registration(AppsPlace::Machine64, "Hades");
+    samples.insert("appsView.settling", to_json(&backend.apps_view()));
+    apps_host.advance(Duration::from_secs(3));
+    let _ = backend.apps_view();
+    apps_host.advance(Duration::from_secs(3));
+    let removed = backend.apps_view();
+    samples.insert("appsView.removed", to_json(&removed));
+    let FollowView::Removed { leftovers, .. } = &removed.follow else {
+        panic!("la phase « removed » était attendue");
+    };
+    let key_of = |kind: LeftoverKind| {
+        leftovers.iter().find(|leftover| leftover.kind == kind).map(|leftover| leftover.key)
+    };
+    let folder = key_of(LeftoverKind::Folder).expect("le dossier de l'app");
+    let data = key_of(LeftoverKind::Data).expect("ses réglages");
+    assert!(key_of(LeftoverKind::Shortcut).is_some(), "son raccourci");
+    apps_host.fail_recycle(r"D:\Jeux\Hades", FakeRecycle::Locked);
+    let removal = backend.remove_leftovers(&[data, folder, 999]).expect("restes traités");
+    let outcomes: Vec<RemoveOutcome> =
+        removal.results.iter().map(|result| result.outcome).collect();
+    assert_eq!(outcomes, [RemoveOutcome::Removed, RemoveOutcome::Failed, RemoveOutcome::Refused]);
+    assert_eq!(removal.results[1].reason, Some(RemoveReason::InUse));
+    samples.insert("removeLeftovers", to_json(&removal));
+    samples.insert("appsView.rescanned", to_json(&backend.rescan_leftovers().expect("recherche")));
+    samples.insert("appsView.stopped", to_json(&backend.stop_uninstall()));
+    // L'installeur de Windows sort alors que l'app reste : la personne a annulé.
+    backend.start_uninstall("m6:{1A2B3C4D-0000-1111-2222-333344445555}").expect("lancé");
+    apps_host.end_process();
+    let _ = backend.apps_view();
+    samples.insert("appsView.kept", to_json(&backend.apps_view()));
 
     // Le mode jeu : des listes pleines, pour que ni les réglages ni la page
     // n'aient de liste vide dans leurs échantillons.
@@ -420,6 +511,11 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     );
 
     samples.insert(
+        "error.uninstallRefused",
+        to_json(&BackendError::UninstallRefused { reason: UninstallRefusal::NotOffered }),
+    );
+
+    samples.insert(
         "error.startupRefused",
         to_json(&BackendError::StartupRefused { reason: StartupRefusal::NotAdjustable }),
     );
@@ -469,7 +565,43 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     );
     enums.insert("powerSupport", variants!(PowerSupport: Available, Unavailable, Unsuited));
     enums.insert("gameSource", variants!(Source: Added, Library));
-    enums.insert("windowsPage", variants!(WindowsPage: GameMode, Power, StartupApps));
+    enums.insert("windowsPage", variants!(WindowsPage: GameMode, Power, StartupApps, Apps));
+    enums.insert("appsScope", variants!(AppsScope: Account, Machine));
+    enums.insert("appsKind", variants!(Kind: Plain, Runtime, Driver));
+    enums.insert("appsRemoval", variants!(Removal: Offered, Refused, Own, Needed));
+    enums.insert("appsOutcome", variants!(Outcome: Kept));
+    enums.insert("leftoverKind", variants!(LeftoverKind: Folder, Data, Shortcut));
+    enums.insert("removeOutcome", variants!(RemoveOutcome: Removed, AlreadyGone, Refused, Failed));
+    enums.insert("removeReason", variants!(RemoveReason: InUse, Refused, Partial, Destroyed));
+    enums.insert(
+        "uninstallRefusal",
+        variants!(
+            UninstallRefusal: Busy, Vanished, Unreadable, NotOffered, Broken, Cancelled, Failed
+        ),
+    );
+    // Les phases portent des champs : la liste vient des échantillons, et le
+    // `match` veille à ce qu'il n'en manque pas.
+    fn every_phase_has_a_sample(phase: FollowView) {
+        match phase {
+            FollowView::Idle
+            | FollowView::Launching { .. }
+            | FollowView::Waiting { .. }
+            | FollowView::Settling { .. }
+            | FollowView::Removed { .. } => {}
+        }
+    }
+    let _ = every_phase_has_a_sample;
+    let phases: Vec<Value> = ["idle", "launching", "waiting", "settling", "removed"]
+        .into_iter()
+        .map(|phase| {
+            let seen = samples.iter().any(|(name, sample)| {
+                name.starts_with("appsView.") && sample["follow"]["phase"] == phase
+            });
+            assert!(seen, "aucun échantillon pour la phase {phase}");
+            json!(phase)
+        })
+        .collect();
+    enums.insert("followPhase", Value::Array(phases));
     enums.insert("startupScope", variants!(Scope: User, Machine));
     enums.insert("startupState", variants!(State: Enabled, Disabled, Unknown));
     enums.insert("startupTarget", variants!(TargetKind: Found, Missing, Hosted, Unknown));
@@ -511,7 +643,8 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             | BackendError::CleanRefused { .. }
             | BackendError::CleanNotStarted { .. }
             | BackendError::GameRefused { .. }
-            | BackendError::StartupRefused { .. } => {}
+            | BackendError::StartupRefused { .. }
+            | BackendError::UninstallRefused { .. } => {}
         }
     }
     fn every_issue_has_a_sample(issue: LoadIssue) {

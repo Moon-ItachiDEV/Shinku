@@ -6,8 +6,9 @@
 //! donnent ainsi un PC fabriqué de toutes pièces ([`StaticEnvironment`]), et
 //! la vraie implémentation reste petite et isolée.
 //!
-//! Deux demandes modifient la machine, et seul le grand vide les fait : vider
-//! la corbeille et y envoyer un fichier.
+//! Deux demandes modifient la machine : vider la corbeille et y envoyer un
+//! fichier ou un dossier entier. Le grand vide fait les deux ; le module
+//! « Désinstallation » n'envoie à la corbeille que des restes d'apps.
 
 use std::fmt;
 use std::io;
@@ -16,11 +17,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::Serialize;
 
+use crate::apps::host::AppsHost;
 use crate::game::host::GameHost;
 use crate::model::Timestamp;
 use crate::startup::host::StartupHost;
 
 pub mod agent;
+mod bin_rule;
 
 #[cfg(unix)]
 mod unix;
@@ -151,13 +154,18 @@ pub struct RecycleBin {
     pub items: u64,
 }
 
-/// Pourquoi un fichier n'est pas parti à la corbeille. Dans tous les cas, il
-/// est resté à sa place.
+/// Pourquoi un fichier ou un dossier n'est pas parti à la corbeille. Dans tous
+/// les cas, il est resté à sa place, **en entier** : un dossier ne part jamais à
+/// moitié.
 #[derive(Debug)]
 pub enum RecycleError {
-    /// La corbeille ne peut pas le recevoir : elle est désactivée, trop petite
-    /// pour lui, ou son disque n'en a pas. Windows l'aurait supprimé
-    /// définitivement : Shinku a refusé.
+    /// La corbeille ne peut pas le recevoir, **d'après ses réglages lus avant
+    /// l'envoi** (la garde : désactivée, stratégie `NoRecycleFiles`, trop petite
+    /// pour lui avec une marge de 10 %, ou sans capacité connue et plus grand que
+    /// 5 % du volume), ou, à défaut, d'après ce que le shell a dit en route.
+    /// Windows l'aurait supprimé définitivement : Shinku a refusé, et l'élément
+    /// est resté en entier. La garde ne voit que des réglages : si Windows
+    /// supprime quand même pour de bon, on ne le sait qu'après ([`Sent::Destroyed`]).
     Refused,
     /// Cette machine n'a pas de corbeille que Shinku sache utiliser.
     Unavailable,
@@ -182,6 +190,19 @@ impl fmt::Display for RecycleError {
 }
 
 impl std::error::Error for RecycleError {}
+
+/// Où est parti un élément que Windows a accepté de supprimer. Le code de
+/// réussite du shell ne le dit pas (il est le même dans les deux cas) : c'est
+/// l'élément de corbeille rendu par Windows, puis le disque, qui tranchent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sent {
+    /// Dans la corbeille : l'élément y est, restaurable.
+    InBin,
+    /// Windows l'a supprimé pour de bon : il n'est pas dans la corbeille (le
+    /// shell n'a rendu aucun élément de corbeille). C'est un **constat après
+    /// coup**, pas une barrière : la barrière est la garde, avant l'envoi.
+    Destroyed,
+}
 
 /// La machine, vue par le moteur.
 ///
@@ -222,11 +243,25 @@ pub trait Environment: Send + Sync + fmt::Debug {
         Err(io::Error::new(io::ErrorKind::Unsupported, "pas de corbeille sur cette machine"))
     }
 
-    /// Envoie un fichier à la corbeille, d'où l'utilisateur peut le
-    /// restaurer. `path` est sous forme interne.
+    /// Envoie un fichier, ou un dossier **entier**, à la corbeille, d'où
+    /// l'utilisateur peut le restaurer. `path` est sous forme interne.
     ///
-    /// Ne supprime jamais définitivement : si la corbeille ne peut pas
-    /// recevoir le fichier, il reste à sa place et l'appel échoue.
+    /// Un dossier part en **un seul élément**, avec tout ce qu'il contient : si
+    /// une partie ne peut pas partir (un fichier tenu ouvert, une corbeille
+    /// trop petite), l'envoi échoue et le dossier reste en entier, sans que
+    /// rien n'en soit parti. Un lien (jonction, lien symbolique) n'est jamais
+    /// envoyé, ni un dossier dont le chemin en traverse un.
+    ///
+    /// Ce qui est garanti : la garde de la corbeille (réglages lus avant
+    /// l'envoi, voir [`RecycleError::Refused`]) refuse ce que la corbeille ne
+    /// recevrait pas, et l'élément reste alors à sa place. **Ce qui ne l'est
+    /// pas** : si Windows supprime quand même pour de bon (réglage que la garde
+    /// ne voit pas), `Ok(())` est rendu ici comme pour un envoi réussi, car ce
+    /// trait ne distingue pas [`Sent::Destroyed`] de [`Sent::InBin`]. Limite
+    /// connue, à traiter dans le chantier du nettoyage ; l'appelant qui doit le
+    /// savoir (le module « Désinstallation ») passe par l'hôte, qui le dit. Les
+    /// essais de la vraie corbeille (`SHINKU_ESSAI_CORBEILLE`, machine jetable)
+    /// prouvent la garde, et ce que Windows fait seul sans elle.
     fn recycle(&self, path: &Path) -> Result<(), RecycleError> {
         let _ = path;
         Err(RecycleError::Unavailable)
@@ -248,6 +283,12 @@ pub fn game_host() -> Arc<dyn GameHost> {
 /// ne voit rien ailleurs.
 pub fn startup_host() -> Arc<dyn StartupHost> {
     imp::startup_host()
+}
+
+/// La machine du module « Désinstallation » : la vraie sous Windows, une machine
+/// qui ne voit rien ailleurs.
+pub fn apps_host() -> Arc<dyn AppsHost> {
+    imp::apps_host()
 }
 
 /// Vrai si ce processus a reçu les droits d'un administrateur par une
@@ -364,6 +405,28 @@ struct StaticBin {
     held: Vec<(PathBuf, u64)>,
     /// Numérote les fichiers reçus : deux fichiers de même nom ne se gênent pas.
     received: u64,
+}
+
+/// La taille des fichiers d'un dossier, sans suivre aucun lien.
+fn folder_bytes(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => folder_bytes(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |metadata| metadata.len()),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Supprime pour de bon ce que la corbeille fabriquée a reçu : un fichier, ou
+/// un dossier entier.
+fn remove_held(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path),
+        _ => std::fs::remove_file(path),
+    }
 }
 
 impl StaticEnvironment {
@@ -493,7 +556,7 @@ impl Environment for StaticEnvironment {
         bin.emptied = true;
         // Seulement ce que cette corbeille a reçu : rien d'autre ne part.
         let mut failure = None;
-        bin.held.retain(|(path, _)| match std::fs::remove_file(path) {
+        bin.held.retain(|(path, _)| match remove_held(path) {
             Ok(()) => false,
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(error) => {
@@ -508,10 +571,12 @@ impl Environment for StaticEnvironment {
         let Some(folder) = &self.recycle_folder else { return Err(RecycleError::Unavailable) };
         let metadata = std::fs::symlink_metadata(path)
             .map_err(|error| RecycleError::Failed(error.to_string()))?;
-        if !metadata.is_file() {
-            return Err(RecycleError::Failed("ce n'est pas un fichier".to_owned()));
+        if !metadata.is_file() && !metadata.is_dir() {
+            return Err(RecycleError::Failed("ni un fichier ni un dossier".to_owned()));
         }
-        if self.recycle_limit.is_some_and(|limit| metadata.len() > limit) {
+        // Un dossier pèse la somme de ses fichiers ; un lien n'est pas suivi.
+        let bytes = if metadata.is_dir() { folder_bytes(path) } else { metadata.len() };
+        if self.recycle_limit.is_some_and(|limit| bytes > limit) {
             return Err(RecycleError::Refused);
         }
         let mut bin = self.bin();
@@ -519,7 +584,7 @@ impl Environment for StaticEnvironment {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let kept = folder.join(format!("{:06}-{name}", bin.received));
         std::fs::rename(path, &kept).map_err(|error| RecycleError::Failed(error.to_string()))?;
-        bin.held.push((kept, metadata.len()));
+        bin.held.push((kept, bytes));
         Ok(())
     }
 }
@@ -624,8 +689,21 @@ mod tests {
         // Trop gros pour la corbeille : refusé, et laissé à sa place.
         assert!(matches!(environment.recycle(&film), Err(RecycleError::Refused)));
         assert!(film.exists());
-        // Un dossier ne s'y envoie pas.
-        assert!(matches!(environment.recycle(workspace.path()), Err(RecycleError::Failed(_))));
+        // Un dossier s'y envoie en un seul élément, avec tout ce qu'il contient.
+        let folder = workspace.path().join("dossier");
+        std::fs::create_dir_all(folder.join("a").join("b")).unwrap();
+        std::fs::write(folder.join("a").join("b").join("c.txt"), [4u8; 700]).unwrap();
+        std::fs::write(folder.join("d.txt"), [5u8; 100]).unwrap();
+        environment.recycle(&folder).unwrap();
+        assert!(!folder.exists(), "le dossier entier a quitté sa place");
+        assert_eq!(twin.recycle_bin(), Some(RecycleBin { bytes: 2100, items: 4 }));
+        // Trop gros pour la corbeille : il reste en entier.
+        let big = workspace.path().join("gros");
+        std::fs::create_dir(&big).unwrap();
+        std::fs::write(big.join("x.bin"), [1u8; 3000]).unwrap();
+        std::fs::write(big.join("y.bin"), [1u8; 3000]).unwrap();
+        assert!(matches!(environment.recycle(&big), Err(RecycleError::Refused)));
+        assert!(big.join("x.bin").exists() && big.join("y.bin").exists());
 
         twin.empty_recycle_bin().unwrap();
         assert_eq!(environment.recycle_bin(), Some(RecycleBin::default()));

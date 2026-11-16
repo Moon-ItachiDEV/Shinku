@@ -4,7 +4,7 @@
 // Sans navigateur : de faux éléments qui notent ce qu'on leur demande.
 
 import assert from 'node:assert/strict';
-import { beforeEach, test } from 'node:test';
+import { beforeEach, mock, test } from 'node:test';
 
 class FakeElement {
   isConnected = true;
@@ -42,7 +42,7 @@ Object.assign(globalThis, {
   },
 });
 
-const { openModal } = await import('../src/views/modal.ts');
+const { closesOnVeil, openModal, VEIL_GRACE } = await import('../src/views/modal.ts');
 const { pickerHandlers } = await import('../src/views/game.ts');
 
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -130,11 +130,35 @@ test('Échap et le clic hors de la fenêtre ferment le sélecteur ; un clic deda
   assert.equal(prevented, 1);
   assert.equal(closed, 1);
 
-  // Un clic sur le voile tombe sur le dialogue lui-même.
+  // Un clic sur le voile tombe sur le dialogue lui-même (passé le délai qui suit une ouverture).
   const dialog = {};
-  onClick({ target: dialog, currentTarget: dialog } as unknown as Event);
+  mock.timers.enable({ apis: ['Date'], now: Date.now() + 10 * VEIL_GRACE });
+  try {
+    onClick({ target: dialog, currentTarget: dialog } as unknown as Event);
+  } finally {
+    mock.timers.reset();
+  }
   assert.equal(closed, 2);
   // Un clic sur un bouton de la boîte ne la ferme pas.
   onClick({ target: {}, currentTarget: dialog } as unknown as Event);
   assert.equal(closed, 2);
+});
+
+test('un clic sur le voile referme la boîte, sauf dans les instants qui suivent son ouverture (double clic)', async () => {
+  mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
+  try {
+    const dialog = new FakeDialog();
+    openModal(as(dialog));
+    await flush();
+    const veil = { target: dialog, currentTarget: dialog } as unknown as Event;
+    const inside = { target: new FakeButton(), currentTarget: dialog } as unknown as Event;
+    assert.equal(closesOnVeil(veil), false, 'le second clic du double clic ne referme pas');
+    mock.timers.tick(VEIL_GRACE - 1);
+    assert.equal(closesOnVeil(veil), false);
+    mock.timers.tick(2);
+    assert.equal(closesOnVeil(veil), true, 'un clic voulu referme');
+    assert.equal(closesOnVeil(inside), false, 'un clic dans la boîte ne referme pas');
+  } finally {
+    mock.timers.reset();
+  }
 });
