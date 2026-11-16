@@ -51,6 +51,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { DOM, EXPECTED } from './essai-desinstallation-dom.mjs';
+import { DOM as STARTUP_DOM, EXPECTED as STARTUP_EXPECTED } from './essai-demarrage-dom.mjs';
 
 const { values: options } = parseArgs({
   options: {
@@ -460,44 +461,51 @@ function readGame() {
 }
 
 /**
- * La page Démarrage : son titre, ses lignes (avec la carte où elles sont), et la
- * zone de retour. Une ligne se reconnaît à ce qu'elle dit de son nom : le nom
- * lui-même, ou le nom d'inscription (« inscrite sous « … » »).
+ * La page Démarrage : son titre, ses cartes (avec leur phrase d'accès), ses lignes (avec la carte où elles
+ * sont), et la zone de retour. Une ligne se reconnaît à ce qu'elle dit de son nom : le nom lui-même, ou le
+ * nom d'inscription (« inscrite sous « … » »). Les sélecteurs viennent de `essai-demarrage-dom.mjs` (`dom`).
  */
-function readStartup() {
+function readStartup(dom) {
   const text = (element) => (element?.innerText ?? '').replace(/[ \u00a0\u202f]+/g, ' ').trim();
-  const say = document.querySelector('.pzone .psay');
+  const say = document.querySelector(dom.say);
   return {
-    title: text(document.querySelector('.main h1')),
-    // La note de chargement (ou d'échec) seule : la note du bas de page porte aussi la classe `note`.
-    loading: document.querySelector('.page.startup .note[role="status"]') !== null,
-    rows: [...document.querySelectorAll('.page.startup .plist > li.row')].map((row) => {
-      const control = row.querySelector('button[role=switch]');
+    title: text(document.querySelector(dom.title)),
+    loading: document.querySelector(dom.loading) !== null,
+    sections: [...document.querySelectorAll(dom.section)].map((section) => ({
+      title: text(section.querySelector(dom.sectionTitle)),
+      access: [...section.querySelectorAll(dom.access)].map((one) => text(one)),
+      caution: text(section.querySelector(dom.caution)),
+      windowsButtons: [...section.querySelectorAll(dom.windowsButton)].map((one) => text(one)),
+    })),
+    rows: [...document.querySelectorAll(dom.row)].map((row) => {
+      const control = row.querySelector(dom.rowSwitch);
       return {
-        name: text(row.querySelector('.t1')),
-        detail: text(row.querySelector('.t2')),
-        card: text(row.closest('section.psec')?.querySelector('h2')),
+        name: text(row.querySelector(dom.rowName)),
+        detail: text(row.querySelector(dom.rowDetail)),
+        registered: text(row.querySelector(dom.registered)),
+        waiting: text(row.querySelector(dom.waiting)),
+        card: text(row.closest(dom.section)?.querySelector(dom.sectionTitle)),
         hasSwitch: control !== null,
         checked: control?.getAttribute('aria-checked') === 'true',
         disabled: control?.disabled === true || control?.getAttribute('aria-disabled') === 'true',
         label: control?.getAttribute('aria-label') ?? '',
-        tags: [...row.querySelectorAll('.tag')].map((tag) => text(tag)),
+        tags: [...row.querySelectorAll(dom.tag)].map((tag) => text(tag)),
         text: text(row),
       };
     }),
-    say: say === null ? null : { text: text(say.querySelector('span')), undo: say.querySelector('button') !== null },
+    say: say === null ? null : { text: text(say.querySelector(dom.sayText)), undo: say.querySelector(dom.sayButton) !== null },
   };
 }
 
 /** Où se trouve l'interrupteur de la ligne qui porte ce nom, et ce qu'un clic à cet endroit toucherait. */
-function locateSwitch(name) {
+function locateSwitch(name, dom) {
   const wanted = name.toLowerCase();
-  const row = [...document.querySelectorAll('.page.startup .plist > li.row')].find((candidate) =>
-    `${candidate.querySelector('.t1')?.textContent ?? ''} ${candidate.querySelector('.t2')?.textContent ?? ''}`
+  const row = [...document.querySelectorAll(dom.row)].find((candidate) =>
+    `${candidate.querySelector(dom.rowName)?.textContent ?? ''} ${candidate.querySelector(dom.rowDetail)?.textContent ?? ''} ${candidate.querySelector(dom.registered)?.textContent ?? ''}`
       .toLowerCase()
       .includes(wanted),
   );
-  const element = row?.querySelector('button[role=switch]');
+  const element = row?.querySelector(dom.rowSwitch);
   if (element === null || element === undefined) {
     return null;
   }
@@ -517,14 +525,14 @@ function locateSwitch(name) {
 }
 
 /** Clique sur l'interrupteur de cette ligne, sans passer par la souris. */
-function clickSwitchInPage(name) {
+function clickSwitchInPage(name, dom) {
   const wanted = name.toLowerCase();
-  const row = [...document.querySelectorAll('.page.startup .plist > li.row')].find((candidate) =>
-    `${candidate.querySelector('.t1')?.textContent ?? ''} ${candidate.querySelector('.t2')?.textContent ?? ''}`
+  const row = [...document.querySelectorAll(dom.row)].find((candidate) =>
+    `${candidate.querySelector(dom.rowName)?.textContent ?? ''} ${candidate.querySelector(dom.rowDetail)?.textContent ?? ''} ${candidate.querySelector(dom.registered)?.textContent ?? ''}`
       .toLowerCase()
       .includes(wanted),
   );
-  const element = row?.querySelector('button[role=switch]');
+  const element = row?.querySelector(dom.rowSwitch);
   element?.click();
   return element !== null && element !== undefined;
 }
@@ -714,7 +722,7 @@ class Window {
 
   /** Clique sur l'interrupteur de la ligne du Démarrage qui porte ce nom. */
   clickSwitch(name) {
-    return this.press(`l’interrupteur de la ligne « ${name} »`, locateSwitch, clickSwitchInPage, [name]);
+    return this.press(`l’interrupteur de la ligne « ${name} »`, locateSwitch, clickSwitchInPage, [name, STARTUP_DOM]);
   }
 
   /** `find` (dans la page) dit où est la cible ; `inPage` la clique quand la souris ne répond pas. */
@@ -1168,9 +1176,9 @@ const STARTUP_MACHINE = 'Essai Shinku PC';
 const STARTUP_APPROVED = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved';
 const APPROVED_ON = '020000000000000000000000';
 
-/** La valeur d'approbation, en hexadécimal, lue par `reg query /reg:64` ; `null` si elle n'existe pas. */
-function readApproval([key, name]) {
-  const result = spawnSync('reg', ['query', `${STARTUP_APPROVED}\\${key}`, '/v', name, '/reg:64'], {
+/** La valeur d'approbation (HKCU par défaut, `root` pour HKLM), en hexadécimal, lue par `reg query /reg:64` (vue 64 bits) ; `null` si elle n'existe pas. */
+function readApproval([key, name], root = STARTUP_APPROVED) {
+  const result = spawnSync('reg', ['query', `${root}\\${key}`, '/v', name, '/reg:64'], {
     encoding: 'utf8',
     timeout: 15_000,
   });
@@ -1205,7 +1213,7 @@ async function checkStartup(window) {
     note('essai du Démarrage sauté : la démo n’a pas les entrées de la machine d’essai');
     return;
   }
-  const read = () => window.session.run(readStartup);
+  const read = () => window.session.run(readStartup, STARTUP_DOM);
   const rowOf = (screen, name) => screen.rows.find((row) => `${row.name} ${row.detail}`.toLowerCase().includes(name.toLowerCase()));
   await window.open('Démarrage');
   const loaded = await until('la liste du Démarrage est affichée', 30_000, async () => {
@@ -1233,26 +1241,20 @@ async function checkStartup(window) {
       fail(`la ligne « ${entry.name} » devrait avoir un interrupteur allumé : ${JSON.stringify(row)}`);
     }
   }
-  // La ligne du PC : là, sans interrupteur, avec sa pastille d'état.
+  // La ligne du PC : là, dans la carte du PC. Ce qu'elle montre (interrupteur ou lot 1) se juge plus bas.
   const machine = rowOf(loaded, STARTUP_MACHINE);
   if (machine === undefined) {
     fail(`la page Démarrage n’a pas la ligne du PC « ${STARTUP_MACHINE} »`);
   }
-  if (!shows(machine.card, 'Pour tous les comptes')) {
+  if (!shows(machine.card, STARTUP_EXPECTED.machineCard)) {
     fail(`la ligne « ${STARTUP_MACHINE} » est dans la carte « ${machine.card} »`);
-  }
-  if (machine.hasSwitch) {
-    fail(`la ligne du PC « ${STARTUP_MACHINE} » a un interrupteur : Shinku ne règle pas le PC`);
-  }
-  if (!machine.tags.includes('Active')) {
-    fail(`la ligne du PC devrait porter la pastille « Active » : ${JSON.stringify(machine.tags)}`);
   }
   // La description du fichier a été lue : la ligne Cible a le nom de notepad.exe, et l'inscription en second nom.
   const target = rowOf(loaded, 'Essai Shinku Cible');
   if (!shows(target.detail, 'inscrite sous') || !shows(target.detail, 'Essai Shinku Cible')) {
     fail(`la ligne « Essai Shinku Cible » ne dit pas « inscrite sous » son nom d’inscription : « ${target.name} » / « ${target.detail} »`);
   }
-  done('les quatre lignes du compte et la ligne du PC sont là ; la ligne du PC n’a pas d’interrupteur ; la description du fichier est lue');
+  done('les quatre lignes du compte et la ligne du PC sont là ; la description du fichier est lue');
   await window.capture('demarrage');
 
   const controlled = onWindows;
@@ -1300,6 +1302,169 @@ async function checkStartup(window) {
     await window.healthy(`après avoir remis « ${entry.name} »`);
     await window.capture(`demarrage-${slug(entry.name)}-remise`);
   }
+  await checkStartupMachine(window, read);
+}
+
+// ── Le Démarrage : la ligne du PC ──────────────────────────────────────────
+
+const MACHINE_APPROVED = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved';
+const MACHINE_APPROVAL = ['Run', STARTUP_MACHINE];
+/** Le délai que l'essai laisse à un changement du PC : personne ne répond à la petite fenêtre de l'assistant. */
+const MACHINE_OUTCOME_BUDGET = 30_000;
+
+const accessOf = (section) => {
+  const said = section.access.join(' ');
+  return ['consent', 'password', 'direct', 'unavailable'].filter((name) => shows(said, STARTUP_EXPECTED[name]));
+};
+
+/** Ce que dit la zone de retour d'un changement du PC, en une issue ; `null` : rien qui en soit une. */
+function machineOutcome(say) {
+  if (say === null) {
+    return null;
+  }
+  for (const [outcome, expected] of [
+    ['cut', STARTUP_EXPECTED.cut],
+    ['restored', STARTUP_EXPECTED.restored],
+    ['cancelled', STARTUP_EXPECTED.cancelled],
+    ['needsAdmin', STARTUP_EXPECTED.needsAdmin],
+    ['failed', STARTUP_EXPECTED.failed],
+  ]) {
+    if (shows(say.text, expected)) {
+      return outcome;
+    }
+  }
+  return null;
+}
+
+/**
+ * Un clic sur l'interrupteur de la ligne du PC, puis l'attente de son issue : la phrase d'attente a disparu de
+ * la ligne et la zone de retour dit une issue. Passé le délai, l'essai échoue en disant ce que la page montrait.
+ */
+async function clickMachine(window, read, wanted) {
+  await window.clickSwitch(STARTUP_MACHINE);
+  const deadline = Date.now() + MACHINE_OUTCOME_BUDGET;
+  let sawWaiting = false;
+  let last = null;
+  for (;;) {
+    last = await read();
+    // Pendant l'attente, la phrase d'attente tient la place de « Inscrite sous… » : elle cite le même nom.
+    const row = last.rows.find((one) => shows(`${one.name} ${one.registered} ${one.waiting}`, STARTUP_MACHINE));
+    if (row !== undefined && row.waiting !== '') {
+      sawWaiting = true;
+    }
+    const outcome = row !== undefined && row.waiting === '' ? machineOutcome(last.say) : null;
+    // Un refus est toujours une issue ; « coupée » ou « remise » ne l'est que si c'est celle qu'on attend (une phrase d'avant ne compte pas).
+    const refusal = outcome === 'cancelled' || outcome === 'needsAdmin' || outcome === 'failed';
+    if (outcome !== null && (refusal || outcome === wanted)) {
+      return { outcome, say: last.say.text, row, sawWaiting };
+    }
+    if (Date.now() >= deadline) {
+      fail(
+        `« ${STARTUP_MACHINE} » : pas d’issue ${Math.round(MACHINE_OUTCOME_BUDGET / 1000)} s après le clic (Windows ou la petite fenêtre « Shinku » attend une réponse que personne ne donne ?). ` +
+          `Phase d’attente vue : ${sawWaiting ? 'oui' : 'non'} ; ligne : ${JSON.stringify(row)} ; zone de retour : ${JSON.stringify(last.say)} ; ` +
+          `HKLM = ${readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) ?? 'aucune valeur'}`,
+      );
+    }
+    await sleep(250);
+  }
+}
+
+/**
+ * La ligne « Essai Shinku PC » (posée dans HKLM\\…\\Run par `essai-demarrage.ps1 -Preparer`), selon ce que la page
+ * montre. Avec un interrupteur : un clic, puis la page et HKLM disent la même chose. Sans : le lot 1, rien d'autre.
+ */
+async function checkStartupMachine(window, read) {
+  const screen = await read();
+  const row = screen.rows.find((one) => shows(`${one.name} ${one.registered} ${one.detail} ${one.waiting}`, STARTUP_MACHINE));
+  const section = screen.sections.find((one) => shows(one.title, STARTUP_EXPECTED.machineCard));
+  if (row === undefined || section === undefined) {
+    fail(`la carte du PC ou la ligne « ${STARTUP_MACHINE} » a disparu de la page`);
+  }
+  const accesses = accessOf(section);
+  if (accesses.length !== 1) {
+    fail(`la carte du PC doit dire exactement un accès (consent, password, direct, unavailable), elle en dit ${JSON.stringify(accesses)} : ${JSON.stringify(section.access)}`);
+  }
+  const access = accesses[0];
+  if (!shows(row.registered, STARTUP_EXPECTED.registered) || !shows(row.registered, STARTUP_MACHINE)) {
+    fail(`la ligne du PC ne dit pas « Inscrite sous « ${STARTUP_MACHINE} » » : « ${row.registered} » (ligne : ${JSON.stringify(row)})`);
+  }
+  const bytes = () => (onWindows ? (readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) ?? 'aucune valeur') : 'non lue (hors de Windows)');
+  const before = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
+
+  if (!row.hasSwitch) {
+    // Le lot 1 : seulement l'état, la phrase du lot 1 et son bouton vers les réglages de Windows, sans phrase de prudence.
+    if (access !== 'unavailable') {
+      fail(`la ligne du PC n’a pas d’interrupteur alors que la carte dit l’accès « ${access} » : ${JSON.stringify(row)}`);
+    }
+    if (!row.tags.some((tag) => shows(tag, STARTUP_EXPECTED.active))) {
+      fail(`la ligne du PC sans interrupteur devrait porter la pastille « Active » : ${JSON.stringify(row.tags)}`);
+    }
+    if (!section.windowsButtons.some((text) => shows(text, STARTUP_EXPECTED.openWindows))) {
+      fail(`la carte du PC sans accès devrait avoir le bouton « Apps de démarrage de Windows » : ${JSON.stringify(section.windowsButtons)}`);
+    }
+    if (section.caution !== '') {
+      fail(`la carte du PC sans accès ne devrait pas avoir la phrase de prudence : « ${section.caution} »`);
+    }
+    done(`ligne du PC « ${STARTUP_MACHINE} » : affichage du lot 1 (accès lu sur la page : ${access}, pas d’interrupteur, pastille « Active », bouton vers Windows)`);
+    say(`FAIT : accès = ${access} ; interrupteur = non ; issue = aucune (rien à régler) ; HKLM StartupApproved\\Run\\${STARTUP_MACHINE} = ${bytes()}`);
+    await window.capture('demarrage-pc-lot1');
+    return;
+  }
+
+  // Un interrupteur : il y a un accès, la phrase de prudence, et la ligne est lue active.
+  if (access === 'unavailable') {
+    fail(`la ligne du PC a un interrupteur alors que la carte dit l’accès « unavailable » : ${JSON.stringify(row)}`);
+  }
+  if (!shows(section.caution, STARTUP_EXPECTED.caution)) {
+    fail(`la carte du PC a un accès mais pas la phrase de prudence : « ${section.caution} »`);
+  }
+  if (!row.checked || row.waiting !== '') {
+    fail(`la ligne du PC devrait être active et sans attente avant le clic : ${JSON.stringify(row)}`);
+  }
+  note(`ligne du PC « ${STARTUP_MACHINE} » : accès « ${access} », interrupteur présent ; HKLM avant le clic = ${before ?? 'aucune valeur'} ; un clic, ${Math.round(MACHINE_OUTCOME_BUDGET / 1000)} s au plus pour l’issue`);
+  await window.capture('demarrage-pc-avant');
+  const first = await clickMachine(window, read, 'cut');
+  const afterFirst = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
+  await window.healthy('après le changement de la ligne du PC');
+
+  if (first.outcome === 'cut') {
+    // Coupée : la page la montre coupée, et HKLM dit `03 00 00 00` + date.
+    if (first.row.checked) {
+      fail(`la page dit « ${first.say} » mais l’interrupteur du PC est resté allumé : ${JSON.stringify(first.row)}`);
+    }
+    if (onWindows && !(afterFirst !== null && afterFirst.length === 24 && afterFirst.startsWith('03000000'))) {
+      fail(`la page montre « ${STARTUP_MACHINE} » coupée (« ${first.say} ») mais HKLM n’a pas 03000000 + date : ${afterFirst ?? 'aucune valeur'}`);
+    }
+    await window.capture('demarrage-pc-coupee');
+    // Remettre, par la page, de la même façon.
+    const second = await clickMachine(window, read, 'restored');
+    const afterSecond = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
+    if (second.outcome !== 'restored') {
+      fail(`remettre « ${STARTUP_MACHINE} » n’a pas réussi : issue « ${second.outcome} » (« ${second.say} »), HKLM = ${afterSecond ?? 'aucune valeur'} ; l’entrée reste coupée`);
+    }
+    if (!second.row.checked) {
+      fail(`la page dit « ${second.say} » mais l’interrupteur du PC est resté éteint : ${JSON.stringify(second.row)}`);
+    }
+    // Remise : l'approbation est active (`02`, ou `06` posé par Windows), ou la valeur n'existe plus.
+    if (onWindows && afterSecond !== null && !(afterSecond.length === 24 && /^0[26]0{6}/.test(afterSecond))) {
+      fail(`la page montre « ${STARTUP_MACHINE} » remise mais HKLM n’est pas active : ${afterSecond}`);
+    }
+    done(`ligne du PC « ${STARTUP_MACHINE} » : coupée puis remise par la page (« ${first.say} » / « ${second.say} »)`);
+    say(`FAIT : accès = ${access} ; interrupteur = oui ; issue = coupée puis remise ; phase d’attente vue = ${first.sawWaiting ? 'oui' : 'non'} ; HKLM avant = ${before ?? 'aucune valeur'}, après la coupure = ${afterFirst ?? 'aucune valeur'}, après la remise = ${afterSecond ?? 'aucune valeur'}`);
+    await window.capture('demarrage-pc-remise');
+    return;
+  }
+
+  // Un refus : la page le dit, l'interrupteur n'a pas bougé, et HKLM est comme avant.
+  if (!first.row.checked) {
+    fail(`la page dit « ${first.say} » (${first.outcome}) mais l’interrupteur du PC est éteint : ${JSON.stringify(first.row)}`);
+  }
+  if (onWindows && afterFirst !== before) {
+    fail(`la page dit « ${first.say} » (${first.outcome}) mais HKLM a changé : avant ${before ?? 'aucune valeur'}, après ${afterFirst ?? 'aucune valeur'}`);
+  }
+  done(`ligne du PC « ${STARTUP_MACHINE} » : refus affiché (« ${first.say} ») et rien n’a changé`);
+  say(`FAIT : accès = ${access} ; interrupteur = oui ; issue = ${first.outcome} ; phase d’attente vue = ${first.sawWaiting ? 'oui' : 'non'} ; HKLM avant = ${before ?? 'aucune valeur'}, après = ${afterFirst ?? 'aucune valeur'}`);
+  await window.capture('demarrage-pc-refus');
 }
 
 // ── La Désinstallation ─────────────────────────────────────────────────────

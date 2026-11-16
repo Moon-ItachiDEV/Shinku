@@ -40,7 +40,9 @@ import {
 } from '../src/model/startup.ts';
 import { readFileSync } from 'node:fs';
 
-import { fakeDocument, htmlOf, textOf } from './template.ts';
+import { DOM, EXPECTED } from '../scripts/essai-demarrage-dom.mjs';
+import { type Node, parse, query, queryAll, textOfNode } from './html-tree.ts';
+import { fakeDocument, htmlOf, markupOf, textOf } from './template.ts';
 
 fakeDocument();
 const { startupView } = await import('../src/views/startup.ts');
@@ -785,4 +787,89 @@ test('la relecture n’a lieu que tant que le cœur attend, et pas pour le geste
   // La ligne a disparu de la liste : l'attente existe, mais il n'y a pas de ligne pour la dire.
   assert.equal(waitingText({ ...waiting, entries: [] }), null);
   assert.equal(isWaiting({ ...waiting, entries: [] }), true);
+});
+
+// ── L'essai de la fenêtre : ce qu'il cherche existe dans la page ───────────
+
+/** Les mêmes blancs et la même casse que `shows` dans `essai-fenetre.mjs` : blancs insécables lus comme des espaces. */
+const flat = (text: string): string => text.replace(/[\u00a0\u202f\s]+/g, ' ').trim().toLocaleLowerCase('fr');
+
+function tree(parts: Partial<import('../src/state.ts').AppState> = {}): Node {
+  // La page est dans `<main class="main">` de la coque : l'essai y cherche aussi le titre.
+  return parse(`<main class="main">${markupOf(startupView({ ...initialState(NOW), route: 'startup', ...parts } as never, noActions))}</main>`);
+}
+
+function found(scope: Node, selector: string, what: string): Node[] {
+  const nodes = queryAll(scope, selector);
+  assert.ok(nodes.length > 0, `« ${what} » : le sélecteur ${selector} ne trouve rien dans la page`);
+  return nodes;
+}
+
+const contains = (node: Node | undefined, expected: string): boolean =>
+  node !== undefined && flat(textOfNode(node)).includes(flat(expected));
+
+test('essai de la fenêtre : les sélecteurs du Démarrage trouvent la carte du PC avec un accès, sa ligne, son attente et la zone de retour', () => {
+  const account = entry({ id: 'ur-1', name: 'Discord', state: 'disabled', disabledAt: NOW - 3 * DAY });
+  const waiting = view([account, REALTEK], [], { pc: 'password', pending: { id: 'mr-realtek', enabled: false } });
+  const say = { text: 'Discord est coupée.', undo: { id: 'ur-1', enabled: true } };
+  const page = tree({ startup: waiting, startupSay: say });
+  assert.ok(contains(found(page, DOM.title, 'titre')[0], 'inscrites'));
+  const sections = found(page, DOM.section, 'cartes');
+  assert.ok(sections.some((one) => contains(query(one, DOM.sectionTitle) ?? undefined, EXPECTED.userCard)));
+  const machine = sections.find((one) => contains(query(one, DOM.sectionTitle) ?? undefined, EXPECTED.machineCard));
+  assert.ok(machine !== undefined);
+  assert.ok(found(machine, DOM.access, 'phrase d’accès').some((node) => contains(node, EXPECTED.password)));
+  assert.ok(contains(found(machine, DOM.caution, 'phrase de prudence')[0], EXPECTED.caution));
+  assert.equal(queryAll(machine, DOM.windowsButton).length, 0, 'avec un accès, pas de bouton vers Windows dans la carte');
+  const rows = found(page, DOM.row, 'lignes');
+  const line = rows.find((one) => queryAll(one, DOM.waiting).length > 0);
+  assert.ok(line !== undefined, 'la ligne qui attend porte la phrase d’attente');
+  assert.ok(contains(query(line, DOM.waiting) ?? undefined, EXPECTED.waiting));
+  found(line, DOM.rowName, 'nom');
+  found(line, DOM.rowSwitch, 'interrupteur');
+  assert.ok(rows.some((one) => queryAll(one, DOM.tag).length > 0), 'une pastille');
+  assert.ok(contains(found(page, `${DOM.say} ${DOM.sayText}`, 'phrase de la zone de retour')[0], 'est coupée'));
+  found(page, `${DOM.say} ${DOM.sayButton}`, '« Annuler »');
+  // Sans attente : la ligne dit « Inscrite sous », et la phrase d'attente n'est pas là.
+  const calm = tree({ startup: view([REALTEK], [], { pc: 'consent' }) });
+  assert.ok(contains(found(calm, DOM.registered, 'ligne « Inscrite sous »')[0], EXPECTED.registered));
+  assert.equal(queryAll(calm, DOM.waiting).length, 0);
+  assert.ok(found(calm, DOM.access, 'phrase').some((node) => contains(node, EXPECTED.consent)));
+  assert.ok(found(tree({ startup: view([REALTEK], [], { pc: 'direct' }) }), DOM.access, 'phrase').some((node) => contains(node, EXPECTED.direct)));
+  assert.ok(found(tree({ startup: null }), DOM.loading, 'note de chargement').length > 0);
+});
+
+test('essai de la fenêtre : sans accès, la carte du PC a la phrase et le bouton du lot 1, sans interrupteur ni prudence', () => {
+  const lot1 = entry({ id: 'mr-realtek', name: 'Realtek', scope: 'machine', registered: 'Essai', adjustable: false });
+  const page = tree({ startup: view([lot1], [], { pc: 'unavailable' }) });
+  const machine = found(page, DOM.section, 'carte')[0] as Node;
+  assert.ok(found(machine, DOM.access, 'phrase').some((node) => contains(node, EXPECTED.unavailable)));
+  assert.ok(found(machine, DOM.windowsButton, 'bouton').some((node) => contains(node, EXPECTED.openWindows)));
+  assert.equal(queryAll(machine, DOM.caution).length, 0);
+  assert.equal(queryAll(machine, DOM.rowSwitch).length, 0);
+  assert.ok(found(machine, DOM.tag, 'pastille').some((node) => contains(node, EXPECTED.active)));
+});
+
+test('essai de la fenêtre : chaque texte attendu est dans fr.ts, tel quel', () => {
+  const words = [
+    fr.startup.user,
+    fr.startup.machine,
+    fr.startup.registered('X'),
+    fr.startup.pc.consent,
+    fr.startup.pc.password,
+    fr.startup.pc.direct,
+    fr.startup.machineHint,
+    fr.startup.pc.caution,
+    fr.startup.openWindows,
+    fr.startup.waiting('X'),
+    fr.startup.say.cut('X', false),
+    fr.startup.say.restored('X'),
+    fr.startup.say.cancelled,
+    fr.startup.say.needsAdmin,
+    fr.startup.say.failed,
+    fr.startup.active,
+  ].map(flat);
+  for (const [name, expected] of Object.entries(EXPECTED)) {
+    assert.ok(words.some((text) => text.includes(flat(expected))), `EXPECTED.${name} (« ${expected} ») n’est dans aucun texte de fr.ts`);
+  }
 });

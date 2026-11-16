@@ -187,7 +187,7 @@ function lines(state: AppState, entry: StartupEntry, details: string): Content {
   }
   return html`${entry.registered === null
     ? nothing
-    : html`<span class="t2 path" id=${registeredId(entry.id)} title=${fr.startup.registered(entry.registered)}
+    : html`<span class="t2 path reg" id=${registeredId(entry.id)} title=${fr.startup.registered(entry.registered)}
         >${fr.startup.registered(entry.registered)}</span
       >`}
   ${details === ''
