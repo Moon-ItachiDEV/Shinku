@@ -395,6 +395,10 @@ try {
     $installed = (Get-FileHash -Algorithm SHA256 $InstalledAgent).Hash
     if ($built -ne $installed) { Fail "l'installeur n'a pas remplacé shinku-agent.exe : il n'est pas identique à l'agent compilé (SHA-256 $installed au lieu de $built)" }
     Done 'shinku-agent.exe a été remplacé : identique à l''agent compilé alors qu''il avait été marqué'
+    # L'assistant élevé du Démarrage (installeur/helper.nsh) : redéposé à côté de shinku.exe.
+    $installedHelper = Join-Path $Dossier 'shinku-helper.exe'
+    if (-not (Test-Path $installedHelper)) { Fail "après la mise à jour, $installedHelper n'existe pas : l'installeur ne dépose plus l'assistant" }
+    Done 'shinku-helper.exe est à côté de shinku.exe après la mise à jour'
     if ($null -ne (Find-Own $windowEntry)) { Fail "shinku.exe (processus $windowId) tourne encore après la mise à jour : l'installeur devait le fermer" }
     Done 'shinku.exe a été fermé par l''installeur'
     if ($null -ne (Find-Own $oldEntry)) { Fail "l'agent de l'ancienne exécution (processus $oldId) tourne encore après la mise à jour" }

@@ -22,7 +22,7 @@
 #   - aucune fenêtre de console ;
 #   - l'échéance : un assistant lancé au début sur une seconde entrée d'essai
 #     que ce script pose lui-même, sans jamais lui répondre, sort avec le code 3
-#     entre 110 et 180 secondes après son lancement, sans rien écrire.
+#     entre 118 et 150 secondes après son lancement, sans rien écrire.
 #
 # Prudence : chaque attente a un délai ; le script sort avec un code non nul à
 # la première preuve manquée, en disant laquelle ; chaque preuve réussie écrit
@@ -274,8 +274,6 @@ try {
 [IO.File]::WriteAllLines($Sortie, [string[]]$lines)
 '@
 
-Add-Type -TypeDefinition $FenetresSource
-
 # ── Le registre, toujours dans la vue 64 bits de HKLM ──────────────────────
 
 function Open-Hklm([string]$SubKey, [bool]$Writable) {
@@ -417,7 +415,9 @@ function Invoke-Quick([string]$Arguments, [string]$Program = '') {
     while (-not $process.HasExited) {
         if ((Get-Date) -gt $deadline) {
             try { $process.Kill() } catch { }
-            Fail "la demande « $Arguments » ne rend pas la main en $Attente s"
+            $what = 'aucune fenêtre vue'
+            if ($seen.Count -gt 0) { $what = "fenêtre vue : $((@($seen) | Select-Object -Unique) -join ' ; ')" }
+            Fail "la demande « $Arguments » ne rend pas la main en $Attente s ($what)"
         }
         foreach ($window in @([Fenetres]::Of([uint32]$process.Id))) {
             if ($window.Visible) { [void]$seen.Add(('classe {0} titre « {1} »' -f $window.Classe, $window.Titre)) }
@@ -455,12 +455,17 @@ function Find-Dialog($Process, [int]$Seconds, [string]$What) {
     Fail "$What : aucune boîte (classe #32770) du processus $($Process.Id) en $Seconds s"
 }
 
-# La boîte est celle qu'on attend : titre, texte avec le nom, deux boutons.
-function Assert-Dialog($Window, [string]$Name, [string]$What) {
+# La boîte est celle qu'on attend : titre, début du texte (le verbe et le nom),
+# place, deux boutons.
+function Assert-Dialog($Window, [string]$Verb, [string]$Name, [string]$What) {
     $text = ($Window.Textes -join ' / ')
     Say "  boîte : titre « $($Window.Titre) », texte « $text », enfants $($Window.Enfants)"
     if ($Window.Titre -ne 'Shinku') { Fail "$What : le titre de la boîte est « $($Window.Titre) » au lieu de « Shinku »" }
     if (-not $text.Contains($Name)) { Fail "$What : le texte de la boîte ne contient pas le nom « $Name » : « $text »" }
+    # Les textes sont ceux de question_text et place_text (helper/startup.rs).
+    $start = "$Verb « $Name »"
+    if (-not $text.Contains($start)) { Fail "$What : le texte de la boîte ne contient pas « $start » : « $text »" }
+    if (-not $text.Contains('Run (64 bits)')) { Fail "$What : le texte de la boîte ne nomme pas la place « Run (64 bits) » : « $text »" }
     if ($Window.Ok -eq 0 -or $Window.Annuler -eq 0) { Fail "$What : la boîte n'a pas ses boutons OK et Annuler" }
 }
 
@@ -482,6 +487,10 @@ function Show-Machine {
         if ($null -ne $read) { $shown = Format-Value $read.Value }
         Say "  $name = $shown"
     }
+    $lsa = Read-Value 'SYSTEM\CurrentControlSet\Control\Lsa' 'nodefaultadminowner'
+    $lsaShown = '(absente)'
+    if ($null -ne $lsa) { $lsaShown = Format-Value $lsa.Value }
+    Say "  HKLM\SYSTEM\CurrentControlSet\Control\Lsa\nodefaultadminowner = $lsaShown"
     $paths = @(
         $ProgramFiles,
         (Split-Path -Parent $Assistant),
@@ -489,6 +498,7 @@ function Show-Machine {
         [Environment]::GetFolderPath('CommonStartup'))
     foreach ($path in $paths) {
         Say "icacls $path :"
+        try { Say "  propriétaire : $((Get-Acl -LiteralPath $path).Owner)" } catch { Say "  propriétaire illisible : $($_.Exception.Message)" }
         try {
             foreach ($line in @(& icacls.exe $path)) { if ("$line".Trim()) { Say "  $line" } }
         } catch { Say "  icacls impossible : $($_.Exception.Message)" }
@@ -512,28 +522,34 @@ function Remove-Echo {
     Remove-HklmValue $ApprovedRunKey $EntreeEcheance
 }
 
+# Chaque geste a son propre essai : un geste raté ne retient pas les suivants. La
+# première erreur est relancée à la fin, pour que le script sorte en échec.
 function Clean-Up {
-    Stop-Helpers
+    $first = $null
+    try { Stop-Helpers } catch { if ($null -eq $first) { $first = $_ }; Say "  arrêt des assistants impossible : $($_.Exception.Message)" }
+    try { Remove-Echo } catch { if ($null -eq $first) { $first = $_ }; Say "  retrait de « $EntreeEcheance » impossible : $($_.Exception.Message)" }
     if ($OriginalNoted) {
-        if ($null -eq $Original) {
-            Remove-HklmValue $ApprovedRunKey $Entree
-        } else {
-            Write-Value $ApprovedRunKey $Entree $Original.Value $Original.Kind
-        }
-        $back = Read-Value $ApprovedRunKey $Entree
-        $backText = '(absente)'
-        if ($null -ne $back) { $backText = $back.Text }
-        $wasText = '(absente)'
-        if ($null -ne $Original) { $wasText = $Original.Text }
-        if ($backText -ne $wasText) { Fail "l'approbation de « $Entree » n'a pas été remise : $backText au lieu de $wasText" }
-        Say "approbation de « $Entree » remise dans son état d'avant : $wasText"
+        try {
+            if ($null -eq $Original) {
+                Remove-HklmValue $ApprovedRunKey $Entree
+            } else {
+                Write-Value $ApprovedRunKey $Entree $Original.Value $Original.Kind
+            }
+            $back = Read-Value $ApprovedRunKey $Entree
+            $backText = '(absente)'
+            if ($null -ne $back) { $backText = $back.Text }
+            $wasText = '(absente)'
+            if ($null -ne $Original) { $wasText = $Original.Text }
+            if ($backText -ne $wasText) { Fail "l'approbation de « $Entree » n'a pas été remise : $backText au lieu de $wasText" }
+            Say "approbation de « $Entree » remise dans son état d'avant : $wasText"
+        } catch { if ($null -eq $first) { $first = $_ }; Say "  remise de l'approbation impossible : $($_.Exception.Message)" }
     }
-    Remove-Echo
-    foreach ($dir in @($CopyDir, $ProbeDir)) {
+    foreach ($dir in @($Work, $ProbeDir)) {
         try { if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction Stop } } catch {
             Say "  impossible de retirer $dir : $($_.Exception.Message)"
         }
     }
+    if ($null -ne $first) { throw $first }
 }
 
 if ($Nettoyer) {
@@ -542,6 +558,10 @@ if ($Nettoyer) {
     Say "assistants arrêtés, entrée « $EntreeEcheance » retirée"
     exit 0
 }
+
+# Pas avant : le nettoyage n'en a pas besoin, et une compilation ratée ne doit
+# pas l'empêcher.
+Add-Type -TypeDefinition $FenetresSource
 
 # ── L'essai négatif : un processus sans droits ─────────────────────────────
 
@@ -558,10 +578,18 @@ function Invoke-Unprivileged([long]$Window, [long]$Button) {
     [IO.File]::WriteAllText($scriptPath, $ProbeScript, $ascii)
     [IO.File]::WriteAllText($sourcePath, $FenetresSource, $ascii)
 
-    $inner = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Fenetre {1} -Bouton {2} -Source "{3}" -Sortie "{4}"' -f `
-        $scriptPath, $Window, $Button, $sourcePath, $outPath
+    # Par un fichier .cmd lancé par `cmd /c`, comme Invoke-AsUser de
+    # essai-mode-jeu.ps1 : la valeur de -Arguments ne commence pas par un tiret
+    # (« powershell -File » la prendrait pour un nom de paramètre).
+    $cmdPath = Join-Path $ProbeDir 'sonde.cmd'
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $lines = @('@echo off',
+        ('"{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0sonde.ps1" -Fenetre {1} -Bouton {2} -Source "%~dp0fenetres.cs" -Sortie "%~dp0sonde.txt"' -f $psExe, $Window, $Button),
+        'exit /b %errorlevel%')
+    [IO.File]::WriteAllText($cmdPath, (($lines -join "`r`n") + "`r`n"), $ascii)
+    $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
     $parameters = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $LauncherScript,
-        '-Programme', (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'), '-Arguments', $inner)
+        '-Programme', $cmdExe, '-Arguments', ('/c ""{0}""' -f $cmdPath))
     # Start-Process recolle la liste avec des espaces, sans guillemets : un
     # argument qui en contient porte les siens, et ses guillemets sont précédés
     # d'une barre oblique inverse.
@@ -571,6 +599,13 @@ function Invoke-Unprivileged([long]$Window, [long]$Button) {
     $null = $launcher.Handle
     [void]$Processes.Add($launcher)
     if (-not $launcher.WaitForExit(90000)) {
+        # Le programme lancé (cmd, puis la sonde) est l'enfant du lanceur : son
+        # numéro est la première ligne écrite, « PID <numéro> ».
+        try {
+            foreach ($line in @(Get-Content -LiteralPath $launcherOut -ErrorAction SilentlyContinue)) {
+                if ("$line" -match '^PID (\d+)') { Get-CimInstance Win32_Process -Filter "ParentProcessId=$($Matches[1])" -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Stop-Process -Id ([int]$Matches[1]) -Force -ErrorAction SilentlyContinue }
+            }
+        } catch { }
         try { $launcher.Kill() } catch { }
         Fail "l'essai négatif : le processus sans droits ne finit pas en 90 s"
     }
@@ -600,7 +635,7 @@ function Assert-Executable {
     $subsystem = [BitConverter]::ToUInt16($bytes, $peAt + 24 + 68)
     if ($subsystem -ne 2) { Fail "le sous-système de l'assistant est $subsystem au lieu de 2 (graphique) : il ouvrirait une console" }
     $text = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
-    if (-not $text.Contains('requireAdministrator')) { Fail "le manifeste de l'assistant ne contient pas requireAdministrator" }
+    if (-not $text.Contains('level="requireAdministrator"')) { Fail "le manifeste de l'assistant ne contient pas level=\"requireAdministrator\"" }
     Proof "le manifeste de l'assistant contient requireAdministrator et son sous-système est graphique (2), $($bytes.Length) octets"
 }
 
@@ -652,7 +687,7 @@ try {
     $echoSince = Get-Date
     Say "assistant de l'échéance lancé (processus $($echo.Id)) sur « $EntreeEcheance » : on ne lui répondra pas"
     $echoDialog = Find-Dialog $echo $Attente "l'échéance"
-    Assert-Dialog $echoDialog $EntreeEcheance "l'échéance"
+    Assert-Dialog $echoDialog 'Couper' $EntreeEcheance "l'échéance"
     Proof "la boîte de l'assistant de l'échéance est ouverte (#32770, « Shinku ») et son texte contient « $EntreeEcheance »"
 
     # ── Demandes refusées : code 2, aucune fenêtre ─────────────────────────
@@ -709,7 +744,7 @@ try {
     Say 'la boîte, réponse Annuler'
     $cancel = Start-Helper "demarrage1 couper run $hex"
     $dialog = Find-Dialog $cancel $Attente 'Annuler'
-    Assert-Dialog $dialog $Entree 'Annuler'
+    Assert-Dialog $dialog 'Couper' $Entree 'Annuler'
     Proof "la boîte est ouverte, de classe #32770, trouvée par le processus $($cancel.Id) ; son texte contient « $Entree »"
 
     # La console : sous-système graphique (vérifié plus haut), aucune fenêtre de
@@ -737,7 +772,11 @@ try {
         $succeeded = $probe[$attempt + '_SUCCES']
         $lastError = $probe[$attempt + '_ERREUR']
         if ($succeeded -eq 'True') { Fail "l'essai négatif : Windows a laissé passer le message ($attempt) venant du processus sans droits" }
-        if ($lastError -ne '5') { Say "  ATTENTION : $attempt refusé avec GetLastError $lastError et non 5 (ERROR_ACCESS_DENIED)" }
+        Say "  $attempt : succès $succeeded, GetLastError $lastError"
+        if ($lastError -ne '5') {
+            if ($attempt -eq 'FERMER') { Say "  ATTENTION : $attempt refusé avec GetLastError $lastError et non 5 (ERROR_ACCESS_DENIED)" }
+            else { Fail "l'essai négatif : $attempt refusé avec GetLastError $lastError et non 5 (ERROR_ACCESS_DENIED), le refus de l'UIPI" }
+        }
     }
     Start-Sleep -Seconds 3
     if ($cancel.HasExited) { Fail "l'essai négatif : l'assistant est sorti (code $($cancel.ExitCode)) après le message du processus sans droits" }
@@ -757,7 +796,7 @@ try {
     Say 'la boîte, réponse OK (couper)'
     $cut = Start-Helper "demarrage1 couper run $hex"
     $dialog = Find-Dialog $cut $Attente 'couper'
-    Assert-Dialog $dialog $Entree 'couper'
+    Assert-Dialog $dialog 'Couper' $Entree 'couper'
     Answer-Dialog $dialog 1 'couper'
     $code = Wait-Exit $cut $Attente 'couper'
     if ($code -ne 0) { Fail "couper : code $code au lieu de 0" }
@@ -785,7 +824,7 @@ try {
     Say 'la boîte, réponse OK (remettre)'
     $restore = Start-Helper "demarrage1 remettre run $hex"
     $dialog = Find-Dialog $restore $Attente 'remettre'
-    Assert-Dialog $dialog $Entree 'remettre'
+    Assert-Dialog $dialog 'Remettre' $Entree 'remettre'
     Answer-Dialog $dialog 1 'remettre'
     $code = Wait-Exit $restore $Attente 'remettre'
     if ($code -ne 0) { Fail "remettre : code $code au lieu de 0" }
@@ -808,10 +847,10 @@ try {
     if ($null -eq $lived) { Fail "l'échéance : la durée de vie de l'assistant est illisible" }
     Say ("  l'assistant de l'échéance a vécu {0:N1} s et rendu le code {1}" -f $lived, $code)
     if ($code -ne 3) { Fail "l'échéance : code $code au lieu de 3 (après $([int]$lived) s)" }
-    if ($lived -lt 110 -or $lived -gt 180) { Fail ("l'échéance : l'assistant est sorti après {0:N1} s, hors de l'intervalle 110 à 180 s" -f $lived) }
+    if ($lived -lt 118 -or $lived -gt 150) { Fail ("l'échéance : l'assistant est sorti après {0:N1} s, hors de l'intervalle 118 à 150 s" -f $lived) }
     Assert-Unchanged "après l'échéance" $before @()
     if ($null -ne (Read-Value $ApprovedRunKey $EntreeEcheance)) { Fail "l'échéance : une approbation a été écrite pour « $EntreeEcheance »" }
-    Proof ("l'échéance : l'assistant sans réponse est sorti avec le code 3 après {0:N1} s (entre 110 et 180 s), sans rien écrire pour « {1} »" -f $lived, $EntreeEcheance)
+    Proof ("l'échéance : l'assistant sans réponse est sorti avec le code 3 après {0:N1} s (entre 118 et 150 s), sans rien écrire pour « {1} »" -f $lived, $EntreeEcheance)
 
     Say 'Essai réussi.'
 } catch {

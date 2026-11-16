@@ -229,8 +229,15 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           $env:SHINKU_ESSAI_ASSISTANT = Join-Path $env:ProgramFiles 'Shinku\shinku-helper.exe'
-          cargo test --locked -p shinku-core --lib platform::windows::launcher::tests -- --nocapture --test-threads=1
+          [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+          $log = Join-Path $env:RUNNER_TEMP 'essai-lanceur.txt'
+          cargo test --locked -p shinku-core --lib platform::windows::launcher::tests::the_installed_helper_answers_not_found_for_a_name_that_does_not_exist -- --exact --nocapture --test-threads=1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Sans la variable, l'essai sort aussitôt en réussissant : la ligne
+          # « FAIT : » prouve qu'il a vraiment tourné (lettres accentuées tolérées).
+          if (-not (Select-String -Path $log -Pattern "FAIT : l'assistant install.+ r.+pond" -Quiet)) {
+            throw "l'essai du lanceur n'a pas imprimé « FAIT : l'assistant installé répond » : il n'a pas tourné"
+          }
 
       # Puis l'assistant lui-même (D9, point 2) : manifeste, demandes refusées,
       # la boîte et ses réponses, l'essai négatif depuis un processus sans droits,
