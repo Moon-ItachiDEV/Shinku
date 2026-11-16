@@ -13,10 +13,45 @@ const ci = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta
 /** La forme acceptée : `propriétaire/dépôt[/chemin]@<40 hexadécimaux minuscules> # vX.Y.Z`, ou un chemin local. */
 const PINNED = /^(?:\.\/\S+|[A-Za-z0-9][\w.-]*\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40} # v\d+\.\d+\.\d+)$/;
 
-/** Ce qui suit `uses:` sur chaque ligne du flux. */
+/**
+ * Toute ligne du flux où `uses` paraît comme clé, sous n'importe quelle forme (`uses: x`, `- uses: x`,
+ * `- { uses: x }`, `"uses": x`, `'uses': x`), avec ce qui suit les deux-points. Les lignes de commentaire sont
+ * ignorées. Une forme que cette lecture ne sait pas juger (valeur entre guillemets, accolade fermante) garde son
+ * reste de ligne tel quel : elle ne ressemble pas à une action épinglée, et l'essai échoue au lieu de passer.
+ */
 function usesOf(text: string): string[] {
-  return [...text.matchAll(/^\s*(?:-\s+)?uses:\s*(.*?)\s*$/gm)].map((match) => match[1] ?? '');
+  const found: string[] = [];
+  for (const line of text.split('\n')) {
+    if (/^\s*#/.test(line)) continue;
+    const match = /(?:^|[\s{,])(["']?)uses\1\s*:\s*(.*?)\s*$/.exec(line);
+    if (match !== null) found.push(match[2] ?? '');
+  }
+  return found;
 }
+
+test("le balayage des `uses` voit toutes les formes de la clé, et chacune est refusée si elle n'est pas écrite à la forme épinglée", () => {
+  const sha = '11d5960a326750d5838078e36cf38b85af677262';
+  const samples = [
+    '      - uses: actions/cache@v4',
+    '        uses: actions/cache@v4',
+    '      - { uses: actions/cache@v4 }',
+    '      - {uses: actions/cache@v4, with: {a: b}}',
+    '      - "uses": actions/cache@v4',
+    "      - 'uses': actions/cache@v4",
+    '        "uses" : actions/cache@v4',
+    '      - uses: "actions/cache@v4"',
+    '      - uses: docker://alpine:3.20',
+    `      - { uses: actions/checkout@${sha} # v4.4.0 }`,
+  ];
+  for (const sample of samples) {
+    const seen = usesOf(sample);
+    assert.equal(seen.length, 1, `non vu : ${sample}`);
+    assert.doesNotMatch(seen[0] ?? '', PINNED, `devrait être refusé : ${sample}`);
+  }
+  // Les formes lues et justes passent ; un commentaire ou un mot voisin n'est pas une clé.
+  assert.deepEqual(usesOf(`      - uses: actions/checkout@${sha} # v4.4.0`), [`actions/checkout@${sha} # v4.4.0`]);
+  assert.deepEqual(usesOf('      # uses: actions/cache@v4\n      - name: reuses: autre'), []);
+});
 
 test("la forme d'une action épinglée : l'empreinte entière du commit et la version en commentaire, rien d'autre", () => {
   const sha = '11d5960a326750d5838078e36cf38b85af677262';
@@ -108,6 +143,25 @@ test("l'aller-retour silencieux vérifie que LICENCES-TIERS.txt est posé, puis 
   const trip = step('Aller-retour silencieux');
   assert.match(trip, /foreach \(\$fichier in [^)]*'LICENCES-TIERS\.txt'[^)]*\) \{\n\s+if \(-not \(Test-Path "\$dossier\\\$fichier"\)\) \{ throw "L'installation silencieuse n'a pas posé \$fichier\." \}/);
   assert.match(trip, /if \(Test-Path "\$dossier\\LICENCES-TIERS\.txt"\) \{ throw /);
+  // Le fichier est contrôlé avant le dossier : le test du fichier peut échouer à lui seul (un dossier qui reste
+  // contiendrait encore le fichier), au lieu de ne jamais être atteint.
+  assert.ok(trip.indexOf('Test-Path "$dossier\\LICENCES-TIERS.txt"') < trip.indexOf('if (Test-Path $dossier) { throw'), 'le contrôle du fichier doit précéder celui du dossier');
   // Les autres vérifications restent : les trois programmes et le désinstalleur.
   for (const file of ['shinku.exe', 'shinku-agent.exe', 'shinku-helper.exe', 'uninstall.exe']) assert.ok(trip.includes(`'${file}'`), file);
+});
+
+test("l'étape « Licences des dépendances » : dans « Cœur et interface », après les dépendances de l'interface, lance la garde dans apps/shinku", () => {
+  const job = ci.slice(ci.indexOf('  coeur-et-interface:'), ci.indexOf('  lint-windows:'));
+  const names = [...job.matchAll(/^ {6}- (?:name: (.*)|uses: .*)$/gm)].map((match) => match[1] ?? '(uses)');
+  const at = names.indexOf('Licences des dépendances');
+  assert.ok(at > 0, "l'étape manque");
+  assert.equal(names[at - 1], "Dépendances de l'interface", "elle suit npm ci : node_modules est nécessaire");
+  assert.equal(names[at + 1], "Types de l'interface");
+  const text = job.split(/^ {6}- /m).find((one) => one.startsWith('name: Licences des dépendances\n')) ?? '';
+  assert.match(text, /working-directory: apps\/shinku\n\s+run: node scripts\/licences-tiers\.mjs --verifier\n/);
+  // Les autres étapes du travail gardent leur nom et leur ordre.
+  assert.deepEqual(
+    names.filter((name) => name !== 'Licences des dépendances'),
+    ['(uses)', '(uses)', 'Rust', '(uses)', 'Format', 'Lint', 'Tests du cœur', "Dépendances de l'interface", "Types de l'interface", "Tests de l'interface, du contrat et du câblage", "Compilation de l'interface"],
+  );
 });

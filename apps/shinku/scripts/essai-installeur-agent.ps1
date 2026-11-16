@@ -42,6 +42,8 @@ param(
     [string]$Dossier = (Join-Path $env:ProgramFiles 'Shinku'),
     # L'agent tel que cargo l'a compilé : le fichier installé doit lui ressembler.
     [string]$AgentCompile = (Join-Path $PSScriptRoot '..\..\..\target\release\shinku-agent.exe'),
+    # La liste des licences telle que scripts/licences-tiers.mjs l'a fabriquée : le fichier installé doit lui ressembler.
+    [string]$LicencesCompilees = (Join-Path $PSScriptRoot '..\src-tauri\licences\LICENCES-TIERS.txt'),
     # Temps laissé à chaque attente, en secondes.
     [int]$Attente = 120,
     # Remet en place ce qu'un essai précédent a changé, puis s'arrête.
@@ -322,6 +324,9 @@ try {
     if (-not (Test-Path $AgentCompile)) {
         Fail "l'agent compilé est introuvable ($AgentCompile) : on ne peut pas dire si l'installeur dépose le bon fichier"
     }
+    if (-not (Test-Path $LicencesCompilees)) {
+        Fail "la liste des licences fabriquée est introuvable ($LicencesCompilees) : on ne peut pas dire si l'installeur dépose le bon fichier"
+    }
     $running = Agents-Running
     if ($running.Count -gt 0) {
         Fail ("un agent tourne déjà sur cette machine (processus $(($running | ForEach-Object { $_.Id }) -join ', ')) : " +
@@ -399,6 +404,14 @@ try {
     $installedHelper = Join-Path $Dossier 'shinku-helper.exe'
     if (-not (Test-Path $installedHelper)) { Fail "après la mise à jour, $installedHelper n'existe pas : l'installeur ne dépose plus l'assistant" }
     Done 'shinku-helper.exe est à côté de shinku.exe après la mise à jour'
+    # La liste des licences (installeur/licences.nsh) : redéposée, non vide, identique à celle que le script a fabriquée.
+    $installedLicences = Join-Path $Dossier 'LICENCES-TIERS.txt'
+    if (-not (Test-Path $installedLicences)) { Fail "après la mise à jour, $installedLicences n'existe pas : l'installeur ne dépose plus la liste des licences" }
+    if ((Get-Item $installedLicences).Length -eq 0) { Fail "après la mise à jour, $installedLicences est vide" }
+    if ((Get-FileHash -Algorithm SHA256 $installedLicences).Hash -ne (Get-FileHash -Algorithm SHA256 $LicencesCompilees).Hash) {
+        Fail "après la mise à jour, $installedLicences n'est pas identique à la liste fabriquée ($LicencesCompilees)"
+    }
+    Done 'LICENCES-TIERS.txt est à côté de shinku.exe après la mise à jour, non vide, identique à la liste fabriquée'
     if ($null -ne (Find-Own $windowEntry)) { Fail "shinku.exe (processus $windowId) tourne encore après la mise à jour : l'installeur devait le fermer" }
     Done 'shinku.exe a été fermé par l''installeur'
     if ($null -ne (Find-Own $oldEntry)) { Fail "l'agent de l'ancienne exécution (processus $oldId) tourne encore après la mise à jour" }

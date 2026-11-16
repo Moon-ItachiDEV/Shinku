@@ -2282,14 +2282,27 @@ L'installeur dépose donc `LICENCES-TIERS.txt` à côté de `shinku.exe`.
 dépendance). Il fabrique le fichier, par défaut dans
 `apps/shinku/src-tauri/licences/LICENCES-TIERS.txt` (ignoré par git) :
 
-- *Les paquets Rust* : l'union de `cargo tree --locked -e normal,build --target
+- *Les paquets Rust* : ceux que les trois programmes lient vraiment, c'est-à-dire
+  l'union de `cargo tree --locked -e normal,no-proc-macro --target
   x86_64-pc-windows-msvc --prefix none` lancé comme la fabrication compile, une
   fois pour la fenêtre (`-p shinku`, ce que `tauri build` compile) et une fois
   pour l'agent et l'assistant (`-p shinku-agent -p shinku-helper`, ce que
-  `beforeBuildCommand` compile). Les paquets du dépôt (sans `source`) sont
-  écartés ; le dossier, l'expression de licence et l'adresse du dépôt de chacun
-  viennent de `cargo metadata --format-version 1 --locked`. `--hors-ligne` (ou
-  `SHINKU_CARGO_HORS_LIGNE=1`) ajoute `--offline` aux appels de cargo.
+  `beforeBuildCommand` compile). Les outils qui servent seulement à fabriquer les
+  programmes (dépendances de construction) et les macros procédurales ne sont
+  pas dans les programmes : ils ne sont pas listés. Ce choix remplace
+  `-e normal,build`, dont le résultat dépendait de la machine : `cargo tree`
+  résout les sous-arbres de construction et de macros pour la machine qui le
+  lance, si bien que le fichier fabriqué sous Windows n'était pas celui que la
+  garde vérifiait sous Linux (une dépendance de construction propre à Windows, sans
+  texte, aurait passé la garde sous Linux et cassé l'installeur). Avec
+  `normal,no-proc-macro` et la cible Windows, la liste se calcule pour cette cible
+  et ne devrait plus dépendre de la machine qui la calcule : **à constater** en
+  comparant, dans les journaux de la CI, l'empreinte écrite par la garde sous Linux
+  et celle de la fabrication sous Windows (voir plus bas). Les paquets du dépôt
+  (sans `source`) sont écartés ; le dossier, l'expression de licence et l'adresse
+  du dépôt de chacun viennent de `cargo metadata --format-version 1 --locked`.
+  `--hors-ligne` (ou `SHINKU_CARGO_HORS_LIGNE=1`) ajoute `--offline` aux appels de
+  cargo.
 - *Les paquets de la page* : les `dependencies` de `package-lock.json` (donc leurs
   dépendances transitives) et les deux polices, nommées dans `PAGE_DEV_PACKAGES`
   parce qu'elles sont en `devDependencies` mais que leur contenu part dans la page.
@@ -2297,8 +2310,10 @@ dépendance). Il fabrique le fichier, par défaut dans
   des deux listes.
 - *Les textes* : les fichiers `LICENSE*`, `LICENCE*`, `COPYING*`, `NOTICE*` et
   `UNLICENSE*` de la racine du paquet (casse ignorée, liens non suivis, 256 Kio au
-  plus). Les textes identiques (fins de ligne normalisées) ne sont écrits
-  qu'une fois ; chaque paquet renvoie aux siens par un numéro.
+  plus, non vides une fois normalisés). Un `NOTICE*` est toujours recopié (Apache-2.0
+  le demande) mais ne compte pas comme texte de licence. Les textes identiques
+  (fins de ligne normalisées) ne sont écrits qu'une fois ; chaque paquet renvoie
+  aux siens par un numéro.
 - *La section fixe* : `src-tauri/licences/section-fixe.txt`, écrite à la main,
   recopiée en tête : la bibliothèque standard de Rust, NSIS, le greffon
   `nsis_tauri_utils`, le chargeur du SDK WebView2, l'amorce de WebView2 et la
@@ -2307,8 +2322,15 @@ dépendance). Il fabrique le fichier, par défaut dans
   et renvoie à l'adresse officielle de sa licence.
 - *MPL-2.0* : chaque paquet sous MPL-2.0 porte la phrase qui dit où obtenir le
   code source de sa version (adresse du dépôt et version).
-- La sortie est triée, sans date ni chemin de la machine : deux passages donnent
-  le même fichier, octet pour octet.
+- La sortie est triée, sans date ni chemin de la machine : deux passages sur la
+  même machine donnent le même fichier, octet pour octet (essayé sous Linux).
+  Le script écrit à la fin sur la sortie d'erreur une ligne
+  `licences-tiers : sha256 <empreinte>` : celle du contenu fabriqué, avec ou sans
+  `--verifier`. L'étape « Licences des dépendances » du travail « Cœur et
+  interface » de la CI lance `--verifier` (après `npm ci`, qui apporte
+  `node_modules`) pour écrire cette ligne dans le journal ; `beforeBuildCommand`
+  l'écrit dans celui du travail Windows. Comparer les deux est le constat qui reste à
+  faire.
 
 **La garde** : `node scripts/licences-tiers.mjs --verifier` n'écrit rien et sort
 en erreur, en nommant chaque paquet fautif, si une expression de licence n'est pas
@@ -2316,20 +2338,32 @@ satisfaite par la liste permise (`ALLOWED_LICENSES`, dans le script : MIT, MIT-0
 Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib,
 0BSD, Unlicense, CC0-1.0, Unicode-3.0, Unicode-DFS-2016, BSL-1.0, MPL-2.0,
 OFL-1.1 ; `OR` et l'ancien `/` : une suffit ; `AND` : toutes ; `WITH` fait partie
-du nom), si une expression est illisible ou absente, ou si un paquet n'a aucun
-texte de licence. Fabriquer le fichier lance la même garde et n'écrit rien si elle
+du nom), si une expression est illisible ou absente, si un paquet n'a aucun texte
+de licence (un `NOTICE` n'en est pas un), ou si un fichier au nom de licence est
+écarté sans que rien le dise : vide après normalisation, de plus de 256 Kio, lien
+ou autre chose qu'un fichier ordinaire (l'erreur nomme le paquet et le fichier ; seul
+un dossier au nom de licence, comme `LICENSES/`, reste ignoré, et seulement quand
+le paquet a par ailleurs un texte). Les compléments passent par les mêmes règles.
+Fabriquer le fichier lance la même garde et n'écrit rien si elle
 échoue. Un essai de `npm test` la lance sur le vrai dépôt ; il échoue (il ne saute
 pas) si `cargo` manque. En CI, `cargo metadata` donne le dossier de chaque paquet :
 cela suppose que cargo ait téléchargé les sources (non vérifié ici, hors ligne).
 
 **Les compléments à la main.** Un paquet dont le dossier ne contient aucun texte
-reçoit un dossier `src-tauri/licences/complements/<nom du paquet>/` (versionné) :
+reçoit un dossier `src-tauri/licences/complements/<nom>@<version>/` (versionné ;
+le nom d'un paquet à portée, comme `@x/y`, n'est pas géré : les paquets Rust n'en
+ont pas et la page n'a pas besoin de complément) :
 le fichier de licence, pris dans le dépôt d'origine (à l'étiquette ou au commit de
 la version utilisée) ou, à défaut, dans une autre source sûre, jamais écrit de
-mémoire, et un `SOURCE.txt` qui dit d'où il vient. Un complément s'ajoute aux textes du dossier du paquet, par nom (toutes ses
-versions) ; un complément dont le paquet n'est plus dans le graphe est une erreur.
-Aujourd'hui : `alloc-stdlib`, `selectors` (voir les limites), `webview2-com`,
-`webview2-com-macros` et `webview2-com-sys`.
+mémoire, et un `SOURCE.txt` qui dit d'où il vient. Un complément s'ajoute aux textes du paquet de ce nom **et de cette version**
+seulement, et sa provenance (`SOURCE.txt`) paraît sous le paquet dans le fichier
+fabriqué. Un complément qui ne va à aucun paquet du graphe est une erreur : une
+montée de version oblige donc à revérifier le texte. Un complément pour un paquet qui
+a déjà ses propres textes de licence (hors `NOTICE`) est aussi une erreur
+(« inutile, à supprimer »). Aujourd'hui : `alloc-stdlib@0.3.0`,
+`webview2-com@0.39.1` et `webview2-com-sys@0.39.1`. Les compléments de `selectors` et
+de `webview2-com-macros` ont été supprimés : ces deux paquets ne sont pas liés
+dans les programmes (ils n'apparaissent plus dans la liste).
 
 **Ajouter une dépendance.** Rien à faire si sa licence est dans la liste et si son
 dossier contient son texte : le fichier la reprend à la prochaine fabrication.
@@ -2350,11 +2384,11 @@ retiré avec le dossier.
 
 **Limites, écrites telles quelles.**
 
-- **`selectors` n'a pas de texte de licence à lui** : le paquet publié n'en
-  contient pas, et son dépôt d'origine (`servo/stylo`), lu le 16 novembre 2026, n'en
-  a ni à la racine ni dans le dossier `selectors`. Son complément est le texte de la
-  MPL-2.0 (le même pour tout logiciel sous cette licence), recopié du paquet
-  `cssparser` qui est dans le graphe ; son `SOURCE.txt` le dit.
+- **La liste est celle des paquets liés, pour la cible Windows.** Un paquet qui
+  ne serait lié que pour une autre cible, ou qui ne sert qu'à fabriquer les
+  programmes, n'y est pas, et la garde ne le voit pas : c'est voulu (il n'est pas
+  distribué), mais si la fabrication change (un autre `--target`, une dépendance
+  de construction qui laisse du code dans un programme), la liste est à revoir.
 - **La section fixe est écrite à la main** et ne vieillit pas toute seule. Le
   texte du SDK WebView2 (licence et notices) vient du paquet NuGet officiel
   `Microsoft.Web.WebView2` 1.0.3800.47, la version que le dépôt de
@@ -2468,8 +2502,9 @@ retiré avec le dossier.
   `LICENCES-TIERS.txt`.
 - **Licences.** La liste des licences des dépendances est fabriquée et vérifiée
   (voir « Licences des dépendances »). Reste : choisir la licence de Shinku
-  (à la personne), régler le cas de `selectors` (voir les limites de cette
-  section) et décider de ce que disent les licences de Microsoft de la section fixe.
+  (à la personne), comparer les deux empreintes de la liste dans les journaux de la
+  CI (voir « Licences des dépendances ») et décider de ce que disent les licences
+  de Microsoft de la section fixe.
 - **Icône.** L'icône actuelle reprend le signe de l'interface
   (`scripts/icone.mjs`). Le logo définitif reste à choisir dans le canevas.
 - **Identifiant.** `fr.shinku.app` nomme le dossier du cache de WebView2 : le

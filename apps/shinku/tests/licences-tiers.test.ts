@@ -5,9 +5,11 @@
 // l'essai ÉCHOUE sans eux, il ne saute pas). Hors ligne, `SHINKU_CARGO_HORS_LIGNE=1` ajoute --offline à cargo.
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { after, test } from 'node:test';
 
 import {
@@ -23,6 +25,10 @@ import {
   checkExpression,
   checkPackages,
   composeFile,
+  licenseTexts,
+  runCli,
+  sha256,
+  writeAtomically,
   normalizeText,
   numberTexts,
   parseArguments,
@@ -120,7 +126,7 @@ test('cargo : les deux commandes de la fabrication, --locked partout, la cible W
   }
   for (const args of calls.trees) {
     assert.deepEqual(args.slice(0, 1), ['tree']);
-    assert.equal(args[args.indexOf('-e') + 1], 'normal,build');
+    assert.equal(args[args.indexOf('-e') + 1], 'normal,no-proc-macro', 'les paquets liés seulement : ni outils de fabrication ni macros');
     assert.equal(args[args.indexOf('--target') + 1], 'x86_64-pc-windows-msvc');
     assert.equal(args[args.indexOf('--prefix') + 1], 'none');
   }
@@ -273,26 +279,63 @@ test('les textes : à la racine du paquet seulement, sans tenir compte de la cas
     'licensing.rs': 'commence par « licens » mais pas « licen[cs]e »',
   });
   assert.deepEqual(
-    readLicenseFiles(dir).map((file) => file.name),
+    readLicenseFiles(dir).files.map((file) => file.name),
     ['Copying.txt', 'LICENCE.md', 'LICENSE', 'NOTICE', 'UNLICENSE', 'license-apache'],
   );
   assert.ok(LICENSE_FILE_NAME.test('COPYING.LESSER'));
 });
 
-test('les textes : un lien symbolique n\'est pas suivi, un fichier de plus de 256 Kio n\'est pas lu', () => {
+test("les textes : rien n'est écarté en silence : un lien, un fichier trop gros, un fichier vide et un dossier sont rendus avec leur raison", () => {
   const outside = folder({ secret: 'ne doit pas être lu' });
-  const dir = folder({ 'LICENSE-MIT': 'MIT ordinaire' });
+  const dir = folder({ 'LICENSE-MIT': 'MIT ordinaire', 'LICENSE-VIDE': ' \r\n\t', 'LICENSE-BOM': '﻿', 'LICENSES/MIT': 'dans un dossier' });
   symlinkSync(join(outside, 'secret'), join(dir, 'LICENSE'));
   writeFileSync(join(dir, 'COPYING'), 'x'.repeat(MAX_TEXT_BYTES + 1));
   writeFileSync(join(dir, 'NOTICE'), 'y'.repeat(MAX_TEXT_BYTES));
   assert.equal(statSync(join(dir, 'COPYING')).size, MAX_TEXT_BYTES + 1);
-  const files = readLicenseFiles(dir);
+  const { files, rejected } = readLicenseFiles(dir);
   assert.deepEqual(
     files.map((file) => file.name),
     ['LICENSE-MIT', 'NOTICE'],
-    'le lien (LICENSE) et le fichier trop gros (COPYING) sont ignorés, celui de 256 Kio pile est lu',
+    'celui de 256 Kio pile est lu',
   );
   assert.ok(!files.some((file) => file.content.includes('ne doit pas être lu')));
+  assert.deepEqual(
+    rejected.map((one) => `${one.name}:${one.kind}`),
+    ['COPYING:large', 'LICENSE:link', 'LICENSE-BOM:empty', 'LICENSE-VIDE:empty', 'LICENSES:directory'],
+  );
+});
+
+test('la garde : un fichier au nom de licence écarté est une erreur qui nomme le paquet et le fichier, sauf un dossier quand le paquet a par ailleurs un texte', () => {
+  const dir = folder({ 'LICENSE-MIT': 'MIT ordinaire', 'LICENSE-VIDE': '', 'LICENSES/MIT': 'dossier' });
+  const one: Package = { ...rustOne('paquet', 'MIT'), dir };
+  assert.deepEqual(checkPackages(attachTexts([one], new Map()).packages), ['paquet 1.0.0 : fichier « LICENSE-VIDE » écarté (vide)']);
+  // Un lien et un fichier trop gros : erreur, même si un autre fichier fait un texte.
+  const outside = folder({ secret: 's' });
+  const dir2 = folder({ LICENSE: 'MIT' });
+  symlinkSync(join(outside, 'secret'), join(dir2, 'LICENSE-LIEN'));
+  writeFileSync(join(dir2, 'COPYING'), 'x'.repeat(MAX_TEXT_BYTES + 1));
+  const errors2 = checkPackages(attachTexts([{ ...one, dir: dir2 }], new Map()).packages);
+  assert.equal(errors2.length, 2, errors2.join(' | '));
+  assert.ok(errors2.some((line) => line.startsWith('paquet 1.0.0 : fichier « COPYING » écarté (plus de 256 Kio')));
+  assert.ok(errors2.some((line) => line.startsWith('paquet 1.0.0 : fichier « LICENSE-LIEN » écarté (un lien')));
+  // Un dossier LICENSES/ seul : le paquet n'a aucun texte, et l'erreur le dit aussi.
+  const dir3 = folder({ 'LICENSES/MIT': 'dossier' });
+  assert.deepEqual(
+    checkPackages(attachTexts([{ ...one, dir: dir3 }], new Map()).packages).map((line) => line.split(' : ')[1]),
+    ["fichier « LICENSES » écarté (un dossier, qui n'est pas lu)", "aucun texte de licence (ni dans son dossier ni dans les compléments ; un NOTICE n'en est pas un)"],
+  );
+});
+
+test("la garde : un NOTICE est recopié mais ne compte pas comme texte de licence : un paquet qui n'a qu'un NOTICE échoue", () => {
+  const one: Package = { ...rustOne('apache', 'Apache-2.0'), dir: folder({ NOTICE: 'Copyright des auteurs' }) };
+  const attached = attachTexts([one], new Map()).packages;
+  assert.deepEqual(attached[0]?.texts.map((text) => text.name), ['NOTICE'], 'le NOTICE est recopié');
+  assert.equal(licenseTexts(attached[0]?.texts ?? []).length, 0);
+  assert.match(checkPackages(attached)[0] ?? '', /^apache 1\.0\.0 : aucun texte de licence/);
+  // Avec un vrai texte à côté, le paquet passe, et le NOTICE paraît dans le fichier.
+  const both = attachTexts([{ ...one, dir: folder({ NOTICE: 'Copyright des auteurs', LICENSE: 'Apache texte' }) }], new Map()).packages;
+  assert.deepEqual(checkPackages(both), []);
+  assert.match(composeFile({ fixed: 'f', packages: both }), /Copyright des auteurs/);
 });
 
 test('les textes : les fins de ligne, la marque d\'ordre des octets et les blancs de fin ne distinguent pas deux copies', () => {
@@ -300,7 +343,7 @@ test('les textes : les fins de ligne, la marque d\'ordre des octets et les blanc
   assert.equal(normalizeText('a\rb'), 'a\nb');
 });
 
-const withTexts = (one: Package, texts: string[]): PackageWithTexts => ({ ...one, texts: texts.map((content, at) => ({ name: `T${at}`, content })), complement: null });
+const withTexts = (one: Package, texts: string[]): PackageWithTexts => ({ ...one, texts: texts.map((content, at) => ({ name: `T${at}`, content })), rejected: [], complement: null });
 const rustOne = (name: string, license: string | null = 'MIT', version = '1.0.0'): Package => ({ ecosystem: 'rust', name, version, license, repository: `https://example.org/${name}`, dir: `/registre/${name}` });
 
 test('les textes identiques ne sont écrits qu\'une fois, et chaque paquet renvoie aux siens par un numéro', () => {
@@ -314,44 +357,86 @@ test('les textes identiques ne sont écrits qu\'une fois, et chaque paquet renvo
   assert.match(file, /^c 1\.0\.0\n(?: {2}.*\n)* {2}Textes : \[1\] \[3\]$/m);
 });
 
-test('la garde : un paquet sans aucun texte échoue et est nommé ; avec un complément, il passe', () => {
-  const dir = folder({ 'README.md': 'pas de licence ici' });
-  const one: Package = { ...rustOne('sanstexte', 'BSD-3-Clause'), dir };
+const complementOf = (name: string, version: string, content = 'texte pris à la main', source = 'dépôt X, étiquette 1.0.0') => ({
+  name,
+  version,
+  files: [{ name: 'LICENSE', content }],
+  source,
+});
+const own =
+  (...names: string[]) =>
+  (): { files: { name: string; content: string; notice: boolean }[]; rejected: [] } => ({
+    files: names.map((name) => ({ name, content: `contenu de ${name}`, notice: /^notice/i.test(name) })),
+    rejected: [],
+  });
+
+test('la garde : un paquet sans aucun texte échoue et est nommé ; avec un complément de sa version, il passe', () => {
+  const one: Package = { ...rustOne('sanstexte', 'BSD-3-Clause'), dir: folder({ 'README.md': 'pas de licence ici' }) };
   const bare = attachTexts([one], new Map());
   assert.deepEqual(bare.errors, []);
-  assert.deepEqual(checkPackages(bare.packages), ['sanstexte 1.0.0 : aucun texte de licence (ni dans son dossier ni dans les compléments)']);
-  const complements = new Map([['sanstexte', { files: [{ name: 'LICENSE', content: 'texte pris à la main' }], source: 'dépôt X, étiquette 1.0.0' }]]);
-  const fixed = attachTexts([one], complements);
+  assert.deepEqual(checkPackages(bare.packages), ["sanstexte 1.0.0 : aucun texte de licence (ni dans son dossier ni dans les compléments ; un NOTICE n'en est pas un)"]);
+  const fixed = attachTexts([one], new Map([['sanstexte@1.0.0', complementOf('sanstexte', '1.0.0')]]));
   assert.deepEqual(fixed.errors, []);
   assert.deepEqual(checkPackages(fixed.packages), []);
   assert.equal(fixed.packages[0]?.complement, 'dépôt X, étiquette 1.0.0');
-  // Le complément s'ajoute aux textes du dossier, il ne les remplace pas.
-  const dir2 = folder({ LICENSE: 'le sien' });
-  const both = attachTexts([{ ...one, dir: dir2 }], complements).packages[0];
-  assert.deepEqual(both?.texts.map((text) => text.content), ['le sien', 'texte pris à la main']);
+});
+
+test("un complément ne vaut que pour la version vérifiée : une autre version du paquet ne l'a pas, et le complément devient orphelin", () => {
+  const complements = new Map([['sanstexte@1.0.0', complementOf('sanstexte', '1.0.0')]]);
+  const next: Package = { ...rustOne('sanstexte', 'BSD-3-Clause', '1.1.0'), dir: folder() };
+  const { packages, errors } = attachTexts([next], complements);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0] ?? '', /complément sanstexte@1\.0\.0 : aucun paquet de ce nom et de cette version dans les dépendances \(à supprimer, ou à revérifier/);
+  assert.equal(packages[0]?.complement, null);
+  assert.equal(checkPackages(packages).length, 1, 'et le paquet de la nouvelle version retombe sans texte');
+  // Les deux versions dans le graphe : seule celle du complément le reçoit.
+  const both = attachTexts([{ ...next, version: '1.0.0' }, next], complements);
+  assert.deepEqual(both.errors, []);
+  assert.deepEqual(both.packages.map((one) => one.complement !== null), [true, false]);
+});
+
+test('un complément pour un paquet qui a déjà ses propres textes de licence est une erreur ; un NOTICE seul ne la déclenche pas', () => {
+  const complements = new Map([['a@1.0.0', complementOf('a', '1.0.0')]]);
+  const useless = attachTexts([rustOne('a')], complements, own('LICENSE-MIT'));
+  assert.deepEqual(useless.errors, ['complément a@1.0.0 : inutile, le paquet a ses propres textes de licence (à supprimer)']);
+  const noticeOnly = attachTexts([rustOne('a')], complements, own('NOTICE'));
+  assert.deepEqual(noticeOnly.errors, []);
+  assert.deepEqual(checkPackages(noticeOnly.packages), []);
 });
 
 test('un complément qui ne va à aucun paquet du graphe est une erreur (le dossier ne vieillit pas en silence)', () => {
-  const complements = new Map([['orphelin', { files: [{ name: 'LICENSE', content: 'x' }], source: 's' }]]);
-  const { errors } = attachTexts([withTexts(rustOne('autre'), ['t'])], complements, () => [{ name: 'LICENSE', content: 't' }]);
+  const complements = new Map([['orphelin@1.0.0', complementOf('orphelin', '1.0.0')]]);
+  const { errors } = attachTexts([withTexts(rustOne('autre'), ['t'])], complements, own('LICENSE'));
   assert.equal(errors.length, 1);
-  assert.match(errors[0] ?? '', /complément orphelin : aucun paquet de ce nom/);
+  assert.match(errors[0] ?? '', /complément orphelin@1\.0\.0 : aucun paquet de ce nom et de cette version/);
 });
 
-test('les compléments : un SOURCE.txt est exigé, et au moins un fichier de licence', () => {
+test("les compléments : <nom>@<version>, un SOURCE.txt, au moins un vrai texte de licence, et rien d'écarté en silence", () => {
   const dir = folder({
-    'bon/LICENSE': 'texte',
-    'bon/SOURCE.txt': 'dépôt, étiquette',
-    'sanssource/LICENSE': 'texte',
-    'sanstexte/SOURCE.txt': 'dépôt',
+    'bon@1.2.3/LICENSE': 'texte',
+    'bon@1.2.3/SOURCE.txt': 'dépôt, étiquette',
+    'sanssource@1.0.0/LICENSE': 'texte',
+    'sanstexte@1.0.0/SOURCE.txt': 'dépôt',
+    'noticeseul@1.0.0/NOTICE': 'notice',
+    'noticeseul@1.0.0/SOURCE.txt': 'dépôt',
+    'sansversion/LICENSE': 'texte',
+    'sansversion/SOURCE.txt': 'dépôt',
+    'vide@1.0.0/LICENSE': '',
+    'vide@1.0.0/LICENSE-MIT': 'texte',
+    'vide@1.0.0/SOURCE.txt': 'dépôt',
   });
   const { complements, errors } = readComplements(dir);
-  assert.deepEqual([...complements.keys()], ['bon']);
-  assert.equal(errors.length, 2);
-  assert.ok(errors.some((line) => line.includes('sanssource') && line.includes('SOURCE.txt')));
-  assert.ok(errors.some((line) => line.includes('sanstexte') && line.includes('aucun fichier de licence')));
-  assert.equal(complements.get('bon')?.source, 'dépôt, étiquette');
-  assert.ok(!complements.get('bon')?.files.some((file) => file.name === 'SOURCE.txt'), 'SOURCE.txt n\'est pas un texte de licence');
+  assert.deepEqual([...complements.keys()], ['bon@1.2.3', 'vide@1.0.0']);
+  assert.deepEqual(errors.sort(), [
+    'complément noticeseul@1.0.0 : aucun fichier de licence',
+    "complément sansversion : le dossier doit s'appeler <nom>@<version> (le texte n'est valable que pour une version)",
+    "complément sanssource@1.0.0 : SOURCE.txt manque (il dit d'où vient le texte)",
+    'complément sanstexte@1.0.0 : aucun fichier de licence',
+    'complément vide@1.0.0 : fichier « LICENSE » écarté (vide)',
+  ].sort());
+  assert.equal(complements.get('bon@1.2.3')?.source, 'dépôt, étiquette');
+  assert.equal(complements.get('bon@1.2.3')?.version, '1.2.3');
+  assert.ok(!complements.get('bon@1.2.3')?.files.some((file) => file.name === 'SOURCE.txt'), "SOURCE.txt n'est pas un texte de licence");
 });
 
 test("la garde : une licence refusée, un dépôt qui manque à une MPL-2.0, une licence absente : chaque paquet fautif est nommé", () => {
@@ -411,24 +496,267 @@ test('le vrai dépôt : cargo répond (l\'essai échoue, il ne saute pas, si car
   assert.doesNotThrow(() => realBuild(), 'cargo tree ou cargo metadata a échoué : cargo doit être installé, et les sources des paquets téléchargées (cargo fetch)');
 });
 
-test('le vrai dépôt : la garde passe (licences permises, un texte par paquet, compléments tous utiles)', () => {
+test('le vrai dépôt : la garde passe (licences permises, un texte de licence par paquet, rien d\'écarté, compléments tous utiles)', () => {
   assert.deepEqual(realBuild().errors, []);
+});
+
+/** Ce qui ne doit jamais paraître dans le fichier fabriqué : un chemin de la machine ou un retour chariot. */
+const MACHINE = /\/home\/|\/root\/|[A-Za-z]:\\Users|\r/;
+
+test('le détecteur de chemins de la machine voit un chemin Linux, un chemin Windows et un retour chariot, et laisse passer un texte ordinaire', () => {
+  for (const bad of ['voir /home/quelquun/x', 'dans /root/.cargo', 'C:\\Users\\quelquun\\x', 'd:\\Users', 'a\r\nb']) assert.match(bad, MACHINE, bad);
+  for (const good of ['Copyright (c) 2014 Alex Crichton', 'le dossier Users de la doc', 'https://example.org/Users']) assert.doesNotMatch(good, MACHINE, good);
 });
 
 test('le vrai dépôt : le fichier nomme tauri, serde, windows, lit-html, les deux polices et les paquets à complément', () => {
   const content = realBuild().content;
-  for (const name of ['tauri', 'serde', 'windows', 'lit-html', '@fontsource-variable/m-plus-1', '@fontsource/orbitron', 'alloc-stdlib', 'selectors', 'webview2-com', 'webview2-com-macros', 'webview2-com-sys']) {
+  for (const name of ['tauri', 'serde', 'windows', 'lit-html', '@fontsource-variable/m-plus-1', '@fontsource/orbitron', 'alloc-stdlib', 'webview2-com', 'webview2-com-sys']) {
     assert.match(content, new RegExp(`^${name.replace(/[/@.-]/g, '\\$&')} \\d`, 'm'), `LICENCES-TIERS.txt ne nomme pas ${name}`);
   }
   // Aucun paquet du dépôt lui-même.
   assert.doesNotMatch(content, /^shinku(?:-core|-agent|-helper)? 0\.1\.0$/m);
-  // Aucun chemin de la machine, aucune date, aucun retour chariot.
-  assert.doesNotMatch(content, /\/home\/|\/root\/|[A-Za-z]:\\\\Users|\r/);
+  assert.doesNotMatch(content, MACHINE);
+});
+
+test('le vrai dépôt : seuls les paquets liés sont listés : ni les outils de fabrication (tauri-build) ni les macros (serde_derive, webview2-com-macros)', () => {
+  const names = new Set(realBuild().packages.map((one) => one.name));
+  for (const absent of ['tauri-build', 'tauri-winres', 'embed-resource', 'serde_derive', 'webview2-com-macros', 'selectors']) {
+    assert.ok(!names.has(absent), `${absent} n'est pas lié dans les programmes : il ne doit pas être listé`);
+  }
+  for (const present of ['serde', 'tauri', 'windows', 'webview2-com-sys']) assert.ok(names.has(present), present);
+});
+
+test('le vrai dépôt : la provenance de chaque complément est dans le fichier, sous son paquet', () => {
+  const content = realBuild().content;
+  for (const [name = '', version = ''] of [['alloc-stdlib', '0.3.0'], ['webview2-com', '0.39.1'], ['webview2-com-sys', '0.39.1']] as const) {
+    const block = new RegExp(`^${name} ${version.replace(/\./g, '\\.')}\\n(?: {2}.*\\n)+`, 'm').exec(content)?.[0] ?? '';
+    assert.match(block, /Texte ajouté à la main\. Sa provenance :\n {4}Fichier LICENSE à la racine de https:\/\/github\.com\//, `${name} : sa provenance manque sous le paquet`);
+  }
 });
 
 test('le vrai dépôt : les paquets sous MPL-2.0 portent la phrase du code source', () => {
   const content = realBuild().content;
   const mpl = (content.match(/^\S+ \S+\n(?: {2}.*\n)+/gm) ?? []).filter((block) => block.includes('\n  Licence : MPL-2.0\n'));
-  assert.ok(mpl.length >= 5, `cinq paquets sous MPL-2.0 attendus, ${mpl.length} vus`);
+  assert.ok(mpl.length >= 1, 'le balayage ne voit plus de paquet sous MPL-2.0');
   for (const block of mpl) assert.match(block, /Code source de cette version \(MPL-2\.0\) : https:\/\//);
+});
+
+/** Les paquets que la section fixe cite entre guillemets français après « paquet » ou « paquets ». */
+function packagesQuoted(text: string): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(/paquets?\s+«\s*([^»]+?)\s*»(?:\s+et\s+«\s*([^»]+?)\s*»)?/g)) {
+    found.push(match[1] ?? '');
+    if (match[2] !== undefined) found.push(match[2]);
+  }
+  return found;
+}
+
+test('la section fixe : le relevé des paquets cités voit « paquet » et « paquets », pas « paquet Debian »', () => {
+  assert.deepEqual(packagesQuoted('ceux du paquet « cfg-if »)'), ['cfg-if']);
+  assert.deepEqual(packagesQuoted('ceux des paquets « cfg-if » et\n« hashbrown »)'), ['cfg-if', 'hashbrown']);
+  assert.deepEqual(packagesQuoted('du paquet Debian « nsis » 3.09'), []);
+});
+
+test('la section fixe : chaque paquet qu\'elle cite (« cfg-if », « hashbrown », « icu_collections »…) est dans la liste fabriquée et y a au moins un texte', () => {
+  const fixed = readFileSync(new URL('src-tauri/licences/section-fixe.txt', root), 'utf8');
+  const quoted = packagesQuoted(fixed);
+  for (const wanted of ['cfg-if', 'hashbrown', 'icu_collections']) assert.ok(quoted.includes(wanted), `la section fixe ne cite plus « ${wanted} » : le relevé a changé`);
+  const packages = realBuild().packages;
+  for (const name of quoted) {
+    const found = packages.filter((one) => one.name === name);
+    assert.ok(found.length > 0, `la section fixe renvoie au paquet « ${name} », qui n'est pas dans la liste fabriquée`);
+    assert.ok(found.every((one) => licenseTexts(one.texts).length > 0), `« ${name} » n'a aucun texte de licence`);
+  }
+});
+
+// ── La ligne de commande ──
+
+/** Un faux dépôt : package-lock.json, node_modules, section fixe, un paquet Rust avec son texte. */
+function fakeApp(options: { complements?: Record<string, string>; fixed?: string | null; nodeModules?: boolean } = {}): { appDir: string; crate: string; output: string } {
+  const appDir = folder({
+    'package-lock.json': JSON.stringify({
+      packages: {
+        '': {},
+        'node_modules/lit-html': { version: '3.3.3', license: 'BSD-3-Clause' },
+        'node_modules/@fontsource/orbitron': { version: '5.3.0', license: 'OFL-1.1', dev: true },
+        'node_modules/@fontsource-variable/m-plus-1': { version: '5.3.1', license: 'OFL-1.1', dev: true },
+      },
+    }),
+    'node_modules/lit-html/LICENSE': 'BSD texte',
+    'node_modules/@fontsource/orbitron/LICENSE': 'OFL texte',
+    'node_modules/@fontsource-variable/m-plus-1/LICENSE': 'OFL texte',
+    ...(options.fixed === null ? {} : { 'src-tauri/licences/section-fixe.txt': options.fixed ?? 'section fixe' }),
+    ...Object.fromEntries(Object.entries(options.complements ?? {}).map(([name, content]) => [`src-tauri/licences/complements/${name}`, content])),
+  });
+  if (options.nodeModules === false) rmSync(join(appDir, 'node_modules'), { recursive: true });
+  const crate = folder({ LICENSE: 'MIT texte du paquet' });
+  return { appDir, crate, output: join(appDir, 'src-tauri', 'licences', 'LICENCES-TIERS.txt') };
+}
+
+/** Un faux cargo : `tree` rend `tree`, `metadata` rend les paquets ; ou il échoue. */
+function fakeCargo(crate: string, license: string | null = 'MIT', fails = false): (args: string[]) => string {
+  return (args) => {
+    if (fails) throw new Error('cargo : échec simulé');
+    if (args[0] === 'tree') return 'shinku v0.1.0 (/x)\nserde v1.0.0\n';
+    return JSON.stringify({
+      packages: [
+        { name: 'shinku', version: '0.1.0', source: null, license: null, repository: null, manifest_path: '/x/Cargo.toml' },
+        { name: 'serde', version: '1.0.0', source: 'registry+x', license, repository: 'https://example.org/serde', manifest_path: join(crate, 'Cargo.toml') },
+      ],
+    });
+  };
+}
+
+const NO_ENV = {};
+const cli = (argv: string[], app: { appDir: string }, run: (args: string[]) => string, env: Record<string, string | undefined> = NO_ENV) => {
+  const lines: string[] = [];
+  const code = runCli(argv, { run, appDir: app.appDir, env, log: (line) => lines.push(line) });
+  return { code, lines };
+};
+
+test('la ligne de commande : la garde passe, code 0, le fichier est écrit, avec les comptes et son empreinte sur la dernière ligne', () => {
+  const app = fakeApp();
+  const { code, lines } = cli([], app, fakeCargo(app.crate));
+  assert.equal(code, 0, lines.join(' | '));
+  const written = readFileSync(app.output, 'utf8');
+  assert.match(written, /^serde 1\.0\.0\n/m);
+  assert.match(lines[0] ?? '', /^licences-tiers : fichier écrit \(1 paquets Rust liés, 3 paquets de l'interface, 3 textes distincts\)\.$/);
+  assert.equal(lines[lines.length - 1], `licences-tiers : sha256 ${sha256(written)}`);
+  assert.match(sha256(written), /^[0-9a-f]{64}$/);
+  assert.deepEqual(readdirSync(join(app.appDir, 'src-tauri', 'licences')).filter((name) => name.endsWith('.tmp')), [], 'aucun fichier temporaire ne reste');
+});
+
+test('la ligne de commande : deux passages écrivent le même fichier, octet pour octet, avec la même empreinte', () => {
+  const app = fakeApp();
+  const first = cli([], app, fakeCargo(app.crate));
+  const one = readFileSync(app.output);
+  const second = cli([], app, fakeCargo(app.crate));
+  assert.deepEqual(readFileSync(app.output), one);
+  assert.equal(first.lines.at(-1), second.lines.at(-1));
+});
+
+test('la ligne de commande : erreurs de la garde, code 1, aucun fichier écrit', () => {
+  const app = fakeApp();
+  const { code, lines } = cli([], app, fakeCargo(app.crate, 'GPL-3.0'));
+  assert.equal(code, 1);
+  assert.match(lines.join('\n'), /serde 1\.0\.0 : la licence « GPL-3\.0 » n'est pas dans la liste permise/);
+  assert.equal(existsSync(app.output), false, 'rien ne doit être écrit quand la garde échoue');
+  assert.ok(!lines.some((line) => line.includes('sha256')));
+});
+
+test("la ligne de commande : erreurs de la garde, un fichier fabriqué d'avant n'est pas modifié", () => {
+  const app = fakeApp();
+  mkdirSync(join(app.appDir, 'src-tauri', 'licences'), { recursive: true });
+  writeFileSync(app.output, 'ancien contenu');
+  assert.equal(cli([], app, fakeCargo(app.crate, 'GPL-3.0')).code, 1);
+  assert.equal(readFileSync(app.output, 'utf8'), 'ancien contenu');
+});
+
+test("la ligne de commande : --verifier ne crée ni ne modifie rien, rend 0 et donne l'empreinte de ce qui serait fabriqué", () => {
+  const app = fakeApp();
+  const verify = cli(['--verifier'], app, fakeCargo(app.crate));
+  assert.equal(verify.code, 0);
+  assert.equal(existsSync(app.output), false);
+  assert.match(verify.lines[0] ?? '', /^licences-tiers : la garde passe \(/);
+  const make = cli([], app, fakeCargo(app.crate));
+  assert.equal(verify.lines.at(-1), make.lines.at(-1), 'la même empreinte que la fabrication');
+  const before = readFileSync(app.output);
+  cli(['--verifier'], app, fakeCargo(app.crate));
+  assert.deepEqual(readFileSync(app.output), before);
+});
+
+test('la ligne de commande : --sortie écrit ailleurs, --hors-ligne ajoute --offline aux appels de cargo', () => {
+  const app = fakeApp();
+  const target = join(scratch, `sortie-${counter}.txt`);
+  const seen: string[][] = [];
+  const run = (args: string[]) => (seen.push(args), fakeCargo(app.crate)(args));
+  assert.equal(cli(['--sortie', target, '--hors-ligne'], app, run).code, 0);
+  assert.ok(existsSync(target));
+  assert.equal(existsSync(app.output), false);
+  assert.ok(seen.length >= 3 && seen.every((args) => args.includes('--offline')));
+  const env = cli([], app, (args) => (seen.push(args), fakeCargo(app.crate)(args)), { SHINKU_CARGO_HORS_LIGNE: '1' });
+  assert.equal(env.code, 0);
+  assert.ok(seen.slice(-3).every((args) => args.includes('--offline')));
+});
+
+test("la ligne de commande : si l'écriture échoue (la sortie est un dossier), code 1 et le message", () => {
+  const app = fakeApp();
+  const target = folder();
+  const { code, lines } = cli(['--sortie', target], app, fakeCargo(app.crate));
+  assert.equal(code, 1);
+  assert.match(lines.join('\n'), /licences-tiers : écriture impossible : /);
+  assert.ok(!lines.some((line) => line.includes('sha256')));
+});
+
+test('la ligne de commande : un argument inconnu rend 2 et ne lance pas cargo', () => {
+  const app = fakeApp();
+  let launched = false;
+  const { code, lines } = cli(['--nimporte'], app, () => ((launched = true), ''));
+  assert.equal(code, 2);
+  assert.match(lines.join('\n'), /argument inconnu : --nimporte/);
+  assert.equal(launched, false);
+  assert.equal(existsSync(app.output), false);
+});
+
+test('la ligne de commande : si cargo échoue, code 1, le message de cargo, rien d\'écrit', () => {
+  const app = fakeApp();
+  const { code, lines } = cli([], app, fakeCargo(app.crate, 'MIT', true));
+  assert.equal(code, 1);
+  assert.match(lines.join('\n'), /licences-tiers : cargo : échec simulé/);
+  assert.equal(existsSync(app.output), false);
+});
+
+test('la ligne de commande : section-fixe.txt manquant ou vide est une erreur, rien n\'est écrit', () => {
+  for (const fixed of [null, '', '  \n\t\n']) {
+    const app = fakeApp({ fixed });
+    const { code, lines } = cli([], app, fakeCargo(app.crate));
+    assert.equal(code, 1, `section fixe ${JSON.stringify(fixed)}`);
+    assert.match(lines.join('\n'), /section-fixe\.txt manque ou est vide/);
+    assert.equal(existsSync(app.output), false);
+  }
+});
+
+test('la ligne de commande : node_modules manquant a son propre message', () => {
+  const app = fakeApp({ nodeModules: false });
+  const { code, lines } = cli([], app, fakeCargo(app.crate));
+  assert.equal(code, 1);
+  assert.match(lines.join('\n'), /node_modules manque : lance `npm ci` avant/);
+});
+
+test('la ligne de commande : la provenance d\'un complément est dans le fichier écrit, sous son paquet', () => {
+  const app = fakeApp({ complements: { 'serde@1.0.0/LICENSE': 'texte à la main', 'serde@1.0.0/SOURCE.txt': 'PROVENANCE-DU-COMPLEMENT\nsuite' } });
+  rmSync(join(app.crate, 'LICENSE'));
+  const { code, lines } = cli([], app, fakeCargo(app.crate));
+  assert.equal(code, 0, lines.join(' | '));
+  assert.match(readFileSync(app.output, 'utf8'), /^serde 1\.0\.0\n(?: {2}.*\n)* {2}Texte ajouté à la main\. Sa provenance :\n {4}PROVENANCE-DU-COMPLEMENT\n {4}suite\n {2}Textes : \[\d+\]$/m);
+});
+
+test("l'écriture : un fichier temporaire puis un renommage, et rien ne reste si l'écriture échoue", () => {
+  const dir = folder();
+  const path = join(dir, 'sous', 'LICENCES-TIERS.txt');
+  writeAtomically(path, 'contenu');
+  assert.equal(readFileSync(path, 'utf8'), 'contenu');
+  assert.deepEqual(readdirSync(join(dir, 'sous')), ['LICENCES-TIERS.txt']);
+  // Le chemin est un dossier : le renommage échoue, le fichier temporaire est retiré.
+  mkdirSync(join(dir, 'cible'));
+  writeFileSync(join(dir, 'cible', 'x'), 'x');
+  assert.throws(() => writeAtomically(join(dir, 'cible'), 'contenu'));
+  assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith('.tmp')), []);
+  // Un fichier déjà là n'est jamais écrit à moitié : si le fichier temporaire ne peut pas être créé, il reste intact.
+  const existing = join(dir, 'existant.txt');
+  writeFileSync(existing, 'ancien contenu');
+  mkdirSync(`${existing}.${process.pid}.tmp`);
+  assert.throws(() => writeAtomically(existing, 'nouveau contenu'));
+  assert.equal(readFileSync(existing, 'utf8'), 'ancien contenu');
+});
+
+test('lancé directement, le script écrit ; importé, il ne fait rien (les deux chemins sont comparés après realpath)', () => {
+  const script = fileURLToPath(new URL('scripts/licences-tiers.mjs', root));
+  const link = join(scratch, 'lien-vers-le-script.mjs');
+  symlinkSync(script, link);
+  const run = (file: string) => spawnSync(process.execPath, [file, '--argument-inconnu'], { encoding: 'utf8' });
+  assert.equal(run(script).status, 2, 'lancé par son chemin');
+  assert.equal(run(link).status, 2, 'lancé par un lien : le script se reconnaît');
+  const imported = spawnSync(process.execPath, ['--input-type=module', '-e', `import ${JSON.stringify(pathToFileURL(script).href)}`, '--', '--argument-inconnu'], { encoding: 'utf8' });
+  assert.equal(imported.status, 0, 'importé, il ne lance pas la ligne de commande');
 });

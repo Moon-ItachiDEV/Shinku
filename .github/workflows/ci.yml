@@ -72,6 +72,14 @@ jobs:
         working-directory: apps/shinku
         run: npm ci
 
+      # La garde des licences (apps/shinku/scripts/licences-tiers.mjs) : `npm test`
+      # la lance déjà sur le vrai dépôt, mais cette étape écrit aussi dans le journal
+      # l'empreinte SHA-256 du fichier de licences (ligne « licences-tiers : sha256 »),
+      # à comparer avec celle de la fabrication sur la machine Windows.
+      - name: Licences des dépendances
+        working-directory: apps/shinku
+        run: node scripts/licences-tiers.mjs --verifier
+
       - name: Types de l'interface
         working-directory: apps/shinku
         run: npm run check
@@ -402,8 +410,8 @@ jobs:
             $copies = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like '*\~nsu*.tmp\Un*.exe' })
           } while (((Test-Path $dossier) -or $copies.Count -gt 0) -and (Get-Date) -lt $limite)
           if ($copies.Count -gt 0) { throw "Le désinstalleur silencieux tourne encore après 120 s." }
-          if (Test-Path $dossier) { throw "La désinstallation silencieuse a laissé $dossier." }
           if (Test-Path "$dossier\LICENCES-TIERS.txt") { throw "La désinstallation silencieuse a laissé LICENCES-TIERS.txt." }
+          if (Test-Path $dossier) { throw "La désinstallation silencieuse a laissé $dossier." }
           if (-not (Test-Path -LiteralPath $reglages)) { throw "La désinstallation silencieuse a supprimé les réglages." }
 
       # Le désinstalleur n'efface plus rien dans un profil : avec la case

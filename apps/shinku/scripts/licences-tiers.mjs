@@ -7,21 +7,31 @@
 //   node scripts/licences-tiers.mjs --hors-ligne      ajoute --offline aux appels de cargo
 //                                                     (ou : SHINKU_CARGO_HORS_LIGNE=1)
 //
-// Les paquets Rust : l'union de ce que `cargo tree` donne pour les deux commandes que la fabrication lance
-// vraiment (la fenêtre ; l'agent et l'assistant ensemble), moins les paquets du dépôt lui-même ; leurs détails
-// viennent de `cargo metadata`. Les paquets de la page : ceux de `dependencies` de package-lock.json, plus la liste
-// nommée PAGE_DEV_PACKAGES (les polices : elles sont en `devDependencies` mais leur contenu part dans la page).
-// Chaque paquet donne ses fichiers de licence (racine du paquet seulement), ceux du dossier
-// src-tauri/licences/complements/<nom>/ s'y ajoutent (textes pris à la main dans le dépôt d'origine, avec leur
-// SOURCE.txt). La section fixe, src-tauri/licences/section-fixe.txt, est recopiée en tête.
+// Les paquets Rust : ceux que les trois programmes lient vraiment, d'après `cargo tree -e normal,no-proc-macro` pour
+// la cible Windows, lancé pour les deux commandes que la fabrication lance (la fenêtre ; l'agent et l'assistant
+// ensemble), les deux listes réunies, moins les paquets du dépôt lui-même. Les outils qui servent seulement à
+// fabriquer les programmes (dépendances de construction, macros procédurales) n'y sont pas : ils ne sont pas dans
+// les programmes, et leur liste dépendrait de la machine qui la calcule. Les détails de chaque paquet viennent de
+// `cargo metadata`. Les paquets de la page : ceux de `dependencies` de package-lock.json, plus la liste nommée
+// PAGE_DEV_PACKAGES (les polices : elles sont en `devDependencies` mais leur contenu part dans la page).
+// Chaque paquet donne ses fichiers de licence (racine du paquet seulement). Un NOTICE est recopié mais ne compte pas
+// comme texte de licence ; un fichier au nom de licence qui est vide, trop gros ou n'est pas un fichier ordinaire
+// est une erreur qui nomme le paquet et le fichier. Ceux du dossier
+// src-tauri/licences/complements/<nom>@<version>/ s'y ajoutent, pour ce paquet et cette version seulement (textes pris
+// à la main dans le dépôt d'origine, avec leur SOURCE.txt). La section fixe, src-tauri/licences/section-fixe.txt, est
+// recopiée en tête.
+//
+// À la fin, une ligne `licences-tiers : sha256 <empreinte>` donne l'empreinte du contenu fabriqué : elle sert à
+// comparer, dans les journaux, le fichier de la machine Windows et celui de Linux.
 //
 // Les fonctions pures sont exportées : tests/licences-tiers.test.ts les appelle sans lancer cargo.
 // Node 22, aucune dépendance.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 /** Les licences que Shinku accepte d'embarquer sans question. Une autre expression n'entre pas sans décision. */
 export const ALLOWED_LICENSES = [
@@ -153,7 +163,7 @@ export function cargoCalls({ offline = false } = {}) {
     '--locked',
     ...extra,
     '-e',
-    'normal,build',
+    'normal,no-proc-macro',
     '--target',
     TREE_TARGET,
     '--prefix',
@@ -277,28 +287,48 @@ export function normalizeText(text) {
   return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/\s+$/, '');
 }
 
+/** Un NOTICE est recopié (Apache-2.0 le demande) mais ne compte pas comme texte de licence. */
+export const isNotice = (name) => /^notice/i.test(name);
+
 /**
  * Les fichiers de licence directement dans un dossier : par leur nom, fichiers ordinaires (les liens ne sont pas
- * suivis), 256 Kio au plus. Triés par nom.
+ * suivis), 256 Kio au plus, non vides une fois normalisés. Triés par nom. Rien n'est écarté en silence : ce qui a un
+ * nom de licence et n'est pas gardé est rendu dans `rejected`, avec la raison (`kind` : `empty`, `large`, `link`,
+ * `directory` ou `other`).
  *
- * @returns {{ name: string, content: string }[]}
+ * @returns {{ files: { name: string, content: string, notice: boolean }[], rejected: { name: string, kind: string, reason: string }[] }}
  */
 export function readLicenseFiles(dir) {
-  if (!existsSync(dir)) return [];
   const files = [];
+  const rejected = [];
+  if (!existsSync(dir)) return { files, rejected };
   for (const name of readdirSync(dir).sort(compareText)) {
     if (!LICENSE_FILE_NAME.test(name)) continue;
     const stat = lstatSync(join(dir, name));
-    if (!stat.isFile() || stat.size > MAX_TEXT_BYTES) continue;
-    files.push({ name, content: normalizeText(readFileSync(join(dir, name), 'utf8')) });
+    if (stat.isSymbolicLink()) rejected.push({ name, kind: 'link', reason: 'un lien, qui n\'est pas suivi' });
+    else if (stat.isDirectory()) rejected.push({ name, kind: 'directory', reason: 'un dossier, qui n\'est pas lu' });
+    else if (!stat.isFile()) rejected.push({ name, kind: 'other', reason: 'autre chose qu\'un fichier ordinaire' });
+    else if (stat.size > MAX_TEXT_BYTES) rejected.push({ name, kind: 'large', reason: `plus de ${MAX_TEXT_BYTES / 1024} Kio, il n'est pas lu` });
+    else {
+      const content = normalizeText(readFileSync(join(dir, name), 'utf8'));
+      if (content === '') rejected.push({ name, kind: 'empty', reason: 'vide' });
+      else files.push({ name, content, notice: isNotice(name) });
+    }
   }
-  return files;
+  return { files, rejected };
 }
 
+/** Les textes qui comptent comme licence : tout sauf les NOTICE. */
+export const licenseTexts = (files) => files.filter((file) => !file.notice && !isNotice(file.name));
+
+/** Une raison de rejet qui est une erreur : un dossier au nom de licence est toléré (voir `rejectionErrors`). */
+const rejectionMessage = (label, one) => `${label} : fichier « ${one.name} » écarté (${one.reason})`;
+
 /**
- * Les compléments : un dossier par paquet, avec ses fichiers de licence et un SOURCE.txt qui dit d'où ils viennent.
+ * Les compléments : un dossier `<nom>@<version>` par paquet et par version, avec ses fichiers de licence et un
+ * SOURCE.txt qui dit d'où ils viennent. Les clés de la table sont `<nom>@<version>`.
  *
- * @returns {{ complements: Map<string, { files: { name: string, content: string }[], source: string }>, errors: string[] }}
+ * @returns {{ complements: Map<string, { name: string, version: string, files: { name: string, content: string }[], source: string }>, errors: string[] }}
  */
 export function readComplements(dir) {
   const complements = new Map();
@@ -306,47 +336,61 @@ export function readComplements(dir) {
   if (!existsSync(dir)) return { complements, errors };
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => compareText(a.name, b.name))) {
     if (!entry.isDirectory()) continue;
+    const at = entry.name.lastIndexOf('@');
+    if (at <= 0 || at === entry.name.length - 1) {
+      errors.push(`complément ${entry.name} : le dossier doit s'appeler <nom>@<version> (le texte n'est valable que pour une version)`);
+      continue;
+    }
     const folder = join(dir, entry.name);
     const sourcePath = join(folder, 'SOURCE.txt');
-    const files = readLicenseFiles(folder);
+    const read = readLicenseFiles(folder);
+    for (const one of read.rejected) {
+      if (one.kind !== 'directory') errors.push(rejectionMessage(`complément ${entry.name}`, one));
+    }
     if (!existsSync(sourcePath)) {
       errors.push(`complément ${entry.name} : SOURCE.txt manque (il dit d'où vient le texte)`);
       continue;
     }
-    if (files.length === 0) {
+    if (licenseTexts(read.files).length === 0) {
       errors.push(`complément ${entry.name} : aucun fichier de licence`);
       continue;
     }
-    complements.set(entry.name, { files, source: normalizeText(readFileSync(sourcePath, 'utf8')) });
+    complements.set(entry.name, { name: entry.name.slice(0, at), version: entry.name.slice(at + 1), files: read.files, source: normalizeText(readFileSync(sourcePath, 'utf8')) });
   }
   return { complements, errors };
 }
 
 /**
- * Donne à chaque paquet ses textes : ceux de son dossier, puis ceux de son complément. Un complément qui ne va à
- * aucun paquet est une erreur : le dossier ne vieillit pas en silence.
+ * Donne à chaque paquet ses textes : ceux de son dossier, puis ceux de son complément (celui de ce nom et de cette
+ * version). Sont des erreurs : un complément qui ne va à aucun paquet (le dossier ne vieillit pas en silence : une
+ * montée de version oblige à revérifier le texte), et un complément pour un paquet qui a déjà ses propres textes de
+ * licence.
  *
  * @returns {{ packages: object[], errors: string[] }}
  */
 export function attachTexts(packages, complements, readFiles = readLicenseFiles) {
   const errors = [];
-  const names = new Set(packages.map((one) => one.name));
-  for (const name of complements.keys()) {
-    if (!names.has(name)) errors.push(`complément ${name} : aucun paquet de ce nom dans les dépendances (à supprimer)`);
+  const keys = new Set(packages.map((one) => `${one.name}@${one.version}`));
+  for (const key of complements.keys()) {
+    if (!keys.has(key)) errors.push(`complément ${key} : aucun paquet de ce nom et de cette version dans les dépendances (à supprimer, ou à revérifier après une montée de version)`);
   }
   const done = packages.map((one) => {
     const own = readFiles(one.dir);
-    const extra = complements.get(one.name);
+    const extra = complements.get(`${one.name}@${one.version}`);
+    if (extra !== undefined && licenseTexts(own.files).length > 0) {
+      errors.push(`complément ${one.name}@${one.version} : inutile, le paquet a ses propres textes de licence (à supprimer)`);
+    }
     return {
       ...one,
-      texts: [...own, ...(extra === undefined ? [] : extra.files)],
+      texts: [...own.files, ...(extra === undefined ? [] : extra.files)],
+      rejected: own.rejected,
       complement: extra === undefined ? null : extra.source,
     };
   });
   return { packages: done, errors };
 }
 
-/** La garde, paquet par paquet : licence permise, un dépôt pour la MPL, au moins un texte. Les erreurs nomment le paquet. */
+/** La garde, paquet par paquet : licence permise, un dépôt pour la MPL, au moins un texte de licence, rien d'écarté en silence. Les erreurs nomment le paquet. */
 export function checkPackages(packages, allowed = ALLOWED_LICENSES) {
   const errors = [];
   for (const one of packages) {
@@ -356,8 +400,13 @@ export function checkPackages(packages, allowed = ALLOWED_LICENSES) {
     if (problem === null && needsSourceAddress(one) && (one.repository === null || one.repository === '')) {
       errors.push(`${label} : sous MPL-2.0 et sans adresse de dépôt : impossible de dire où obtenir le code source`);
     }
-    if (one.texts.length === 0) {
-      errors.push(`${label} : aucun texte de licence (ni dans son dossier ni dans les compléments)`);
+    const hasText = licenseTexts(one.texts).length > 0;
+    // Rien n'est écarté en silence. Un dossier au nom de licence est toléré quand le paquet a par ailleurs un texte.
+    for (const rejected of one.rejected ?? []) {
+      if (rejected.kind !== 'directory' || !hasText) errors.push(rejectionMessage(label, rejected));
+    }
+    if (!hasText) {
+      errors.push(`${label} : aucun texte de licence (ni dans son dossier ni dans les compléments ; un NOTICE n'en est pas un)`);
     }
   }
   return errors;
@@ -441,10 +490,12 @@ export function composeFile({ fixed, packages }) {
     '',
     'Shinku embarque des composants écrits par d\'autres personnes. Ce fichier donne, pour chacun,',
     'son nom, sa version, sa licence, l\'adresse de son dépôt et le texte de sa licence, comme ces',
-    'licences le demandent. Il est fabriqué par apps/shinku/scripts/licences-tiers.mjs, à partir des',
-    'versions exactes utilisées (Cargo.lock et package-lock.json) ; ne le modifie pas à la main.',
+    'licences le demandent. Il liste les paquets liés dans les programmes ; les outils qui servent',
+    'seulement à les fabriquer n\'y sont pas. Il est fabriqué par apps/shinku/scripts/licences-tiers.mjs,',
+    'à partir des versions exactes utilisées (Cargo.lock et package-lock.json) ; ne le modifie pas à',
+    'la main.',
     '',
-    `Il compte ${rust.length} paquets Rust, ${page.length} paquets de l'interface et ${texts.length} textes de licence distincts.`,
+    `Il compte ${rust.length} paquets Rust liés, ${page.length} paquets de l'interface et ${texts.length} textes de licence distincts.`,
     'Les textes sont à la fin, numérotés : chaque paquet renvoie aux siens par leur numéro entre crochets.',
     '',
     RULE,
@@ -478,20 +529,23 @@ export function composeFile({ fixed, packages }) {
 
 // ── Le tout, sur le vrai dépôt ─────────────────────────────────────────────
 
-const appDir = join(dirname(fileURLToPath(import.meta.url)), '..');
-const repoDir = join(appDir, '..', '..');
-export const DEFAULT_OUTPUT = join(appDir, 'src-tauri', 'licences', 'LICENCES-TIERS.txt');
+const here = dirname(fileURLToPath(import.meta.url));
+/** Le dossier de l'application (`apps/shinku`) et la racine du dépôt, d'après l'emplacement de ce script. */
+export const APP_DIR = join(here, '..');
+export const REPO_DIR = join(APP_DIR, '..', '..');
+export const DEFAULT_OUTPUT = join(APP_DIR, 'src-tauri', 'licences', 'LICENCES-TIERS.txt');
 
 function runCargo(args) {
-  return execFileSync('cargo', args, { cwd: repoDir, encoding: 'utf8', maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'inherit'] });
+  return execFileSync('cargo', args, { cwd: REPO_DIR, encoding: 'utf8', maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'inherit'] });
 }
 
 /**
  * Tout ce que le script fait, sans écrire : lit le dépôt, lance cargo, applique la garde.
  *
- * @returns {{ content: string, errors: string[], stats: { rust: number, page: number, texts: number } }}
+ * @param {{ offline?: boolean, run?: (args: string[]) => string, appDir?: string }} [options]
+ * @returns {{ content: string, errors: string[], packages: object[], stats: { rust: number, page: number, texts: number } }}
  */
-export function build({ offline = false, run = runCargo } = {}) {
+export function build({ offline = false, run = runCargo, appDir = APP_DIR } = {}) {
   const errors = [];
   const calls = cargoCalls({ offline });
   const lists = calls.trees.map((args) => parseCargoTree(run(args)));
@@ -500,10 +554,9 @@ export function build({ offline = false, run = runCargo } = {}) {
   errors.push(...rust.errors);
 
   const lock = JSON.parse(readFileSync(join(appDir, 'package-lock.json'), 'utf8'));
-  const nodeModules = join(appDir, 'node_modules');
   const page = resolvePagePackages(lock, appDir);
   errors.push(...page.errors);
-  if (!existsSync(nodeModules)) errors.push('node_modules manque : lance `npm ci` avant');
+  if (!existsSync(join(appDir, 'node_modules'))) errors.push('node_modules manque : lance `npm ci` avant (les textes des paquets de la page y sont)');
 
   const licenceDir = join(appDir, 'src-tauri', 'licences');
   const read = readComplements(join(licenceDir, 'complements'));
@@ -523,12 +576,12 @@ export function build({ offline = false, run = runCargo } = {}) {
 
   const content = composeFile({ fixed, packages: attached.packages });
   const texts = numberTexts(attached.packages).texts.length;
-  return { content, errors, stats: { rust: rust.packages.length, page: page.packages.length, texts } };
+  return { content, errors, packages: attached.packages, stats: { rust: rust.packages.length, page: page.packages.length, texts } };
 }
 
 /** Les arguments de la ligne de commande. */
-export function parseArguments(argv) {
-  const options = { verify: false, output: DEFAULT_OUTPUT, offline: process.env.SHINKU_CARGO_HORS_LIGNE === '1' };
+export function parseArguments(argv, { env = process.env, output = DEFAULT_OUTPUT } = {}) {
+  const options = { verify: false, output, offline: env.SHINKU_CARGO_HORS_LIGNE === '1' };
   for (let at = 0; at < argv.length; at += 1) {
     const one = argv[at];
     if (one === '--verifier') options.verify = true;
@@ -539,35 +592,75 @@ export function parseArguments(argv) {
   return options;
 }
 
-function main() {
+/** L'empreinte SHA-256 d'un contenu, en minuscules. */
+export const sha256 = (content) => createHash('sha256').update(content, 'utf8').digest('hex');
+
+/** Écrit un fichier d'un bloc : un fichier temporaire dans le même dossier, puis un renommage. */
+export function writeAtomically(path, content) {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, content, 'utf8');
+    renameSync(temporary, path);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * La ligne de commande, sans `process.exit` : rend le code de sortie. 0 : la garde passe (et le fichier est écrit,
+ * sauf avec --verifier) ; 1 : la garde échoue ou cargo échoue, et rien n'est écrit ni modifié ; 2 : argument inconnu.
+ *
+ * @param {string[]} argv
+ * @param {{ run?: (args: string[]) => string, appDir?: string, env?: Record<string, string | undefined>, log?: (line: string) => void }} [context]
+ * @returns {number}
+ */
+export function runCli(argv, { run = runCargo, appDir = APP_DIR, env = process.env, log = (line) => console.error(line) } = {}) {
   let options;
   try {
-    options = parseArguments(process.argv.slice(2));
+    options = parseArguments(argv, { env, output: join(appDir, 'src-tauri', 'licences', 'LICENCES-TIERS.txt') });
   } catch (error) {
-    console.error(`${error.message}\nusage : node scripts/licences-tiers.mjs [--verifier] [--sortie <fichier>] [--hors-ligne]`);
-    process.exit(2);
+    log(`${error.message}\nusage : node scripts/licences-tiers.mjs [--verifier] [--sortie <fichier>] [--hors-ligne]`);
+    return 2;
   }
   let result;
   try {
-    result = build({ offline: options.offline });
+    result = build({ offline: options.offline, run, appDir });
   } catch (error) {
-    console.error(`licences-tiers : ${error.message}`);
-    process.exit(1);
+    log(`licences-tiers : ${error.message}`);
+    return 1;
   }
   if (result.errors.length > 0) {
     // Rien n'est écrit : un fichier fabriqué malgré la garde passerait pour bon.
-    console.error(`licences-tiers : ${result.errors.length} problème(s)`);
-    for (const line of result.errors) console.error(`  - ${line}`);
-    process.exit(1);
+    log(`licences-tiers : ${result.errors.length} problème(s)`);
+    for (const line of result.errors) log(`  - ${line}`);
+    return 1;
   }
   const { rust, page, texts } = result.stats;
+  const counts = `${rust} paquets Rust liés, ${page} paquets de l'interface, ${texts} textes distincts`;
   if (options.verify) {
-    console.error(`licences-tiers : la garde passe (${rust} paquets Rust, ${page} paquets de l'interface, ${texts} textes distincts).`);
-    return;
+    log(`licences-tiers : la garde passe (${counts}).`);
+  } else {
+    try {
+      writeAtomically(options.output, result.content);
+    } catch (error) {
+      log(`licences-tiers : écriture impossible : ${error.message}`);
+      return 1;
+    }
+    log(`licences-tiers : fichier écrit (${counts}).`);
   }
-  mkdirSync(dirname(options.output), { recursive: true });
-  writeFileSync(options.output, result.content, 'utf8');
-  console.error(`licences-tiers : fichier écrit (${rust} paquets Rust, ${page} paquets de l'interface, ${texts} textes distincts).`);
+  log(`licences-tiers : sha256 ${sha256(result.content)}`);
+  return 0;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+/** Ce fichier est-il lancé directement (et non importé) ? Les deux chemins sont réels : liens, jonctions et casse comptent pour rien. */
+function isDirectRun() {
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectRun()) process.exitCode = runCli(process.argv.slice(2));

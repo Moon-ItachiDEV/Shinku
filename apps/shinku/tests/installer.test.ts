@@ -197,6 +197,22 @@ test("essai-installeur.ps1 : après l'installation, LICENCES-TIERS.txt est là, 
   assert.ok(text.indexOf('$texteLicences = ') < text.indexOf('$surBureau = @(Raccourcis $bureaux)'));
 });
 
+test("essai-installeur-agent.ps1 : après la mise à jour, LICENCES-TIERS.txt est là, non vide, identique à la liste fabriquée ; une seule marque BOM", () => {
+  const bytes = readFileSync(new URL('scripts/essai-installeur-agent.ps1', root));
+  assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  assert.equal(bytes.subarray(3, 6).equals(Buffer.from([0xef, 0xbb, 0xbf])), false, 'deux BOM de suite');
+  assert.equal(bytes.includes(0x0d), false, 'retour chariot dans le script');
+  const text = bytes.toString('utf8');
+  assert.match(text, /\[string\]\$LicencesCompilees = \(Join-Path \$PSScriptRoot '\.\.\\src-tauri\\licences\\LICENCES-TIERS\.txt'\)/);
+  assert.match(text, /if \(-not \(Test-Path \$LicencesCompilees\)\) \{\n\s+Fail /);
+  const check = text.slice(text.indexOf('$installedLicences = '), text.indexOf("Done 'LICENCES-TIERS.txt est à côté"));
+  assert.match(check, /if \(-not \(Test-Path \$installedLicences\)\) \{ Fail /);
+  assert.match(check, /if \(\(Get-Item \$installedLicences\)\.Length -eq 0\) \{ Fail /);
+  assert.match(check, /Get-FileHash -Algorithm SHA256 \$installedLicences\)\.Hash -ne \(Get-FileHash -Algorithm SHA256 \$LicencesCompilees\)\.Hash\) \{\n\s+Fail /);
+  // La preuve est dans la mise à jour, avant la désinstallation.
+  assert.ok(text.indexOf('$installedLicences = ') < text.indexOf('# ── 2. Désinstallation'));
+});
+
 /** Un fichier .nsh sans ses commentaires (lignes qui commencent par « ; »). */
 const code = (name: string): string => read(name).replace(/^\s*;.*$/gm, '');
 
