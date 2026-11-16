@@ -13,7 +13,16 @@
 #
 #   -Etape <nom>-preparer    pose ce que la fenêtre va voir ;
 #   -Etape <nom>-verifier    relit la machine après l'effacement ;
-#   -Etape nettoyer          remet tout en place (à lancer quoi qu'il arrive).
+#   -Etape nettoyer          remet tout en place (à lancer quoi qu'il arrive) : le User Data d'origine
+#                            est remis, l'état et le dossier de travail sont supprimés ;
+#   -Etape nettoyer-scenario remet en place ce qu'un scénario a posé (registre, récents, épinglé, fenêtre,
+#                            User Data d'essai) mais garde le User Data d'origine de côté, le modèle de
+#                            Chrome et l'état : le pilote l'appelle après chaque scénario ;
+#   -Constat                 avec une étape -verifier : relève ce qui a disparu ou changé sans décider du
+#                            verdict (le pilote l'utilise quand la fenêtre a échoué, pour savoir ce qui est parti).
+#
+# Un nettoyage incomplet garde l'état (etat.txt) et sort avec le code 1 en listant ce qui n'a pas pu être
+# remis : le suivant sait encore ce qu'il reste à remettre.
 #
 # Les étapes (une par preuve de la conception, section « Essais sur le vrai
 # Windows ») :
@@ -51,7 +60,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet(
-        'nettoyer',
+        'nettoyer', 'nettoyer-scenario',
         'profil-preparer', 'profil-verifier',
         'verrou-fichier-preparer', 'verrou-fichier-verifier',
         'verrou-lockfile-preparer', 'verrou-lockfile-verifier',
@@ -68,7 +77,9 @@ param(
     # Étape verrou-lockfile : comment le lockfile est tenu. « Chromium » : en écriture, partage en
     # lecture, supprimé à la fermeture (comme Chromium). « Aucun » : sans aucun partage.
     [ValidateSet('Chromium', 'Aucun')]
-    [string]$Partage = 'Chromium'
+    [string]$Partage = 'Chromium',
+    # Avec une étape -verifier : journalise les écarts (« CONSTAT ») sans faire échouer l'étape.
+    [switch]$Constat
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,8 +98,18 @@ function Say([string]$Line) {
     Write-Host ('[{0,6:N1} s] {1}' -f $seconds, $Line)
 }
 # Une preuve : la ligne commence par « FAIT : » et dit ce qui a été mesuré.
-function Proof([string]$Line) { Write-Host "FAIT : $Line" }
+$script:Gaps = 0
+function Proof([string]$Line) {
+    if (-not $Constat) { Write-Host "FAIT : $Line"; return }
+    if ($script:Gaps -eq 0) { Write-Host "CONSTAT : $Line" } else { Write-Host "CONSTAT : (non affirmé : $($script:Gaps) écart(s) déjà relevé(s)) $Line" }
+}
 function Fail([string]$Message) { throw $Message }
+# Un écart relevé par une vérification : il fait échouer l'étape ; avec -Constat il est seulement journalisé.
+function Mismatch([string]$Message) {
+    if (-not $Constat) { throw $Message }
+    $script:Gaps += 1
+    Say "  CONSTAT : écart : $Message"
+}
 
 # ── Où tout se passe ───────────────────────────────────────────────────────
 
@@ -97,9 +118,6 @@ $UserData = Join-Path $ChromeRoot 'User Data'
 $Aside = Join-Path $ChromeRoot 'User Data.avant-essai-shinku'
 $Profile77 = Join-Path $UserData 'Profile 77'
 $DefaultProfile = Join-Path $UserData 'Default'
-$Work = Join-Path $env:TEMP 'essai-confidentialite'
-$StateFile = Join-Path $Work 'etat.txt'
-$Scratch = Join-Path $Work 'scratch'
 $LauncherScript = Join-Path $PSScriptRoot 'lancer-en-utilisateur.ps1'
 
 # La règle de l'historique d'un navigateur Chromium (rules.rs) : chaque nom avec ses annexes.
@@ -114,6 +132,7 @@ foreach ($mainName in $LotMain) {
 $ExplorerKey = 'Software\Microsoft\Windows\CurrentVersion\Explorer'
 $TypedKeys = @('RunMRU', 'TypedPaths', 'WordWheelQuery')
 $LinkTarget = 'Software\Essai Shinku Lien Cible'
+$ViewLeaf = 'Essai Shinku Vue Explorateur'
 
 $LocalState = '{"os_crypt":{"encrypted_key":"ZmF1eC1lc3NhaS1zaGlua3U="},"profile":{"info_cache":{}}}'
 $Utf8 = New-Object System.Text.UTF8Encoding $false
@@ -122,12 +141,80 @@ $Utf8 = New-Object System.Text.UTF8Encoding $false
 
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 
+public static class EssaiFenetres
+{
+    delegate bool EnumProc(IntPtr window, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetClassNameW(IntPtr window, StringBuilder text, int max);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetWindowTextW(IntPtr window, StringBuilder text, int max);
+
+    [DllImport("user32.dll")]
+    static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    // Les fenetres de l'Explorateur (classe CabinetWClass) dont le titre contient `part`.
+    static List<IntPtr> Find(string part)
+    {
+        List<IntPtr> found = new List<IntPtr>();
+        EnumProc callback = delegate (IntPtr window, IntPtr parameter)
+        {
+            StringBuilder name = new StringBuilder(256);
+            GetClassNameW(window, name, name.Capacity);
+            if (name.ToString() == "CabinetWClass")
+            {
+                StringBuilder title = new StringBuilder(512);
+                GetWindowTextW(window, title, title.Capacity);
+                if (title.ToString().IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    found.Add(window);
+                }
+            }
+            return true;
+        };
+        EnumWindows(callback, IntPtr.Zero);
+        return found;
+    }
+
+    public static int Count(string part)
+    {
+        return Find(part).Count;
+    }
+
+    // WM_CLOSE : marche d'un niveau eleve vers l'Explorateur, qui tourne en niveau moyen.
+    public static int Close(string part)
+    {
+        List<IntPtr> windows = Find(part);
+        foreach (IntPtr window in windows)
+        {
+            PostMessageW(window, 0x0010, IntPtr.Zero, IntPtr.Zero);
+        }
+        return windows.Count;
+    }
+}
+
 public static class EssaiShell
 {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern uint GetLongPathNameW(string shortPath, StringBuilder longPath, uint size);
+
+    // Le chemin long d'un dossier qui existe (le Shell rend toujours des noms longs).
+    public static string LongPath(string path)
+    {
+        StringBuilder result = new StringBuilder(1024);
+        uint length = GetLongPathNameW(path, result, (uint)result.Capacity);
+        return (length == 0 || length >= result.Capacity) ? path : result.ToString();
+    }
+
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     static extern void SHAddToRecentDocs(uint flags, string path);
 
@@ -243,6 +330,14 @@ public static class EssaiRegistre
     }
 }
 '@
+
+# Les dossiers d'essai sont sous le profil du compte (chemin long), pas sous TEMP : la forme courte de TEMP
+# (RUNNER~1) n'est pas celle que le Shell rend pour l'Accès rapide.
+$WorkParent = [EssaiShell]::LongPath($env:USERPROFILE)
+$Work = Join-Path $WorkParent 'Essai Shinku Confidentialite'
+$ViewFolder = Join-Path $WorkParent $ViewLeaf
+$StateFile = Join-Path $Work 'etat.txt'
+$Scratch = Join-Path $Work 'scratch'
 
 # ── L'état entre deux étapes ───────────────────────────────────────────────
 
@@ -367,12 +462,16 @@ function Compare-Trees($Before, $After, [string[]]$Gone) {
 
 function Assert-Tree([string]$What, $Before, $After, [string[]]$Gone, [string]$Expected) {
     $errors = @(Compare-Trees $Before $After $Gone)
-    if ($errors.Count -gt 0) {
-        $shown = @($errors | Select-Object -First 12) -join ' ; '
-        $more = ''
-        if ($errors.Count -gt 12) { $more = " ; … et $($errors.Count - 12) de plus" }
-        Fail "$What : attendu : $Expected ; vu : $($errors.Count) écart(s) : $shown$more"
+    if ($errors.Count -eq 0) { return }
+    if ($Constat) {
+        foreach ($one in @($errors | Select-Object -First 40)) { Mismatch "$What : $one" }
+        if ($errors.Count -gt 40) { Mismatch "$What : … et $($errors.Count - 40) de plus" }
+        return
     }
+    $shown = @($errors | Select-Object -First 12) -join ' ; '
+    $more = ''
+    if ($errors.Count -gt 12) { $more = " ; … et $($errors.Count - 12) de plus" }
+    Fail "$What : attendu : $Expected ; vu : $($errors.Count) écart(s) : $shown$more"
 }
 
 # Les fichiers de la règle présents dans un dossier de profil, avec leur taille : « History 53248 octets, … ».
@@ -518,16 +617,59 @@ function New-FakeProfile([string]$Dir) {
 # Met de côté le User Data d'origine (s'il y en a un et que ce n'est pas le nôtre), puis en crée un vide, avec Local State.
 function Initialize-UserData {
     $state = Get-State
+    if ((Test-Path -LiteralPath $Aside) -and $state['aside'] -ne '1') {
+        Fail "attendu : pas de reste d'un essai précédent ; vu : $Aside existe déjà (lance l'étape nettoyer)"
+    }
     if ($state['userDataOurs'] -eq '1') {
         Remove-TreeSafe $UserData
     } elseif (Test-Path -LiteralPath $UserData) {
-        if (Test-Path -LiteralPath $Aside) { Fail "attendu : pas de reste d'un essai précédent ; vu : $Aside existe déjà (lance l'étape nettoyer)" }
         try { [IO.Directory]::Move($UserData, $Aside) } catch { Fail "attendu : le User Data d'origine est mis de côté ; vu : $($_.Exception.Message) (Chrome tourne-t-il ?)" }
         Set-StateValue 'aside' '1'
         Say "  le User Data d'origine est mis de côté : $Aside"
     }
     [void][IO.Directory]::CreateDirectory($UserData)
     Set-StateValue 'userDataOurs' '1'
+    Install-BrowserState
+}
+
+# Copie un User Data fait par Chrome (sans lien) : les fichiers, octet pour octet.
+function Copy-UserData([string]$From, [string]$To) {
+    [void][IO.Directory]::CreateDirectory($To)
+    Copy-Item -Path (Join-Path $From '*') -Destination $To -Recurse -Force
+}
+
+# Si Chrome est installé, c'est lui qui crée le User Data (une fois pour tout l'essai : le modèle est copié ensuite) ;
+# le faux Local State n'est écrit que sans Chrome, ou si Chrome n'a pas su le créer.
+function Install-BrowserState {
+    $state = Get-State
+    if ($null -ne (Get-ChromePath) -and $state['chromeModele'] -ne 'echec') {
+        $model = Join-Path $Work 'modele-chrome'
+        try {
+            if (Test-Path -LiteralPath $model) {
+                Copy-UserData $model $UserData
+            } else {
+                Say "  Chrome crée son User Data (une fois pour tout l'essai)"
+                Start-Chrome 'chrome-modele' { Test-Path -LiteralPath (Join-Path $DefaultProfile 'History') } 'Chrome crée son User Data (Default\History)'
+                Start-Sleep -Seconds 3
+                Stop-Chrome
+                # Chrome écrit parfois son Local State seulement à sa fermeture ; s'il n'y est pas, c'est le faux.
+                if (-not (Test-Path -LiteralPath (Join-Path $UserData 'Local State'))) {
+                    Say '  Chrome n''a pas écrit de Local State : le faux est posé'
+                    [IO.File]::WriteAllText((Join-Path $UserData 'Local State'), $LocalState, $Utf8)
+                }
+                Copy-UserData $UserData $model
+            }
+            Set-StateValue 'chromeModele' 'oui'
+            return
+        } catch {
+            Say "  Chrome n'a pas pu créer son User Data ($($_.Exception.Message)) : le faux Local State est écrit à la place"
+            try { Stop-Chrome } catch { }
+            Remove-TreeSafe $UserData
+            Remove-TreeSafe $model
+            [void][IO.Directory]::CreateDirectory($UserData)
+            Set-StateValue 'chromeModele' 'echec'
+        }
+    }
     [IO.File]::WriteAllText((Join-Path $UserData 'Local State'), $LocalState, $Utf8)
 }
 
@@ -638,6 +780,9 @@ function Get-ValueCount([string]$Name) {
 
 # Pose des valeurs dans les trois clés (en vidant d'abord ce qu'elles contenaient).
 function Set-TypedValues {
+    if ([EssaiRegistre]::IsLink("$ExplorerKey\RunMRU")) {
+        Fail 'attendu : RunMRU est une clé ordinaire avant de poser les valeurs ; vu : un lien de registre resté d''un essai précédent (lance l''étape nettoyer)'
+    }
     $utf16 = [Text.Encoding]::Unicode
     foreach ($name in $TypedKeys) {
         $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("$ExplorerKey\$name")
@@ -696,16 +841,27 @@ function Get-QuickAccessPaths {
     if ($null -eq $folder) { return $null }
     $paths = New-Object System.Collections.ArrayList
     foreach ($item in @($folder.Items())) { [void]$paths.Add([string]$item.Path) }
-    return @($paths)
+    return ,@($paths)
 }
 
-function Get-ExplorerWindows([string]$Leaf) {
+# Le nom que le Shell donne au dossier (chemin long) : c'est avec lui qu'on compare, sans tenir compte de la casse.
+function Get-ShellPath([string]$Folder) {
     $shell = New-Object -ComObject Shell.Application
-    $found = New-Object System.Collections.ArrayList
-    foreach ($window in @($shell.Windows())) {
-        try { if ("$($window.LocationURL)" -like "*$Leaf*") { [void]$found.Add($window) } } catch { }
+    $namespace = $shell.Namespace($Folder)
+    if ($null -eq $namespace) { return $Folder }
+    return [string]$namespace.Self.Path
+}
+
+function Test-Listed($Paths, [string[]]$Wanted) {
+    foreach ($path in @($Paths)) {
+        foreach ($one in $Wanted) { if ($path -ieq $one) { return $true } }
     }
-    return @($found)
+    return $false
+}
+
+function Wait-ExplorerClosed([int]$Seconds) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline -and [EssaiFenetres]::Count($ViewLeaf) -gt 0) { Start-Sleep -Milliseconds 300 }
 }
 
 # ── Chrome, le vrai ────────────────────────────────────────────────────────
@@ -747,7 +903,8 @@ function Start-Chrome([string]$Name, [scriptblock]$Condition, [string]$What) {
     $page = Join-Path $Work 'page.html'
     [IO.File]::WriteAllText($page, '<html><head><title>essai shinku</title></head><body>essai shinku</body></html>', $Utf8)
     $url = 'file:///' + $page.Replace('\', '/')
-    $line = 'start "" "{0}" --headless=new --disable-gpu --no-first-run --no-default-browser-check "{1}"' -f $chrome, $url
+    # --user-data-dir en toutes lettres : l'essai ne dépend pas du dossier que Chrome choisirait sans fenêtre.
+    $line = 'start "" "{0}" --headless=new --disable-gpu --no-first-run --no-default-browser-check "--user-data-dir={1}" "{2}"' -f $chrome, $UserData, $url
     $launcher = Start-AsUser $line $Name
     Set-StateValue 'chromeUsed' '1'
     if (-not $launcher.WaitForExit(30000)) { try { $launcher.Kill() } catch { } }
@@ -791,12 +948,17 @@ function Step-ProfilPreparer {
     Initialize-FakeBrowser
     $tree = Get-Tree $UserData
     Save-Tree $tree 'profil'
-    $inLot = @($Lot | Where-Object { $tree.ContainsKey("Profile 77\$_") })
-    Proof "faux profil Chrome « Profile 77 » préparé : $($tree.Count) éléments dans User Data, dont $($inLot.Count) fichiers de la règle ($(Describe-Lot $Profile77))"
-    foreach ($name in @('Bookmarks', 'Login Data', 'Web Data', 'Network\Cookies')) {
+    $needed = @('Bookmarks', 'Login Data', 'Web Data', 'Network\Cookies', 'Preferences', 'Local Storage\leveldb\000003.log',
+        'Sessions\Session_13300000000', 'Extensions\essai\1.0\manifest.json', 'History-journal', 'Favicons-wal', 'Favicons-shm')
+    foreach ($name in $needed) {
         if (-not $tree.ContainsKey("Profile 77\$name")) { Fail "attendu : le faux profil a $name ; vu : absent" }
     }
-    Proof 'à côté des fichiers de la règle : Bookmarks, Login Data, Web Data, Network\Cookies, Local Storage, Sessions, Extensions, et Local State dans User Data'
+    if (-not $tree.ContainsKey('Local State')) { Fail 'attendu : User Data a un Local State ; vu : absent' }
+    $inLot = @($Lot | Where-Object { $tree.ContainsKey("Profile 77\$_") })
+    $origin = 'faux Local State'
+    if ((Get-State)['chromeModele'] -eq 'oui') { $origin = 'User Data créé par le vrai Chrome, avec ses propres fichiers' }
+    Proof "faux profil Chrome « Profile 77 » préparé dans User Data ($origin) : $($tree.Count) éléments, dont $($inLot.Count) fichiers de la règle ($(Describe-Lot $Profile77))"
+    Proof 'vérifiés présents à côté des fichiers de la règle : Bookmarks, Login Data, Web Data, Network\Cookies, Preferences, Local Storage\leveldb, Sessions, Extensions, et Local State dans User Data'
 }
 
 function Step-ProfilVerifier {
@@ -805,9 +967,11 @@ function Step-ProfilVerifier {
     $gone = @($Lot | Where-Object { $before.ContainsKey("Profile 77\$_") } | ForEach-Object { "Profile 77\$_" })
     if ($gone.Count -eq 0) { Fail 'attendu : le profil préparé avait des fichiers de la règle ; vu : aucun' }
     Assert-Tree 'après l''effacement du faux profil' $before $after $gone 'seuls les fichiers de la règle ont disparu, tout le reste est identique octet pour octet'
-    Proof "seuls les $($gone.Count) fichiers de la règle ont disparu de Profile 77 ; les $($after.Count) autres éléments de User Data (Bookmarks, Login Data, Web Data, Network\Cookies, Local Storage, Local State...) sont identiques octet pour octet (SHA-256)"
-    $names = ($gone | ForEach-Object { $_.Substring('Profile 77\'.Length) }) -join ', '
-    Proof "fichiers partis : $names (la base avec -wal non repris et celle avec -journal comprises)"
+    Proof "les $($gone.Count) fichiers de la règle ont disparu de Profile 77 et les $($after.Count) autres éléments de User Data sont identiques octet pour octet (SHA-256) : $((($gone | ForEach-Object { $_.Substring('Profile 77\'.Length) }) -join ', '))"
+    $annexes = foreach ($name in @('Profile 77\History-journal', 'Profile 77\Favicons-wal', 'Profile 77\Favicons-shm')) {
+        '{0} : {1}' -f $name.Substring('Profile 77\'.Length), $(if ($after.ContainsKey($name)) { 'reste' } else { 'parti' })
+    }
+    Proof "les annexes SQLite (le -journal non rejoué de History, le -wal non repris de Favicons) : $($annexes -join ' ; ')"
 }
 
 # ── 2. Un fichier tenu ouvert ──────────────────────────────────────────────
@@ -827,7 +991,7 @@ function Step-VerrouFichierVerifier {
     $before = Load-Tree 'verrou-fichier'
     $after = Get-Tree $UserData
     Assert-Tree 'après un effacement refusé par un fichier tenu' $before $after @() 'tout le lot est intact (aucun fichier de la règle n''a disparu, rien n''a changé)'
-    Proof "tout le lot est intact (empreintes SHA-256 de $($after.Count) éléments inchangées) : un seul fichier tenu ouvert n'a laissé partir aucun autre"
+    Proof "tout le lot est intact : $($after.Count) éléments de User Data ont la même empreinte SHA-256 qu'avant ; un seul fichier tenu ouvert n'a laissé partir aucun autre"
 }
 
 # ── 2. Le lockfile ─────────────────────────────────────────────────────────
@@ -869,13 +1033,16 @@ function Step-JonctionPreparer {
 
 function Step-JonctionVerifier {
     $item = Get-Item -LiteralPath $Profile77 -Force -ErrorAction SilentlyContinue
-    if ($null -eq $item) { Fail 'attendu : la jonction « Profile 77 » est toujours là ; vu : absente' }
-    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Fail 'attendu : « Profile 77 » est toujours une jonction ; vu : un dossier ordinaire' }
+    if ($null -eq $item) {
+        Mismatch 'attendu : la jonction « Profile 77 » est toujours là ; vu : absente'
+    } elseif (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        Mismatch 'attendu : « Profile 77 » est toujours une jonction ; vu : un dossier ordinaire'
+    }
     $decoy = Join-Path $Work 'cible-jonction'
     $before = Load-Tree 'jonction-cible'
     $after = Get-Tree $decoy
     Assert-Tree 'de l''autre côté de la jonction' $before $after @() 'rien n''est touché de l''autre côté (aucun fichier disparu ni changé)'
-    Proof "rien n'est touché de l'autre côté de la jonction : $($after.Count) éléments identiques octet pour octet, la jonction est toujours là"
+    Proof "rien n'est touché de l'autre côté de la jonction : $($after.Count) éléments identiques octet pour octet ; la jonction est toujours là"
 }
 
 function Step-LienPhysiquePreparer {
@@ -907,9 +1074,10 @@ function Step-LienPhysiqueVerifier {
     $decoyDir = Join-Path $Work 'cible-lien'
     Assert-Tree 'après l''effacement refusé par un lien physique (User Data)' (Load-Tree 'lien-physique') (Get-Tree $UserData) @() 'tout le lot est intact (aucun fichier de la règle n''a disparu, History compris)'
     Assert-Tree 'de l''autre côté du lien physique' (Load-Tree 'lien-physique-cible') (Get-Tree $decoyDir) @() 'l''autre nom de History est intact'
-    $count = @(@(& fsutil.exe hardlink list $history) | Where-Object { "$_".Trim() }).Count
-    if ($count -lt 2) { Fail "attendu : History a toujours deux noms ; vu : $count" }
-    Proof "le lien physique sur History est intact ($count noms) et tout le lot est resté en place : un fichier à plusieurs noms n'a rien fait partir"
+    $count = 0
+    if (Test-Path -LiteralPath $history) { $count = @(@(& fsutil.exe hardlink list $history) | Where-Object { "$_".Trim() }).Count }
+    if ($count -lt 2) { Mismatch "attendu : History a toujours deux noms ; vu : $count" }
+    Proof "le lien physique sur History a $count noms, et tout le lot est resté en place : un fichier à plusieurs noms n'a rien fait partir"
 }
 
 function Step-LienRegistrePreparer {
@@ -933,16 +1101,34 @@ function Step-LienRegistrePreparer {
     Proof "RunMRU est un lien de registre vers HKCU\$LinkTarget : ouvert en suivant le lien, il montre les $seen valeurs de la cible ; $(Show-TypedCounts 'valeurs avant :')"
 }
 
+# Défait le piège : le lien lui-même (jamais sa cible) puis la cible ; sans lien resté, la preuve 5 lit une vraie clé.
+function Remove-RegistryTrap {
+    if ([EssaiRegistre]::IsLink("$ExplorerKey\RunMRU")) { [EssaiRegistre]::DeleteLink("$ExplorerKey\RunMRU") }
+    [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($LinkTarget, $false)
+    if ([EssaiRegistre]::IsLink("$ExplorerKey\RunMRU")) { Fail 'attendu : le lien de registre RunMRU est retiré ; vu : c''est encore un lien' }
+    Clear-StateValue 'lienRegistre'
+}
+
 function Step-LienRegistreVerifier {
-    if (-not [EssaiRegistre]::IsLink("$ExplorerKey\RunMRU")) { Fail 'attendu : RunMRU est toujours un lien de registre ; vu : ce n''est plus un lien' }
-    $target = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($LinkTarget, $false)
-    if ($null -eq $target) { Fail "attendu : la cible HKCU\$LinkTarget existe encore ; vu : absente" }
+    $counts = ''
     try {
-        $names = @($target.GetValueNames() | Sort-Object)
-        if (($names -join ',') -ne 'a,b') { Fail "attendu : la cible garde ses valeurs a et b ; vu : $($names -join ',')" }
-        if ($target.GetValue('a') -ne 'cible-1' -or $target.GetValue('b') -ne 'cible-2') { Fail 'attendu : les données de a et b sont inchangées ; vu : elles ont changé' }
-    } finally { $target.Close() }
-    Proof "rien n'est touché de l'autre côté du lien de registre : la cible a toujours a=cible-1 et b=cible-2, et RunMRU est toujours un lien ; $(Show-TypedCounts 'valeurs après :')"
+        if (-not [EssaiRegistre]::IsLink("$ExplorerKey\RunMRU")) { Mismatch 'attendu : RunMRU est toujours un lien de registre ; vu : ce n''est plus un lien' }
+        $target = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($LinkTarget, $false)
+        if ($null -eq $target) {
+            Mismatch "attendu : la cible HKCU\$LinkTarget existe encore ; vu : absente"
+        } else {
+            try {
+                $names = @($target.GetValueNames() | Sort-Object)
+                if (($names -join ',') -ne 'a,b') { Mismatch "attendu : la cible garde ses valeurs a et b ; vu : $($names -join ',')" }
+                elseif ($target.GetValue('a') -ne 'cible-1' -or $target.GetValue('b') -ne 'cible-2') { Mismatch 'attendu : les données de a et b sont inchangées ; vu : elles ont changé' }
+            } finally { $target.Close() }
+        }
+        $counts = Show-TypedCounts 'valeurs après :'
+    } finally {
+        # Le piège ne reste pas : ni lui ni sa cible ne gênent l'essai suivant.
+        Remove-RegistryTrap
+    }
+    Proof "rien n'est touché de l'autre côté du lien de registre : la cible avait encore a=cible-1 et b=cible-2, et RunMRU était encore un lien ; $counts ; le lien et sa cible sont maintenant retirés"
 }
 
 # ── 4. Un profil remplacé ──────────────────────────────────────────────────
@@ -987,8 +1173,8 @@ function Step-RegistrePreparer {
 function Assert-TypedEmpty([string]$What) {
     foreach ($name in $TypedKeys) {
         $count = Get-ValueCount $name
-        if ($count -lt 0) { Fail "$What : attendu : la clé $name existe, vide ; vu : la clé a disparu" }
-        if ($count -ne 0) { Fail "$What : attendu : la clé $name est vide ; vu : $count valeur(s)" }
+        if ($count -lt 0) { Mismatch "$What : attendu : la clé $name existe, vide ; vu : la clé a disparu" }
+        elseif ($count -ne 0) { Mismatch "$What : attendu : la clé $name est vide ; vu : $count valeur(s)" }
     }
 }
 
@@ -999,40 +1185,40 @@ function Step-RegistreVerifier {
 
 function Step-RegistreExplorateurPreparer {
     Set-TypedValues
-    $folder = Join-Path $Work 'vue-explorateur'
-    [void][IO.Directory]::CreateDirectory($folder)
+    [void][IO.Directory]::CreateDirectory($ViewFolder)
     # Les valeurs sont posées avant d'ouvrir la fenêtre : elle les a donc en mémoire.
-    Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $folder) | Out-Null
+    $before = [EssaiFenetres]::Count($ViewLeaf)
+    Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $ViewFolder) | Out-Null
     $deadline = (Get-Date).AddSeconds(30)
-    $found = @()
+    $open = 0
     while ((Get-Date) -lt $deadline) {
-        $found = @(Get-ExplorerWindows 'vue-explorateur')
-        if ($found.Count -gt 0) { break }
+        $open = [EssaiFenetres]::Count($ViewLeaf)
+        if ($open -gt 0) { break }
         Start-Sleep -Milliseconds 500
     }
-    if ($found.Count -eq 0) {
-        Proof "aucune fenêtre de l'Explorateur n'a pu être ouverte sur $folder en 30 s : la mesure « avec une fenêtre ouverte » n'a pas pu être faite sur cette machine"
+    if ($open -eq 0) {
         Set-StateValue 'explorateur' '0'
+        Proof "aucune fenêtre de l'Explorateur (classe CabinetWClass, titre « $ViewLeaf ») n'a été vue par EnumWindows en 30 s ($before avant) : la mesure « avec une fenêtre ouverte » n'est pas faite sur cette machine ; $(Show-TypedCounts 'valeurs avant :')"
     } else {
         Set-StateValue 'explorateur' '1'
-        Proof "une fenêtre de l'Explorateur est ouverte sur $folder ($($found.Count) fenêtre(s)) ; $(Show-TypedCounts 'valeurs avant :')"
+        Proof "fenêtres de l'Explorateur « $ViewLeaf » : $before avant, $open après l'ouverture ; $(Show-TypedCounts 'valeurs avant :')"
     }
 }
 
 function Step-RegistreExplorateurVerifier {
     $state = Get-State
+    $open = [EssaiFenetres]::Count($ViewLeaf)
     Assert-TypedEmpty 'juste après l''effacement, fenêtre de l''Explorateur ouverte'
-    Proof "juste après l'effacement, fenêtre de l'Explorateur encore ouverte : les trois clés sont vides ($(Show-TypedCounts 'valeurs :'))"
+    Proof "juste après l'effacement, $open fenêtre(s) de l'Explorateur ouverte(s) : les trois clés sont vides ($(Show-TypedCounts 'valeurs :'))"
     if ($state['explorateur'] -eq '1') {
-        foreach ($window in @(Get-ExplorerWindows 'vue-explorateur')) { try { $window.Quit() } catch { Say "  Quit() a échoué : $($_.Exception.Message)" } }
-        $deadline = (Get-Date).AddSeconds(20)
-        while ((Get-Date) -lt $deadline -and @(Get-ExplorerWindows 'vue-explorateur').Count -gt 0) { Start-Sleep -Milliseconds 300 }
+        $posted = [EssaiFenetres]::Close($ViewLeaf)
+        Wait-ExplorerClosed 20
         Start-Sleep -Seconds 3
-        $left = @(Get-ExplorerWindows 'vue-explorateur').Count
+        $left = [EssaiFenetres]::Count($ViewLeaf)
         # Une mesure : elle ne fait pas échouer l'essai (c'est elle qui tranche si une fenêtre ouverte réécrit ses saisies en se fermant).
-        Proof "MESURE après la fermeture de la fenêtre de l'Explorateur ($left fenêtre(s) restante(s)) : ce qui revient ; $(Show-TypedCounts 'valeurs :')"
+        Proof "MESURE : $open fenêtre(s) avant la fermeture, WM_CLOSE envoyé à $posted, $left après ; ce qui revient dans les trois clés : $(Show-TypedCounts 'valeurs :')"
     } else {
-        Proof 'MESURE : pas de fenêtre de l''Explorateur ouverte pour cet essai, rien à mesurer à la fermeture'
+        Proof 'MESURE : aucune fenêtre de l''Explorateur n''avait été vue ouverte, rien à mesurer à la fermeture'
     }
 }
 
@@ -1043,6 +1229,7 @@ function Step-RecentsPreparer {
     $file = Join-Path $Work 'Essai Shinku Recent.txt'
     [IO.File]::WriteAllText($file, 'essai shinku', $Utf8)
     [EssaiShell]::AddRecent($file)
+    $route = 'SHAddToRecentDocs'
     $deadline = (Get-Date).AddSeconds(15)
     $link = $null
     while ((Get-Date) -lt $deadline) {
@@ -1050,34 +1237,56 @@ function Step-RecentsPreparer {
         if ($null -ne $link) { break }
         Start-Sleep -Milliseconds 300
     }
-    if ($null -eq $link) { Fail "attendu : SHAddToRecentDocs pose un raccourci « Essai Shinku Recent*.lnk » dans Recent ; vu : aucun en 15 s" }
+    if ($null -eq $link) {
+        # Windows a ignoré SHAddToRecentDocs (processus élevé, réglage des éléments récents...) : le script pose lui-même un raccourci.
+        Say '  SHAddToRecentDocs n''a pas créé de raccourci en 15 s : repli, le script crée lui-même un raccourci dans Recent'
+        $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $RecentFolder 'Essai Shinku Recent.txt.lnk'))
+        $shortcut.TargetPath = $file
+        $shortcut.Save()
+        $route = 'repli : raccourci créé par le script (WScript.Shell), SHAddToRecentDocs n''en a pas créé'
+        $link = Get-ChildItem -LiteralPath $RecentFolder -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Essai Shinku Recent*.lnk' } | Select-Object -First 1
+        if ($null -eq $link) { Fail "attendu : un raccourci « Essai Shinku Recent*.lnk » dans Recent ; vu : aucun, même après le repli" }
+    }
     $count = Get-RecentCount
     Set-StateValue 'recentAvant' ([string]$count)
-    Proof "un fichier récent est posé (SHAddToRecentDocs, chemin) : raccourci $($link.Name), $count raccourci(s) dans Recent"
+    Proof "un fichier récent est posé (voie : $route) : raccourci $($link.Name), $count raccourci(s) dans Recent"
 
     # Un dossier épinglé à l'Accès rapide, si la machine le permet.
     $pinned = Join-Path $Work 'Essai Shinku Epingle'
     [void][IO.Directory]::CreateDirectory($pinned)
-    $pinResult = 'pas essayé'
+    $wanted = Get-ShellPath $pinned
+    $invoked = $false
+    $seen = $false
+    $pinError = ''
+    $listed = @()
     try {
         $shell = New-Object -ComObject Shell.Application
         $item = $shell.Namespace((Split-Path -Parent $pinned)).ParseName((Split-Path -Leaf $pinned))
+        if ($null -eq $item) { throw "le Shell ne trouve pas le dossier $pinned" }
+        try { Say "  verbes du dossier : $((@($item.Verbs() | ForEach-Object { $_.Name }) -join ' | '))" } catch { }
         $item.InvokeVerb('pintohome')
+        $invoked = $true
         $deadline = (Get-Date).AddSeconds(15)
-        $seen = $false
         while ((Get-Date) -lt $deadline -and -not $seen) {
             $paths = Get-QuickAccessPaths
-            if ($null -ne $paths -and ($paths -contains $pinned)) { $seen = $true } else { Start-Sleep -Milliseconds 400 }
+            if ($null -ne $paths) { $listed = @($paths) }
+            if (Test-Listed $paths @($wanted, $pinned)) { $seen = $true } else { Start-Sleep -Milliseconds 400 }
         }
-        if ($seen) { $pinResult = 'épinglé' } else { $pinResult = 'le verbe pintohome n''a pas fait apparaître le dossier dans l''Accès rapide en 15 s' }
     } catch {
-        $pinResult = "impossible : $($_.Exception.Message)"
+        $pinError = $_.Exception.Message
     }
-    if ($pinResult -eq 'épinglé') {
+    if ($invoked) {
+        # Noté dès que le verbe a été appelé : le nettoyage désépingle même si la liste ne l'a pas montré.
         Set-StateValue 'epingle' $pinned
-        Proof "un dossier est épinglé à l'Accès rapide (verbe pintohome) : $pinned"
+    }
+    if ($seen) {
+        Set-StateValue 'epingleVu' '1'
+        Proof "un dossier est épinglé à l'Accès rapide (verbe pintohome) : $wanted"
+    } elseif ($invoked) {
+        $shown = (@($listed | Select-Object -First 12)) -join ' | '
+        Proof "ÉPINGLÉ NON VU : le verbe pintohome a été appelé sans erreur, mais ni « $wanted » ni « $pinned » n'est dans l'Accès rapide après 15 s (chemins vus : $shown) ; la preuve « l'épinglé reste » n'est pas faite ici ; l'essai continue"
     } else {
-        Proof "ÉPINGLAGE IMPOSSIBLE sur cette machine ($pinResult) : la preuve « l'épinglé reste » ne pourra pas être faite ici ; l'essai continue"
+        Proof "ÉPINGLAGE IMPOSSIBLE sur cette machine : le verbe pintohome a échoué ($pinError) ; la preuve « l'épinglé reste » n'est pas faite ici ; l'essai continue"
     }
     Show-RecentFolders 'avant'
 }
@@ -1090,17 +1299,20 @@ function Step-RecentsVerifier {
     $later = Get-RecentCount
     $leftover = @(Get-ChildItem -LiteralPath $RecentFolder -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Essai Shinku Recent*.lnk' })
     Show-RecentFolders 'après'
-    if ($leftover.Count -gt 0) { Fail "attendu : le raccourci posé a disparu de Recent ; vu : $($leftover[0].Name) est toujours là ($now raccourci(s) juste après, $later deux secondes après)" }
-    Proof "le récent posé a disparu : $before raccourci(s) avant, $now juste après l'effacement, $later deux secondes plus tard (SHAddToRecentDocs(NULL) $(if ($now -eq $later) { 'est synchrone' } else { 'a continué après le retour du cœur' }))"
-    if ($state.ContainsKey('epingle')) {
+    if ($leftover.Count -gt 0) { Mismatch "attendu : le raccourci posé a disparu de Recent ; vu : $($leftover[0].Name) est toujours là ($now raccourci(s) à la première lecture, $later deux secondes après)" }
+    # Pas de verdict sur le délai : cette lecture vient bien après le retour du cœur. Ce qui mesure SHAddToRecentDocs(NULL),
+    # c'est l'issue de la page (le cœur relit jusqu'à 5 fois à 100 ms : « Effacé » veut dire zéro raccourci dans ce délai).
+    Proof "le récent posé a disparu : $before raccourci(s) avant, $now à la première lecture de cette vérification, $later deux secondes plus tard ; l'issue affichée par la page est journalisée par le pilote"
+    if ($state.ContainsKey('epingle') -and $state['epingleVu'] -eq '1') {
         $paths = Get-QuickAccessPaths
-        if ($null -eq $paths) { Fail 'attendu : l''Accès rapide se lit encore ; vu : Namespace renvoie rien' }
-        if (-not ($paths -contains $state['epingle'])) {
-            Fail "attendu : le dossier épinglé à l'Accès rapide est toujours là ; vu : il a disparu avec « Fichiers et dossiers récents » (la conception T5 : recent devient alors un bouton vers les Options de l'Explorateur)"
+        if ($null -eq $paths) {
+            Mismatch 'attendu : l''Accès rapide se lit encore ; vu : Namespace renvoie rien'
+        } elseif (-not (Test-Listed $paths @((Get-ShellPath $state['epingle']), $state['epingle']))) {
+            Mismatch "attendu : le dossier épinglé à l'Accès rapide est toujours là ; vu : il a disparu avec « Fichiers et dossiers récents » (la conception T5 : recent devient alors un bouton vers les Options de l'Explorateur) ; chemins vus : $((@($paths | Select-Object -First 12)) -join ' | ')"
         }
-        Proof "le dossier épinglé à l'Accès rapide est toujours là après l'effacement des récents ($($paths.Count) élément(s) dans l'Accès rapide)"
+        Proof "le dossier épinglé à l'Accès rapide est toujours là après l'effacement des récents ($(@($paths).Count) élément(s) dans l'Accès rapide)"
     } else {
-        Proof 'MESURE : rien n''avait pu être épinglé, la preuve « l''épinglé reste » n''est pas faite sur cette machine'
+        Proof 'MESURE : rien n''avait pu être épinglé (ou vu épinglé), la preuve « l''épinglé reste » n''est pas faite sur cette machine'
     }
 }
 
@@ -1129,8 +1341,8 @@ function Step-PressePapiersPreparer {
 
 function Step-PressePapiersVerifier {
     $read = "$(Get-Clipboard -Raw)"
-    if ($read.Trim() -ne '') { Fail "attendu : le presse-papiers est vide ; vu : « $($read.Trim()) »" }
-    Proof "le presse-papiers est vide après l'effacement ; historique de Windows : $(Get-ClipboardHistoryText)"
+    if ($read.Trim() -ne '') { Mismatch "attendu : le presse-papiers est vide ; vu : « $($read.Trim()) »" }
+    Proof "le presse-papiers est lu : « $($read.Trim()) » (attendu : vide) ; historique de Windows : $(Get-ClipboardHistoryText)"
     # Une mesure : ce que rend ClearHistory() depuis une application de bureau non empaquetée (ce script en est une).
     try {
         [void][Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType = WindowsRuntime]
@@ -1151,13 +1363,15 @@ function Step-ChromeCreer {
     }
     Say "  Chrome : $chrome"
     if (@(Get-ChromeProcesses).Count -gt 0) { Fail 'attendu : Chrome est fermé ; vu : un processus chrome.exe tourne' }
+    # Chrome crée lui-même son User Data (ou en copie le modèle qu'il a créé).
     Initialize-UserData
-    # Lancé sans fenêtre, avec un jeton ordinaire, jusqu'à ce que son profil existe.
-    Start-Chrome 'chrome-creer' { Test-Path -LiteralPath (Join-Path $DefaultProfile 'History') } 'Chrome crée son profil (Default\History)'
-    Start-Sleep -Seconds 3
-    Stop-Chrome
+    if (-not (Test-Path -LiteralPath (Join-Path $DefaultProfile 'History'))) {
+        Start-Chrome 'chrome-creer' { Test-Path -LiteralPath (Join-Path $DefaultProfile 'History') } 'Chrome crée son profil (Default\History)'
+        Start-Sleep -Seconds 3
+        Stop-Chrome
+    }
     $files = @(Get-ChildItem -LiteralPath $DefaultProfile -File -Force -ErrorAction SilentlyContinue | ForEach-Object { '{0} ({1})' -f $_.Name, $_.Length })
-    Proof "Chrome a créé son profil sans fenêtre puis s'est arrêté (plus aucun processus chrome.exe) : $($files -join ', ')"
+    Proof "Chrome a créé son profil sans fenêtre (--user-data-dir = $UserData) puis s'est arrêté (plus aucun processus chrome.exe) : $($files -join ', ')"
 }
 
 function Step-ChromeOuvrir {
@@ -1188,16 +1402,18 @@ function Step-ChromeAvant {
 }
 
 function Step-ChromeApres {
-    if (@(Get-ChromeProcesses).Count -gt 0) { Fail 'attendu : Chrome est fermé après l''effacement ; vu : un processus chrome.exe tourne' }
+    if (@(Get-ChromeProcesses).Count -gt 0) { Mismatch 'attendu : Chrome est fermé après l''effacement ; vu : un processus chrome.exe tourne' }
     $state = Get-State
     $wasThere = @($state['chromeLot'] -split '\|' | Where-Object { $_ })
     $still = @($wasThere | Where-Object { Test-Path -LiteralPath (Join-Path $DefaultProfile $_) -PathType Leaf })
-    if ($still.Count -gt 0) { Fail "attendu : les $($wasThere.Count) fichiers de la règle ont disparu ; vu : toujours là : $($still -join ', ')" }
-    Proof "les $($wasThere.Count) fichiers de la règle ont disparu de Default : $($wasThere -join ', ')"
+    if ($still.Count -gt 0) { Mismatch "attendu : les $($wasThere.Count) fichiers de la règle ont disparu ; vu : toujours là : $($still -join ', ')" }
+    Proof "fichiers de la règle de Default qui étaient là avant ($($wasThere.Count)) : $($wasThere -join ', ') ; encore là : $($still.Count)"
     $before = Load-Tree 'chrome-avant'
     $after = Get-ChromeProtected
     Assert-Tree 'Bookmarks, Login Data, Preferences et Local State entre juste avant et juste après l''effacement' $before $after @() 'empreintes identiques'
-    Proof "Bookmarks, Login Data, Preferences, Local State et les autres fichiers protégés ($($after.Count)) ont la même empreinte SHA-256 juste avant et juste après l'effacement"
+    Proof "mêmes empreintes SHA-256 juste avant et juste après l'effacement pour les fichiers que Chrome avait créés : $((@($after.Keys | Sort-Object)) -join ', ')"
+    # Constat : on s'arrête là, sans relancer Chrome.
+    if ($Constat) { return }
     # Il redémarre, et recrée son historique.
     Remove-Item -LiteralPath (Join-Path $DefaultProfile 'History') -Force -ErrorAction SilentlyContinue
     Start-Chrome 'chrome-apres' { Test-Path -LiteralPath (Join-Path $DefaultProfile 'History') } 'Chrome redémarre et recrée Default\History'
@@ -1209,7 +1425,7 @@ function Step-ChromeApres {
 
 # ── Tout remettre en place ─────────────────────────────────────────────────
 
-function Step-Nettoyer {
+function Step-Nettoyer([bool]$Final) {
     $problems = New-Object System.Collections.ArrayList
     $state = Get-State
     $run = {
@@ -1222,21 +1438,22 @@ function Step-Nettoyer {
     & $run 'processus qui tient un fichier' { Stop-Holder }
     if ($state['chromeUsed'] -eq '1') { & $run 'Chrome' { Stop-Chrome } }
     & $run 'fenêtre de l''Explorateur' {
-        foreach ($window in @(Get-ExplorerWindows 'vue-explorateur')) { try { $window.Quit() } catch { } }
+        [void][EssaiFenetres]::Close($ViewLeaf)
+        Wait-ExplorerClosed 10
+        $left = [EssaiFenetres]::Count($ViewLeaf)
+        if ($left -gt 0) { Fail "$left fenêtre(s) de l'Explorateur « $ViewLeaf » encore ouverte(s)" }
     }
     if ($state.ContainsKey('epingle')) {
         & $run 'dossier épinglé' {
             $shell = New-Object -ComObject Shell.Application
             $folder = $shell.Namespace($QuickAccess)
+            $names = @((Get-ShellPath $state['epingle']), $state['epingle'])
             if ($null -ne $folder) {
-                foreach ($item in @($folder.Items())) { if ([string]$item.Path -eq $state['epingle']) { $item.InvokeVerb('unpinfromhome') } }
+                foreach ($item in @($folder.Items())) { if (Test-Listed @([string]$item.Path) $names) { $item.InvokeVerb('unpinfromhome') } }
             }
         }
     }
-    if ($state['lienRegistre'] -eq '1' -or [EssaiRegistre]::IsLink("$ExplorerKey\RunMRU")) {
-        & $run 'lien de registre RunMRU' { if ([EssaiRegistre]::IsLink("$ExplorerKey\RunMRU")) { [EssaiRegistre]::DeleteLink("$ExplorerKey\RunMRU") } }
-    }
-    & $run 'cible du lien de registre' { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($LinkTarget, $false) }
+    & $run 'piège du registre (lien RunMRU et sa cible)' { Remove-RegistryTrap }
     if ($state['registreTouche'] -eq '1') {
         & $run 'valeurs des trois clés' {
             foreach ($name in $TypedKeys) {
@@ -1248,14 +1465,34 @@ function Step-Nettoyer {
     & $run 'raccourci récent' {
         foreach ($link in @(Get-ChildItem -LiteralPath $RecentFolder -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'Essai Shinku Recent*.lnk' })) { Remove-Item -LiteralPath $link.FullName -Force }
     }
-    if ($state['userDataOurs'] -eq '1') { & $run 'User Data de l''essai' { Remove-TreeSafe $UserData } }
-    if ($state['aside'] -eq '1') {
+    if ($state['userDataOurs'] -eq '1') {
+        & $run 'User Data de l''essai' {
+            Remove-TreeSafe $UserData
+            Clear-StateValue 'userDataOurs'
+        }
+    }
+    if ($Final -and $state['aside'] -eq '1') {
         & $run 'User Data d''origine' {
             if (Test-Path -LiteralPath $UserData) { Fail "le User Data de l'essai est encore là : $UserData" }
             [IO.Directory]::Move($Aside, $UserData)
+            Clear-StateValue 'aside'
         }
     }
-    & $run 'dossier de travail' { Remove-TreeSafe $Work }
+    & $run 'dossier de la fenêtre de l''Explorateur' { Remove-TreeSafe $ViewFolder }
+    if ($problems.Count -gt 0) {
+        # L'état est gardé : le nettoyage suivant sait encore ce qu'il reste à remettre.
+        Fail "nettoyage incomplet (l'état est gardé dans $StateFile) : $($problems -join ' ; ')"
+    }
+    if ($Final) {
+        & $run 'dossier de travail' { Remove-TreeSafe $Work }
+    } else {
+        & $run 'dossier de travail' {
+            foreach ($child in @(Get-ChildItem -LiteralPath $Work -Force -ErrorAction SilentlyContinue)) {
+                if ($child.Name -ne 'etat.txt' -and $child.Name -ne 'modele-chrome') { Remove-TreeSafe $child.FullName }
+            }
+            foreach ($key in @('holderPid', 'epingle', 'epingleVu', 'explorateur', 'registreTouche', 'lienRegistre', 'recentAvant', 'remplaceId', 'chromeUsed', 'chromeLot', 'lockfileMode')) { Clear-StateValue $key }
+        }
+    }
     if ($problems.Count -gt 0) { Fail "nettoyage incomplet : $($problems -join ' ; ')" }
     Say 'machine d''essai remise en place'
 }
@@ -1266,7 +1503,8 @@ $exitCode = 0
 try {
     Say "étape $Etape sur Windows $([Environment]::OSVersion.Version)"
     switch ($Etape) {
-        'nettoyer' { Step-Nettoyer }
+        'nettoyer' { Step-Nettoyer $true }
+        'nettoyer-scenario' { Step-Nettoyer $false }
         'profil-preparer' { Step-ProfilPreparer }
         'profil-verifier' { Step-ProfilVerifier }
         'verrou-fichier-preparer' { Step-VerrouFichierPreparer }

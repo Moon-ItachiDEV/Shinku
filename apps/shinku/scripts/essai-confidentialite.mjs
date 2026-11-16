@@ -121,9 +121,17 @@ async function until(what, timeout, probe, interval = 200) {
 
 // ── Le garde-fou ───────────────────────────────────────────────────────────
 
-if (WITHOUT_SCRIPT && options.adresse === undefined) {
-  console.error('--sans-script ne vaut que pour la démo : donne aussi --adresse. Rien n’a été fait.');
-  process.exit(2);
+// `--sans-script` ne sert qu'à mettre le pilote au point contre la démo : une adresse de la machine locale, et jamais
+// le vrai shinku.exe (qui, lui, efface pour de bon la ligne visée).
+if (WITHOUT_SCRIPT) {
+  const local = /^http:\/\/(127\.0\.0\.1|localhost):\d+(\/|$)/.test(options.adresse ?? '');
+  const real = path.basename(options.programme ?? '').toLowerCase() === 'shinku.exe';
+  if (!local || real) {
+    console.error(
+      '--sans-script ne vaut que pour la démo : il exige --adresse http://127.0.0.1:<port>/ (ou localhost) et refuse le vrai shinku.exe. Rien n’a été fait.',
+    );
+    process.exit(2);
+  }
 }
 if (!WITHOUT_SCRIPT && process.env.SHINKU_ESSAI_CONFIDENTIALITE !== '1') {
   console.log('Cet essai efface vraiment (historique de Chrome mis de côté, clés du registre, récents, presse-papiers) :');
@@ -694,9 +702,17 @@ async function erase(window, row, between) {
   await window.click(EXPECTED.confirm, `${DOM.dialog} ${DOM.askConfirm}`, EXPECTED.confirm);
   const finished = await until('l’effacement se termine (la carte « Dernier effacement » apparaît)', 180_000, async () => {
     const now = await window.privacy();
-    return !now.busy && now.last.length > 0 && (now.dialog === null || !now.dialog.open) ? now : null;
+    const closed = now.dialog === null || !now.dialog.open;
+    if (closed && !now.busy && now.last.length === 0 && now.warnings.some((text) => shows(text, EXPECTED.listChanged))) {
+      // La page a vu que ce qui allait partir n'est plus ce qui a été listé : rien n'a été effacé.
+      fail(`la confirmation s'est refermée d'elle-même (« ${EXPECTED.listChanged} ») : la vue a changé entre la liste et le clic, rien n'a été effacé\n${describeScreen(now)}`);
+    }
+    return !now.busy && now.last.length > 0 && closed ? now : null;
   }, 300);
   await window.capture('apres');
+  if (!shows(finished.lastTitle, EXPECTED.lastTitle) || !/\d{1,2}\s*h\s*\d{2}/.test(finished.lastTitle)) {
+    fail(`attendu : le titre de la carte est « ${EXPECTED.lastTitle}, à 14 h 32 » (avec l'heure) ; vu : « ${finished.lastTitle} »`);
+  }
   if (finished.last.length !== 1) {
     fail(`attendu : une seule ligne dans « Dernier effacement » ; vu : ${finished.last.length}\n${describeScreen(finished)}`);
   }
@@ -808,21 +824,32 @@ async function playScenario(scenario) {
     const row = pickRow(screen, target);
 
     if (scenario.row === 'inert' || scenario.row === 'maybe') {
+      if (scenario.row === 'inert' && STRICT) {
+        // La ligne doit être là, sans case, et la carte de Chrome doit dire pourquoi (« Ferme Chrome… ») : une ligne
+        // absente est un échec (un défaut qui ferait disparaître le bloc passerait sinon pour une réussite).
+        if (row === null) {
+          fail(`attendu : ${target.label} est présente et inerte, avec « ${EXPECTED.running} » ; vu : la page ne la montre pas\n${describeScreen(screen)}`);
+        }
+        if (row.kind !== 'inert') {
+          fail(`attendu : ${target.label} est inerte (pas de case) ; vu : ${row.kind === 'check' ? `une case « ${row.label} »` : `une ligne ${row.kind}`}\n${describeScreen(screen)}`);
+        }
+        const warning = screen.running.find((one) => one.block === EXPECTED.chrome);
+        if (warning === undefined || !shows(warning.text, EXPECTED.running)) {
+          fail(`attendu : la carte de Chrome dit « ${EXPECTED.running} » ; vu : ${warning === undefined ? 'aucune phrase' : `« ${warning.text} »`}\n${describeScreen(screen)}`);
+        }
+        done(`${target.label} est présente, sans case, et la carte de Chrome dit « ${warning.text.split('.')[0]}. »`);
+        note(`mode de partage du lockfile : voir la ligne « FAIT : lockfile tenu » de l'étape de préparation`);
+        return;
+      }
       if (row === null || row.kind !== 'check') {
         done(
           row === null
             ? `la page ne propose pas ${target.label} (rien à cocher)`
             : `${target.label} est sans case (${row.kind === 'inert' ? 'inerte' : row.kind}) : « ${row.sub || row.text} »`,
         );
-        if (scenario.name.startsWith('verrou-lockfile')) {
-          note(`mode de partage du lockfile : voir la ligne « FAIT : lockfile tenu » de l'étape de préparation`);
-        }
         return;
       }
       if (scenario.row === 'inert') {
-        if (STRICT) {
-          fail(`attendu : ${target.label} est inerte (pas de case) ; vu : la page propose une case « ${row.label} »\n${describeScreen(screen)}`);
-        }
         note(`(démo) ${target.label} a une case ; sur la machine d'essai elle devrait être inerte`);
         return;
       }
@@ -837,13 +864,29 @@ async function playScenario(scenario) {
     if (scenario.name === 'presse-papiers') {
       note(`issue affichée pour le presse-papiers : « ${result.outcome} »`);
     }
-  }).catch(async (error) => {
-    // Une étape de préparation a pu laisser un processus en marche : la vérification n'a plus de sens, mais on l'essaie quand même.
+    if (scenario.name === 'recents') {
+      // Ce qui mesure SHAddToRecentDocs(NULL) : le cœur relit Recent jusqu'à 5 fois à 100 ms après l'appel, et dit « Effacé »
+      // seulement s'il n'y voit plus aucun raccourci dans ce délai. Le script, lui, compte les raccourcis juste après.
+      note(`issue affichée pour les récents : « ${result.outcome} » (« ${EXPECTED.outcomes.erased} » = zéro raccourci vu par le cœur dans ses 5 relectures à 100 ms ; « ${EXPECTED.outcomes.partial} » ou « ${EXPECTED.outcomes.failed} » = il en restait)`);
+    }
+  }).catch((error) => {
     if (scenario.between !== undefined && error instanceof Failure && error.message.includes('a relu la vue')) {
       unproven.push(`${scenario.name} : la page a relu la vue avant le clic (profil remplacé : « Ce profil a changé » non prouvé)`);
     }
     throw error;
-  });
+  }).then(
+    () => undefined,
+    async (error) => {
+      // La fenêtre a échoué : la machine est quand même relue, en mode « constat » (ce qui a disparu ou changé, sans
+      // verdict), pour savoir quels fichiers sont partis avant que le nettoyage ne les efface. Puis l'erreur repart.
+      try {
+        await runStep(scenario.after, ['-Constat']);
+      } catch (constat) {
+        note(`le constat de la machine n'a pas pu être fait : ${constat.message.split('\n')[0]}`);
+      }
+      throw error;
+    },
+  );
   await runStep(scenario.after);
 }
 
@@ -857,7 +900,9 @@ async function playRealChrome() {
     note('Chrome n’est pas installé : la preuve du vrai Chrome n’est pas faite, l’essai continue');
     return;
   }
-  // Chrome ouvert : sa ligne doit être inerte (le lockfile d'un vrai Chromium est vu tenu).
+  // Chrome ouvert : sa ligne doit être inerte (le lockfile d'un vrai Chromium est vu tenu). Un écart ici n'empêche pas
+  // la suite (l'effacement réel) : il est gardé, et relancé à la fin.
+  let opened = null;
   await runStep('chrome-ouvrir');
   await withWindow({ ...scenario, name: 'chrome-ouvert' }, async (window) => {
     const screen = await openPrivacy(window);
@@ -874,7 +919,7 @@ async function playRealChrome() {
     }
     done(`Chrome ouvert : ${rows.length} ligne(s) de Chrome dont ${tickable.length} avec case ; avertissement : ${warned ? screen.running.find((one) => one.block === EXPECTED.chrome).text : 'aucun'}`);
   }).catch((error) => {
-    failures.push(`chrome-ouvert : ${error.message.split('\n')[0]}`);
+    opened = error;
     say(`✗ chrome-ouvert : ${error.message.split('\n')[0]}`);
     if (error.message.includes('\n')) {
       quote(error.message.split('\n').slice(1).join('\n'));
@@ -882,7 +927,7 @@ async function playRealChrome() {
   });
   await runStep('chrome-fermer');
   // Chrome fermé : la fenêtre efface son historique ; Bookmarks, Login Data, Preferences, Local State ne bougent pas.
-  await withWindow(scenario, async (window) => {
+  const erased = withWindow(scenario, async (window) => {
     const screen = await openPrivacy(window);
     quote(describeScreen(screen), 60);
     const row = pickRow(screen, TARGETS.chromeReal);
@@ -893,7 +938,21 @@ async function playRealChrome() {
     const result = await erase(window, row);
     checkOutcome(scenario, result.outcome);
   });
+  try {
+    await erased;
+  } catch (error) {
+    // La fenêtre a échoué : ce que Chrome a perdu ou gardé est relevé quand même (constat, sans verdict).
+    try {
+      await runStep('chrome-apres', ['-Constat'], { timeout: 120_000 });
+    } catch (constat) {
+      note(`le constat de la machine n'a pas pu être fait : ${constat.message.split('\n')[0]}`);
+    }
+    throw error;
+  }
   await runStep('chrome-apres', [], { timeout: 300_000 });
+  if (opened !== null) {
+    throw opened;
+  }
 }
 
 // ── Programme ──────────────────────────────────────────────────────────────
@@ -938,12 +997,14 @@ async function main() {
       if (error instanceof Failure && error.message.includes('\n')) {
         quote(error.message.split('\n').slice(1).join('\n'));
       }
-      // Ce que le scénario a laissé (un processus qui tient un fichier, un User Data d'essai) : remis en place avant le suivant.
-      try {
-        await runStep('nettoyer', [], { timeout: 120_000 });
-      } catch (cleaning) {
-        say(`✗ le nettoyage après ${name} a échoué : ${cleaning.message.split('\n')[0]}`);
-      }
+    }
+    // Après chaque scénario, réussi ou non : ce qu'il a posé (registre, récents, épinglé, fenêtre, User Data d'essai, processus
+    // qui tient un fichier) est remis en place ; aucun scénario ne dépend de ce que le précédent a laissé.
+    try {
+      await runStep('nettoyer-scenario', [], { timeout: 120_000 });
+    } catch (cleaning) {
+      failures.push(`nettoyage après ${name} : ${cleaning.message.split('\n')[0]}`);
+      say(`✗ le nettoyage après ${name} a échoué : ${cleaning.message.split('\n')[0]}`);
     }
   };
 

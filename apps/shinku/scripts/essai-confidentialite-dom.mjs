@@ -36,7 +36,8 @@ export const DOM = {
   /** Une ligne sans case : « Rien à effacer » (`pempty`) ou inerte (`pinert` : navigateur ouvert, trace illisible). */
   rowInert: '.row.pinert',
   rowEmpty: '.row.pempty',
-  /** La carte « Dernier effacement » : une ligne par trace, son bloc, sa trace, son issue en deux mots et son aide. */
+  /** La carte « Dernier effacement, à 14 h 32 » : son titre (daté), puis une ligne par trace, son bloc, sa trace, son issue en deux mots et son aide. */
+  lastTitle: 'h2[id="privacy-last-title"]',
   last: '.plast',
   lastBlock: '.t1',
   lastTrace: '.t2',
@@ -72,6 +73,10 @@ export const EXPECTED = {
   clipboard: 'Presse-papiers',
   /** Le début de la phrase d'un navigateur ouvert (« Ferme Chrome pour effacer son historique… »). */
   running: 'pour effacer son historique',
+  /** Le début du titre de la carte (il porte ensuite l'heure : « Dernier effacement, à 14 h 32 »). */
+  lastTitle: 'Dernier effacement',
+  /** La phrase d'une confirmation qui se referme parce que la liste a changé. */
+  listChanged: 'La liste a changé',
   /** Les issues, en deux mots, telles que la carte « Dernier effacement » les écrit. */
   outcomes: {
     erased: 'Effacé',
@@ -137,6 +142,9 @@ export function readPrivacy(dom) {
     intro: text(document.querySelector(dom.intro)),
     rows,
     running,
+    // Toutes les phrases d'avertissement de la page (celles des navigateurs ouverts, et un refus comme « La liste a changé »).
+    warnings: [...document.querySelectorAll(dom.running)].map((warning) => text(warning)),
+    lastTitle: plain(document.querySelector(dom.lastTitle)),
     erase: erase === null ? null : { label: text(erase), inert: erase.getAttribute('aria-disabled') === 'true' },
     last: [...document.querySelectorAll(dom.last)].map((line) => ({
       block: text(line.querySelector(dom.lastBlock)),

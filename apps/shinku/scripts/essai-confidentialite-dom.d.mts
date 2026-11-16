@@ -19,6 +19,7 @@ export const DOM: Record<
   | 'check'
   | 'rowInert'
   | 'rowEmpty'
+  | 'lastTitle'
   | 'last'
   | 'lastBlock'
   | 'lastTrace'
@@ -39,6 +40,8 @@ export const EXPECTED: {
   confirm: string;
   cancel: string;
   direct: string;
+  lastTitle: string;
+  listChanged: string;
   askTitleOne: string;
   directOne: string;
   chrome: string;
@@ -69,6 +72,8 @@ export interface PrivacyScreen {
   intro: string;
   rows: PrivacyRow[];
   running: Array<{ block: string; text: string }>;
+  warnings: string[];
+  lastTitle: string;
   erase: { label: string; inert: boolean } | null;
   last: Array<{ block: string; trace: string; help: string; outcome: string }>;
   dialog: {

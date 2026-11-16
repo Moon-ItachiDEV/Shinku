@@ -302,16 +302,21 @@ jobs:
       # est installé, est lancé puis fermé par l'essai.
       - name: Essai de la confidentialité
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 20
         working-directory: apps/shinku
         env:
           SHINKU_ESSAI_CONFIDENTIALITE: '1'
         run: node scripts/essai-confidentialite.mjs --programme "$env:ProgramFiles\Shinku\shinku.exe" --captures "$env:RUNNER_TEMP\captures-confidentialite"
 
-      # Quoi qu'il arrive : le User Data de Chrome d'origine, les trois clés du
-      # registre, les récents, l'Accès rapide et le presse-papiers sont remis
-      # en place, et plus aucun processus de l'essai ne tient un fichier.
+      # Quoi qu'il arrive : le User Data de Chrome d'origine est remis, l'essai
+      # défait ses pièges (lien de registre, dossier épinglé, fenêtre de
+      # l'Explorateur, raccourci récent) et plus aucun processus ne tient un
+      # fichier. Les trois clés du registre et les récents sont VIDÉS, pas
+      # remis dans leur état d'avant, et le presse-papiers n'est pas touché :
+      # la machine est jetable.
       - name: Remettre la machine d'essai en place (confidentialité)
         if: always()
+        timeout-minutes: 5
         working-directory: apps/shinku
         env:
           SHINKU_ESSAI_CONFIDENTIALITE: '1'

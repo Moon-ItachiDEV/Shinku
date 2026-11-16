@@ -129,7 +129,8 @@ test('essai de la Confidentialité : après un effacement, la carte « Dernier e
     { id: 'w-typed', outcome: 'erased' },
   ] as never);
   assert.equal(lines.length, 2);
-  const tree = page({ privacyLast: lines, privacyLineOutcomes: true });
+  const tree = page({ privacyLast: lines, privacyLineOutcomes: true, privacyLastAt: new Date(2026, 10, 16, 14, 32).getTime() });
+  assert.ok(contains(found(tree, DOM.lastTitle, 'titre de la carte')[0], `${EXPECTED.lastTitle}, à 14 h 32`));
   const last = found(tree, DOM.last, 'lignes du dernier effacement');
   assert.equal(last.length, 2);
   const [first, second] = last as [Node, Node];
@@ -185,6 +186,9 @@ test('essai de la Confidentialité : chaque texte attendu est écrit dans fr.ts,
   written(EXPECTED.confirm, fr.privacy.confirm.confirm);
   written(EXPECTED.cancel, fr.privacy.confirm.cancel);
   written(EXPECTED.askTitleOne, fr.privacy.confirm.titleOne);
+  written(EXPECTED.lastTitle, fr.privacy.lastTitle);
+  assert.ok(flat(fr.privacy.lastTitleAt(14, 32)).startsWith(flat(EXPECTED.lastTitle)));
+  assert.ok(flat(fr.privacy.refused.listChanged).startsWith(flat(EXPECTED.listChanged)));
   assert.ok(flat(fr.privacy.confirm.direct).startsWith(flat(EXPECTED.direct)));
   assert.ok(flat(fr.privacy.confirm.directOne).startsWith(flat(EXPECTED.directOne)));
   written(EXPECTED.chrome, fr.privacy.browser.chrome);
@@ -270,29 +274,29 @@ test('essai de la Confidentialité : le garde-fou est en tête du script et du p
   assert.ok(check < driver.indexOf('async function runStep'), 'le pilote vérifie avant de savoir lancer quoi que ce soit');
   assert.ok(check < driver.indexOf('process.exitCode = await main()'));
   // Sans le script, le pilote ne vaut que pour la démo (il ne peut alors rien effacer).
-  assert.match(driver, /if \(WITHOUT_SCRIPT && options\.adresse === undefined\)/);
+  assert.match(driver, /if \(WITHOUT_SCRIPT\) \{\n  const local = /);
 });
 
 test('essai de la Confidentialité : chaque étape que le pilote lance existe dans le script, est dispatchée, et imprime une ligne « FAIT : »', () => {
   const known = steps();
-  const used = new Set([...driver.matchAll(/'((?:[a-z]+-)+(?:preparer|verifier|remplacer|creer|ouvrir|fermer|avant|apres)|nettoyer)'/g)].map((one) => one[1] as string));
+  const used = new Set([...driver.matchAll(/'((?:[a-z]+-)+(?:preparer|verifier|remplacer|creer|ouvrir|fermer|avant|apres)|nettoyer(?:-scenario)?)'/g)].map((one) => one[1] as string));
   assert.ok(used.size >= 20, `le pilote lance au moins vingt étapes (vu : ${used.size})`);
   for (const step of used) {
     assert.ok(known.includes(step), `le pilote lance « ${step} » : le ValidateSet du script ne la connaît pas`);
   }
   for (const step of known) {
     assert.ok(used.has(step), `le script a une étape « ${step} » que le pilote ne lance jamais`);
-    const dispatched = new RegExp(`'${step}' \\{ (Step-[A-Za-z]+) \\}`).exec(ps1);
+    const dispatched = new RegExp(`'${step}' \\{ (Step-[A-Za-z]+)(?: \\$[a-z]+)? \\}`).exec(ps1);
     assert.ok(dispatched !== null, `l’étape « ${step} » n’a pas de ligne dans le switch`);
     const name = dispatched[1] as string;
-    const start = ps1.indexOf(`function ${name} {`);
+    const start = ps1.search(new RegExp(`^function ${name}\\b`, 'm'));
     assert.ok(start > 0, `${name} n’existe pas`);
     const body = ps1.slice(start, ps1.indexOf('\n}\n', start));
-    if (step !== 'nettoyer' && step !== 'chrome-fermer-sans-preuve') {
+    if (!step.startsWith('nettoyer')) {
       assert.ok(/\bProof /.test(body), `${name} n’imprime aucune ligne « FAIT : »`);
     }
   }
-  assert.match(ps1, /function Proof\(\[string\]\$Line\) \{ Write-Host "FAIT : \$Line" \}/);
+  assert.match(ps1, /function Proof\(\[string\]\$Line\) \{\n    if \(-not \$Constat\) \{ Write-Host "FAIT : \$Line"; return \}/);
   // Les deux paramètres du script que le pilote passe.
   assert.match(ps1, /\[ValidateSet\('Chromium', 'Aucun'\)\]\s*\[string\]\$Partage/);
   assert.ok(driver.includes("'-Partage', 'Chromium'") && driver.includes("'-Partage', 'Aucun'"));
@@ -387,4 +391,84 @@ test('la CI lance l’essai après l’essai de la fenêtre et avant la publicat
   assert.match(cleaningText, /name: captures-de-la-confidentialite/);
   // L'essai permanent, lui, ne change pas : même ligne qu'avant, sans la variable.
   assert.ok(workflow.includes('node scripts/essai-fenetre.mjs --programme "$env:ProgramFiles\\Shinku\\shinku.exe" --captures "$env:RUNNER_TEMP\\captures" --grand-vide'));
+});
+
+// ── Les corrections de la relecture ────────────────────────────────────────
+
+test('essai de la Confidentialité : chaque scénario est nettoyé après lui, la table des scénarios est figée, et le piège du registre est défait', () => {
+  const table = driver.slice(driver.indexOf('const SCENARIOS = ['), driver.indexOf('const unproven'));
+  const line = (name: string): string => table.split('\n').find((one) => one.includes(`name: '${name}'`)) ?? '';
+  // L'issue attendue de chaque scénario : une issue affaiblie (inUse -> measure) ferait passer un tout-ou-rien cassé.
+  const wanted: Record<string, string> = {
+    profil: "outcome: 'erased'",
+    'verrou-fichier': "outcome: 'inUse'",
+    'profil-remplace': "outcome: 'changed'",
+    registre: "outcome: 'erased'",
+    'registre-explorateur': "outcome: 'erased'",
+    recents: "outcome: 'erased'",
+    jonction: "outcome: 'refused'",
+    'lien-physique': "outcome: 'refused'",
+  };
+  for (const [name, outcome] of Object.entries(wanted)) {
+    assert.ok(line(name).includes(outcome), `${name} : ${outcome} attendu`);
+  }
+  for (const name of ['verrou-lockfile-chromium', 'verrou-lockfile-aucun']) {
+    assert.ok(line(name).includes("row: 'inert'"), `${name} : la ligne doit être inerte`);
+  }
+  // Le nettoyage de chaque scénario, réussi ou non : après le `try`/`catch` de `attempt`, pas dans le `catch`.
+  const attempt = driver.slice(driver.indexOf('const attempt = async'), driver.indexOf('try {\n    for (const scenario of SCENARIOS)'));
+  const cleaning = attempt.indexOf("runStep('nettoyer-scenario'");
+  assert.ok(cleaning > attempt.lastIndexOf('} catch (error) {'), 'le nettoyage n’est pas réservé aux échecs');
+  assert.ok(cleaning > attempt.indexOf('done(`${name} : fait`)'));
+  assert.ok(driver.includes("await runStep('nettoyer', [], { timeout: 120_000 })"), 'et un nettoyage final remet le User Data d’origine');
+  // Le lien de registre est défait par sa vérification, et la pose des valeurs refuse un lien resté.
+  const verifier = ps1.slice(ps1.indexOf('function Step-LienRegistreVerifier'), ps1.indexOf('# ── 4. Un profil remplacé'));
+  assert.ok(/finally \{[^}]*Remove-RegistryTrap/.test(verifier), 'la vérification défait le piège même après un écart');
+  assert.ok(ps1.slice(ps1.indexOf('function Remove-RegistryTrap'), ps1.indexOf('function Step-LienRegistreVerifier')).includes('DeleteLink'));
+  const typed = ps1.slice(ps1.indexOf('function Set-TypedValues'), ps1.indexOf('function Show-TypedCounts'));
+  assert.ok(typed.indexOf('IsLink') > 0 && typed.indexOf('IsLink') < typed.indexOf('CreateSubKey'), 'refuse de poser des valeurs à travers un lien');
+});
+
+test('essai de la Confidentialité : les dossiers d’essai quittent TEMP, l’épinglé se compare en chemins longs, et Chrome reçoit son --user-data-dir', () => {
+  const code = ps1.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+  assert.ok(!/\$env:TEMP/.test(code.replace(/\$Work = Join-Path[^\n]*\n/, '')), 'RUNNER~1 : la forme courte de TEMP n’est pas celle du Shell');
+  assert.ok(code.includes('$env:USERPROFILE') && code.includes('GetLongPathNameW'));
+  assert.ok(code.includes('.Self.Path') && code.includes('-ieq'), 'chemins longs, sans tenir compte de la casse');
+  // « impossible » seulement quand le verbe a échoué ; sinon « non vu » : une comparaison ratée ne l’affirme jamais.
+  assert.ok(/if \(\$invoked\) \{[\s\S]*?'epingle'/.test(code));
+  assert.ok(code.includes('ÉPINGLÉ NON VU') && code.includes('ÉPINGLAGE IMPOSSIBLE'));
+  assert.ok(code.includes('--user-data-dir={1}'), 'Chrome écrit dans le User Data de l’essai');
+  // Si Chrome est installé, il crée son User Data avant tout ; le faux Local State n'est écrit qu'en repli.
+  const install = ps1.slice(ps1.indexOf('function Install-BrowserState'), ps1.indexOf('function Initialize-FakeBrowser'));
+  assert.ok(install.indexOf("Start-Chrome 'chrome-modele'") > 0 && install.indexOf("Start-Chrome 'chrome-modele'") < install.lastIndexOf('WriteAllText'));
+  // L'Explorateur : EnumWindows et WM_CLOSE, pas Shell.Application.Windows().
+  assert.ok(code.includes('CabinetWClass') && code.includes('0x0010') && !code.includes('.Windows()'));
+  // Le repli des récents, le constat, et un nettoyage incomplet qui garde l'état.
+  assert.ok(code.includes('WScript.Shell') && code.includes('SHAddToRecentDocs n'));
+  assert.ok(/switch\]\$Constat/.test(code) && driver.includes("['-Constat']"));
+  const cleaning = ps1.slice(ps1.indexOf('function Step-Nettoyer'), ps1.indexOf('# ── Programme'));
+  assert.ok(cleaning.indexOf('nettoyage incomplet (l\'état est gardé') < cleaning.indexOf("& $run 'dossier de travail'"), 'l’état n’est supprimé qu’après avoir vérifié qu’il ne reste rien à remettre');
+  // Aucun verdict « synchrone » : il ne mesurait rien.
+  assert.ok(!/est synchrone/.test(code));
+});
+
+test('essai de la Confidentialité : --sans-script exige une adresse locale et refuse le vrai shinku.exe', () => {
+  const guard = driver.slice(driver.indexOf('if (WITHOUT_SCRIPT) {'), driver.indexOf('if (!WITHOUT_SCRIPT && process.env'));
+  assert.ok(guard.includes('(127\\.0\\.0\\.1|localhost):\\d+') && guard.includes("'shinku.exe'") && guard.includes('process.exit(2)'));
+  // La même expression, rejouée : seules les adresses de la machine locale passent.
+  const local = /^http:\/\/(127\.0\.0\.1|localhost):\d+(\/|$)/;
+  for (const good of ['http://127.0.0.1:8765/', 'http://localhost:5173', 'http://127.0.0.1:1/?privacy=few']) assert.ok(local.test(good), good);
+  for (const bad of ['http://tauri.localhost/', 'https://tauri.localhost/', 'http://127.0.0.1/', 'http://example.org:80/', 'http://localhost.evil.org:80/']) assert.ok(!local.test(bad), bad);
+});
+
+test('la CI : la variable ne passe jamais par GITHUB_ENV, et l’essai a un délai', () => {
+  assert.ok(!/GITHUB_ENV/.test(workflow.split('\n').filter((one) => one.includes('SHINKU_ESSAI_CONFIDENTIALITE')).join('\n')));
+  for (const step of workflow.split(/^ {6}- /m).filter((one) => one.includes('essai-confidentialite'))) {
+    assert.ok(!step.includes('GITHUB_ENV'), 'la variable ne doit pas fuir vers les étapes suivantes');
+    assert.ok(!step.includes('GITHUB_OUTPUT'));
+  }
+  assert.match(workflow, /- name: Essai de la confidentialité\n {8}if: [^\n]*\n {8}timeout-minutes: 20\n/);
+  assert.match(workflow, /- name: Remettre la machine d'essai en place \(confidentialité\)\n {8}if: always\(\)\n {8}timeout-minutes: 5\n/);
+  // Le commentaire dit la vérité : les trois clés et les récents sont vidés, pas remis.
+  assert.ok(workflow.includes('VIDÉS, pas'));
 });
