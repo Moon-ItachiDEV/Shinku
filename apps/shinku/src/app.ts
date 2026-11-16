@@ -234,6 +234,8 @@ export class App {
   private startupSayTimer: number | undefined;
   /** La relecture de la vue tant que le cœur attend la personne : une seule minuterie, comme `appsTimer`. */
   private startupTimer: number | undefined;
+  /** L'entrée dont le geste attend encore sa réponse, même si la page a été quittée puis retrouvée. */
+  private startupInFlight: string | null = null;
   /** « Réessayer » vient d'être pressé : le focus suivra la vue qui arrive. */
   private startupRetried = false;
   /** La zone de retour a le focus ou le pointeur : son délai de 12 secondes est suspendu. */
@@ -1116,7 +1118,8 @@ export class App {
     this.startupLoadedAt = 0;
     this.startupRetried = false;
     this.clearSay();
-    this.set({ startup: null, startupFailed: false, startupBusy: null });
+    // Un geste d'une visite passée attend encore sa réponse : les interrupteurs le disent (inertes) en attendant.
+    this.set({ startup: null, startupFailed: false, startupBusy: this.startupInFlight });
     void this.refreshStartup(true);
   }
 
@@ -1331,20 +1334,37 @@ export class App {
       startup: machine ? { ...view, pending: { id, enabled } } : withEntryEnabled(view, id, enabled, Date.now()),
       startupBusy: id,
     });
-    const answered = (): boolean => {
+    this.startupInFlight = id;
+    /**
+     * `here` : la même visite ; `late` : la personne est revenue sur la page depuis (la visite d'avant a été
+     * oubliée) : la vue est relue, puis l'issue est dite ; `gone` : elle n'est plus sur la page, la suivante repart de zéro.
+     */
+    const answered = (): 'here' | 'late' | 'gone' => {
       this.startupPending -= 1;
       this.startupAction += 1;
       this.startupLoadedAt = 0;
-      if (visit !== this.startupVisit || this.state.route !== 'startup') {
-        // La personne a quitté la page entre-temps : la page suivante repart de zéro.
+      this.startupInFlight = null;
+      if (this.state.route !== 'startup') {
         void this.refreshStartup(true);
-        return false;
+        return 'gone';
       }
-      return true;
+      if (visit !== this.startupVisit) {
+        this.set({ startupBusy: null });
+        return 'late';
+      }
+      return 'here';
     };
     try {
       const answer: StartupView = await this.backend.setStartupEntry(id, enabled);
-      if (answered()) {
+      const where = answered();
+      if (where === 'late') {
+        await this.refreshStartup(true);
+        const now = this.state.startup;
+        if (now !== null) {
+          const said = sayDone(before, enabled);
+          this.say(sayStale(said, now) ? { text: fr.startup.say.failed, undo: null } : said);
+        }
+      } else if (where === 'here') {
         this.set({ startupBusy: null });
         this.adoptStartup(answer);
         // Le cœur a accepté, mais la vue montre l'entrée dans l'autre état : on ne dit pas ce qui n'est pas.
@@ -1354,7 +1374,13 @@ export class App {
         this.revealStartupRow(id);
       }
     } catch (error) {
-      if (answered()) {
+      const where = answered();
+      if (where === 'late') {
+        await this.refreshStartup(true);
+        if (this.state.startup !== null) {
+          this.say(sayRefused(error));
+        }
+      } else if (where === 'here') {
         const current = this.state.startup;
         this.set({
           startup:

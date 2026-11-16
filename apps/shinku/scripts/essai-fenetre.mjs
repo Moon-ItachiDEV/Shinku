@@ -1309,73 +1309,34 @@ async function checkStartup(window) {
 
 const MACHINE_APPROVED = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved';
 const MACHINE_APPROVAL = ['Run', STARTUP_MACHINE];
-/** Le délai que l'essai laisse à un changement du PC : personne ne répond à la petite fenêtre de l'assistant. */
-const MACHINE_OUTCOME_BUDGET = 30_000;
+const POLICIES = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System';
+
+/** Une valeur DWORD des stratégies de Windows (UAC), lue par `reg query /reg:64` ; `null` si elle n'existe pas. */
+function readPolicy(name) {
+  const result = spawnSync('reg', ['query', POLICIES, '/v', name, '/reg:64'], { encoding: 'utf8', timeout: 15_000 });
+  if (result.status !== 0) {
+    return null;
+  }
+  const found = /REG_DWORD\s+0x([0-9A-Fa-f]+)/.exec(result.stdout ?? '');
+  return found === null ? null : Number.parseInt(found[1], 16);
+}
 
 const accessOf = (section) => {
   const said = section.access.join(' ');
   return ['consent', 'password', 'direct', 'unavailable'].filter((name) => shows(said, STARTUP_EXPECTED[name]));
 };
 
-/** Ce que dit la zone de retour d'un changement du PC, en une issue ; `null` : rien qui en soit une. */
-function machineOutcome(say) {
-  if (say === null) {
-    return null;
-  }
-  for (const [outcome, expected] of [
-    ['cut', STARTUP_EXPECTED.cut],
-    ['restored', STARTUP_EXPECTED.restored],
-    ['cancelled', STARTUP_EXPECTED.cancelled],
-    ['needsAdmin', STARTUP_EXPECTED.needsAdmin],
-    ['failed', STARTUP_EXPECTED.failed],
-  ]) {
-    if (shows(say.text, expected)) {
-      return outcome;
-    }
-  }
-  return null;
-}
-
-/**
- * Un clic sur l'interrupteur de la ligne du PC, puis l'attente de son issue : la phrase d'attente a disparu de
- * la ligne et la zone de retour dit une issue. Passé le délai, l'essai échoue en disant ce que la page montrait.
- */
-async function clickMachine(window, read, wanted) {
-  await window.clickSwitch(STARTUP_MACHINE);
-  const deadline = Date.now() + MACHINE_OUTCOME_BUDGET;
-  let sawWaiting = false;
-  let last = null;
-  for (;;) {
-    last = await read();
-    // Pendant l'attente, la phrase d'attente tient la place de « Inscrite sous… » : elle cite le même nom.
-    const row = last.rows.find((one) => shows(`${one.name} ${one.registered} ${one.waiting}`, STARTUP_MACHINE));
-    if (row !== undefined && row.waiting !== '') {
-      sawWaiting = true;
-    }
-    const outcome = row !== undefined && row.waiting === '' ? machineOutcome(last.say) : null;
-    // Un refus est toujours une issue ; « coupée » ou « remise » ne l'est que si c'est celle qu'on attend (une phrase d'avant ne compte pas).
-    const refusal = outcome === 'cancelled' || outcome === 'needsAdmin' || outcome === 'failed';
-    if (outcome !== null && (refusal || outcome === wanted)) {
-      return { outcome, say: last.say.text, row, sawWaiting };
-    }
-    if (Date.now() >= deadline) {
-      fail(
-        `« ${STARTUP_MACHINE} » : pas d’issue ${Math.round(MACHINE_OUTCOME_BUDGET / 1000)} s après le clic (Windows ou la petite fenêtre « Shinku » attend une réponse que personne ne donne ?). ` +
-          `Phase d’attente vue : ${sawWaiting ? 'oui' : 'non'} ; ligne : ${JSON.stringify(row)} ; zone de retour : ${JSON.stringify(last.say)} ; ` +
-          `HKLM = ${readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) ?? 'aucune valeur'}`,
-      );
-    }
-    await sleep(250);
-  }
-}
-
 /**
  * La ligne « Essai Shinku PC » (posée dans HKLM\\…\\Run par `essai-demarrage.ps1 -Preparer`), selon ce que la page
- * montre. Avec un interrupteur : un clic, puis la page et HKLM disent la même chose. Sans : le lot 1, rien d'autre.
+ * montre. **Aucun clic** : sur la machine de GitHub (`EnableLUA = 1`, `ConsentPromptBehaviorUser = 3`, bureau
+ * sécurisé), un clic ouvrirait une demande de mot de passe à laquelle personne ne peut répondre. Le changement
+ * lui-même est prouvé par `essai-assistant.ps1`. Ici : ce que la page dit de l'accès doit être ce que la
+ * stratégie de la machine permet, et HKLM ne doit pas bouger pendant le contrôle.
  */
 async function checkStartupMachine(window, read) {
+  const before = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
   const screen = await read();
-  const row = screen.rows.find((one) => shows(`${one.name} ${one.registered} ${one.detail} ${one.waiting}`, STARTUP_MACHINE));
+  const row = screen.rows.find((one) => shows(`${one.name} ${one.registered} ${one.detail}`, STARTUP_MACHINE));
   const section = screen.sections.find((one) => shows(one.title, STARTUP_EXPECTED.machineCard));
   if (row === undefined || section === undefined) {
     fail(`la carte du PC ou la ligne « ${STARTUP_MACHINE} » a disparu de la page`);
@@ -1388,14 +1349,12 @@ async function checkStartupMachine(window, read) {
   if (!shows(row.registered, STARTUP_EXPECTED.registered) || !shows(row.registered, STARTUP_MACHINE)) {
     fail(`la ligne du PC ne dit pas « Inscrite sous « ${STARTUP_MACHINE} » » : « ${row.registered} » (ligne : ${JSON.stringify(row)})`);
   }
-  const bytes = () => (onWindows ? (readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) ?? 'aucune valeur') : 'non lue (hors de Windows)');
-  const before = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
-
-  if (!row.hasSwitch) {
-    // Le lot 1 : seulement l'état, la phrase du lot 1 et son bouton vers les réglages de Windows, sans phrase de prudence.
-    if (access !== 'unavailable') {
-      fail(`la ligne du PC n’a pas d’interrupteur alors que la carte dit l’accès « ${access} » : ${JSON.stringify(row)}`);
-    }
+  // Un interrupteur si et seulement si la page dit un accès.
+  if (row.hasSwitch !== (access !== 'unavailable')) {
+    fail(`la ligne du PC ${row.hasSwitch ? 'a' : 'n’a pas'} d’interrupteur alors que la carte dit l’accès « ${access} » : ${JSON.stringify(row)}`);
+  }
+  if (access === 'unavailable') {
+    // Le lot 1 : seulement l'état, la phrase du lot 1 et son bouton vers les réglages de Windows, sans prudence.
     if (!row.tags.some((tag) => shows(tag, STARTUP_EXPECTED.active))) {
       fail(`la ligne du PC sans interrupteur devrait porter la pastille « Active » : ${JSON.stringify(row.tags)}`);
     }
@@ -1405,66 +1364,41 @@ async function checkStartupMachine(window, read) {
     if (section.caution !== '') {
       fail(`la carte du PC sans accès ne devrait pas avoir la phrase de prudence : « ${section.caution} »`);
     }
-    done(`ligne du PC « ${STARTUP_MACHINE} » : affichage du lot 1 (accès lu sur la page : ${access}, pas d’interrupteur, pastille « Active », bouton vers Windows)`);
-    say(`FAIT : accès = ${access} ; interrupteur = non ; issue = aucune (rien à régler) ; HKLM StartupApproved\\Run\\${STARTUP_MACHINE} = ${bytes()}`);
-    await window.capture('demarrage-pc-lot1');
-    return;
+  } else {
+    if (!shows(section.caution, STARTUP_EXPECTED.caution)) {
+      fail(`la carte du PC a un accès mais pas la phrase de prudence : « ${section.caution} »`);
+    }
+    if (!row.checked || row.waiting !== '') {
+      fail(`la ligne du PC devrait être active et sans attente : ${JSON.stringify(row)}`);
+    }
   }
 
-  // Un interrupteur : il y a un accès, la phrase de prudence, et la ligne est lue active.
-  if (access === 'unavailable') {
-    fail(`la ligne du PC a un interrupteur alors que la carte dit l’accès « unavailable » : ${JSON.stringify(row)}`);
-  }
-  if (!shows(section.caution, STARTUP_EXPECTED.caution)) {
-    fail(`la carte du PC a un accès mais pas la phrase de prudence : « ${section.caution} »`);
-  }
-  if (!row.checked || row.waiting !== '') {
-    fail(`la ligne du PC devrait être active et sans attente avant le clic : ${JSON.stringify(row)}`);
-  }
-  note(`ligne du PC « ${STARTUP_MACHINE} » : accès « ${access} », interrupteur présent ; HKLM avant le clic = ${before ?? 'aucune valeur'} ; un clic, ${Math.round(MACHINE_OUTCOME_BUDGET / 1000)} s au plus pour l’issue`);
-  await window.capture('demarrage-pc-avant');
-  const first = await clickMachine(window, read, 'cut');
-  const afterFirst = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
-  await window.healthy('après le changement de la ligne du PC');
-
-  if (first.outcome === 'cut') {
-    // Coupée : la page la montre coupée, et HKLM dit `03 00 00 00` + date.
-    if (first.row.checked) {
-      fail(`la page dit « ${first.say} » mais l’interrupteur du PC est resté allumé : ${JSON.stringify(first.row)}`);
+  // Ce que la machine permet : UAC actif, et un jeton sans droits que Windows laisse élever (`ConsentPromptBehaviorUser` ≠ 0).
+  let policy = 'non lue (hors de Windows)';
+  if (onWindows) {
+    const lua = readPolicy('EnableLUA') ?? 1;
+    const consent = readPolicy('ConsentPromptBehaviorUser') ?? 3;
+    policy = `EnableLUA = ${lua}, ConsentPromptBehaviorUser = ${consent}`;
+    const elevates = lua === 1 && consent !== 0;
+    if (elevates && !['consent', 'password'].includes(access)) {
+      fail(`la machine laisse élever (${policy}) et la fenêtre tourne sans droits : l’accès devrait être consent ou password, la page dit « ${access} »`);
     }
-    if (onWindows && !(afterFirst !== null && afterFirst.length === 24 && afterFirst.startsWith('03000000'))) {
-      fail(`la page montre « ${STARTUP_MACHINE} » coupée (« ${first.say} ») mais HKLM n’a pas 03000000 + date : ${afterFirst ?? 'aucune valeur'}`);
+    if (!elevates && access !== 'unavailable') {
+      fail(`la machine ne laisse pas élever (${policy}) : la page devrait montrer le lot 1 (unavailable), elle dit « ${access} »`);
     }
-    await window.capture('demarrage-pc-coupee');
-    // Remettre, par la page, de la même façon.
-    const second = await clickMachine(window, read, 'restored');
-    const afterSecond = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
-    if (second.outcome !== 'restored') {
-      fail(`remettre « ${STARTUP_MACHINE} » n’a pas réussi : issue « ${second.outcome} » (« ${second.say} »), HKLM = ${afterSecond ?? 'aucune valeur'} ; l’entrée reste coupée`);
-    }
-    if (!second.row.checked) {
-      fail(`la page dit « ${second.say} » mais l’interrupteur du PC est resté éteint : ${JSON.stringify(second.row)}`);
-    }
-    // Remise : l'approbation est active (`02`, ou `06` posé par Windows), ou la valeur n'existe plus.
-    if (onWindows && afterSecond !== null && !(afterSecond.length === 24 && /^0[26]0{6}/.test(afterSecond))) {
-      fail(`la page montre « ${STARTUP_MACHINE} » remise mais HKLM n’est pas active : ${afterSecond}`);
-    }
-    done(`ligne du PC « ${STARTUP_MACHINE} » : coupée puis remise par la page (« ${first.say} » / « ${second.say} »)`);
-    say(`FAIT : accès = ${access} ; interrupteur = oui ; issue = coupée puis remise ; phase d’attente vue = ${first.sawWaiting ? 'oui' : 'non'} ; HKLM avant = ${before ?? 'aucune valeur'}, après la coupure = ${afterFirst ?? 'aucune valeur'}, après la remise = ${afterSecond ?? 'aucune valeur'}`);
-    await window.capture('demarrage-pc-remise');
-    return;
   }
-
-  // Un refus : la page le dit, l'interrupteur n'a pas bougé, et HKLM est comme avant.
-  if (!first.row.checked) {
-    fail(`la page dit « ${first.say} » (${first.outcome}) mais l’interrupteur du PC est éteint : ${JSON.stringify(first.row)}`);
+  const after = onWindows ? readApproval(MACHINE_APPROVAL, MACHINE_APPROVED) : null;
+  if (after !== before) {
+    fail(`HKLM StartupApproved\\Run\\${STARTUP_MACHINE} a changé pendant le contrôle : ${before ?? 'aucune valeur'} puis ${after ?? 'aucune valeur'}`);
   }
-  if (onWindows && afterFirst !== before) {
-    fail(`la page dit « ${first.say} » (${first.outcome}) mais HKLM a changé : avant ${before ?? 'aucune valeur'}, après ${afterFirst ?? 'aucune valeur'}`);
-  }
-  done(`ligne du PC « ${STARTUP_MACHINE} » : refus affiché (« ${first.say} ») et rien n’a changé`);
-  say(`FAIT : accès = ${access} ; interrupteur = oui ; issue = ${first.outcome} ; phase d’attente vue = ${first.sawWaiting ? 'oui' : 'non'} ; HKLM avant = ${before ?? 'aucune valeur'}, après = ${afterFirst ?? 'aucune valeur'}`);
-  await window.capture('demarrage-pc-refus');
+  done(`ligne du PC « ${STARTUP_MACHINE} » : accès « ${access} », ${row.hasSwitch ? 'interrupteur présent' : 'affichage du lot 1'}, conforme à la machine (${policy})`);
+  say(
+    `FAIT : accès = ${access} ; stratégie = ${policy} ; interrupteur = ${row.hasSwitch ? 'oui' : 'non'} ; ` +
+      `HKLM StartupApproved\\Run\\${STARTUP_MACHINE} = ${after ?? 'aucune valeur'} (inchangée) ; ` +
+      'pas de clic : Windows demanderait ici un accord auquel personne ne peut répondre ; ' +
+      'le changement lui-même est prouvé par essai-assistant.ps1',
+  );
+  await window.capture(row.hasSwitch ? 'demarrage-pc-acces' : 'demarrage-pc-lot1');
 }
 
 // ── La Désinstallation ─────────────────────────────────────────────────────

@@ -194,3 +194,16 @@
   color: var(--text-2);
   text-wrap: pretty;
 }
+
+/* Le nom d'inscription n'est jamais coupé par des points de suspension : sa fin distingue souvent deux entrées. */
+.startup .row .t2.reg {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
+/* Une attente peut durer des minutes : les interrupteurs inertes se voient (même opacité que les cartes en retrait du Mode jeu). */
+.startup .sw[aria-disabled='true'] {
+  opacity: 0.6;
+}

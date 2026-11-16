@@ -47,11 +47,7 @@ export const EXPECTED = {
   unavailable: 'Ces apps se règlent dans Windows',
   caution: 'Certaines servent au son',
   openWindows: 'Apps de démarrage de Windows',
-  waiting: 'En attente de ta réponse',
   cut: 'est coupée',
   restored: 'se lancera de nouveau',
-  cancelled: 'Rien n’a changé',
-  needsAdmin: 'Il faut un administrateur',
-  failed: 'n’a pas pu être fait',
   active: 'Active',
 };

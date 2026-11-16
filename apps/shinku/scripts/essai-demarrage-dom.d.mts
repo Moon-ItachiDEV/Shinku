@@ -28,12 +28,8 @@ export const EXPECTED: Record<
   | 'unavailable'
   | 'caution'
   | 'openWindows'
-  | 'waiting'
   | 'cut'
   | 'restored'
-  | 'cancelled'
-  | 'needsAdmin'
-  | 'failed'
   | 'active',
   string
 >;

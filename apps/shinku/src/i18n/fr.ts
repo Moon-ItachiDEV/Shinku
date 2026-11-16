@@ -19,6 +19,31 @@ import {
 const some = (count: number, one: string, many: string): string =>
   `${formatCount(count)}${NBSP}${plural(count, one, many)}`;
 
+const EXACT = Symbol('exact');
+
+/** Une part de texte que la typographie ne touche pas : un nom que le cœur a déjà mis en forme (`registered`). */
+class Verbatim {
+  readonly text: string;
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+const verbatim = (text: string): Verbatim => new Verbatim(text);
+
+/**
+ * Un texte calculé dont certaines parts sont `verbatim` : la typographie française s'applique aux autres, pas à
+ * celles-là (« Alerte ! » reste avec son espace ordinaire, comme dans la boîte de l'assistant).
+ */
+function exact<Arguments extends unknown[]>(
+  write: (...args: Arguments) => Array<string | Verbatim>,
+): (...args: Arguments) => string {
+  const compose = (...args: Arguments): string =>
+    write(...args)
+      .map((part) => (part instanceof Verbatim ? part.text : frenchSpacing(part)))
+      .join('');
+  return Object.assign(compose, { [EXACT]: true });
+}
+
 /** Les mêmes textes, une fois les espaces insécables posées. */
 type Typeset<T> = T extends string
   ? string
@@ -34,6 +59,10 @@ type Typeset<T> = T extends string
 function typeset<T>(messages: T): Typeset<T> {
   if (typeof messages === 'string') {
     return frenchSpacing(messages) as Typeset<T>;
+  }
+  if (typeof messages === 'function' && EXACT in messages) {
+    // Déjà composé par `exact` : ses parts verbatim ne sont jamais retouchées.
+    return messages as Typeset<T>;
   }
   if (typeof messages === 'function') {
     const write = messages as unknown as (...args: unknown[]) => string;
@@ -480,10 +509,15 @@ export const fr = typeset({
         'Certaines servent au son, au pavé tactile ou aux alertes de sécurité. Si quelque chose te manque après, remets l’app.',
     },
     // Sous le nom lisible d'une ligne du PC ; `registered` est déjà mis en forme par le cœur.
-    registered: (registered: string) => `Inscrite sous «${NBSP}${registered}${NBSP}»`,
+    registered: exact((registered: string) => [`Inscrite sous «${NBSP}`, verbatim(registered), `${NBSP}»`]),
     // Dans la ligne de l'app dont le changement attend la personne.
-    waiting: (registered: string) =>
-      `En attente de ta réponse… Une petite fenêtre «${NBSP}Shinku${NBSP}» te demandera de confirmer «${NBSP}${registered}${NBSP}». Si tu ne la vois pas, regarde dans la barre des tâches.`,
+    waiting: exact((registered: string) => [
+      `En attente de ta réponse… Une petite fenêtre «${NBSP}Shinku${NBSP}» te demandera de confirmer «${NBSP}`,
+      verbatim(registered),
+      `${NBSP}». Si tu ne la vois pas, regarde dans la barre des tâches.`,
+    ]),
+    // Sous la phrase d'accès : des lignes du PC n'ont pas d'interrupteur.
+    someStuck: 'Shinku ne sait pas régler celles qui n’ont pas d’interrupteur : passe par Windows.',
     unreadable: 'Shinku n’a pas pu lire toute cette liste.',
     note: 'Couper une app ne la désinstalle pas et ne supprime rien : elle ne se lance plus toute seule, et tu peux toujours l’ouvrir toi-même. Certaines apps se réinscrivent d’elles-mêmes : règle-le aussi dans leurs options. L’éditeur affiché est celui que le fichier déclare.',
     unknownPublisher: 'Éditeur inconnu',
@@ -499,8 +533,12 @@ export const fr = typeset({
     active: 'Active',
     sync: 'Synchronise tes fichiers',
     // `rank` : 2 pour la deuxième ligne de même nom et de même alias dans une carte, et ainsi de suite.
-    switchLabel: (name: string, alias: string | null, rank = 1) =>
-      `Lancer ${name} à l’ouverture de session${alias === null ? '' : ` (${alias})`}${rank > 1 ? ` (${rank})` : ''}`,
+    // `registered` : une ligne du PC cite son nom d'inscription tel que le cœur l'a rendu, à la place de l'alias.
+    switchLabel: exact((name: string, alias: string | null, rank: number = 1, registered: string | null = null) => [
+      `Lancer ${name} à l’ouverture de session`,
+      ...(registered !== null ? [' (', verbatim(registered), ')'] : alias === null ? [] : [` (${alias})`]),
+      rank > 1 ? ` (${rank})` : '',
+    ]),
     own: 'Réglé par le Mode jeu',
     ownCut: 'Coupée dans Windows',
     seeGameMode: 'Voir le Mode jeu',
@@ -521,6 +559,12 @@ export const fr = typeset({
           sync ? ' Tes fichiers ne se synchroniseront plus tant que tu ne l’ouvres pas.' : ''
         }`,
       restored: (name: string) => `${name} se lancera de nouveau à l’ouverture de ta session.`,
+      // Une app de tous les comptes : « ta session » ne dirait pas tout.
+      cutPc: (name: string, sync: boolean) =>
+        `${name} est coupée. Si elle est ouverte, elle le reste : elle ne se lancera plus toute seule à la prochaine ouverture de session, pour aucun compte de ce PC.${
+          sync ? ' Tes fichiers ne se synchroniseront plus tant que tu ne l’ouvres pas.' : ''
+        }`,
+      restoredPc: (name: string) => `${name} se lancera de nouveau à l’ouverture de session de chaque compte.`,
       failed: 'Le changement n’a pas pu être fait.',
       unknownEntry: 'Cette entrée n’existe plus.',
       notAdjustable: 'Cette entrée ne se règle pas ici.',

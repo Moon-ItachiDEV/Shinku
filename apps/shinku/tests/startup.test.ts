@@ -42,7 +42,7 @@ import { readFileSync } from 'node:fs';
 
 import { DOM, EXPECTED } from '../scripts/essai-demarrage-dom.mjs';
 import { type Node, parse, query, queryAll, textOfNode } from './html-tree.ts';
-import { fakeDocument, htmlOf, markupOf, textOf } from './template.ts';
+import { clicksOf, fakeDocument, htmlOf, markupOf, textOf } from './template.ts';
 
 fakeDocument();
 const { startupView } = await import('../src/views/startup.ts');
@@ -824,7 +824,7 @@ test('essai de la fenêtre : les sélecteurs du Démarrage trouvent la carte du 
   const rows = found(page, DOM.row, 'lignes');
   const line = rows.find((one) => queryAll(one, DOM.waiting).length > 0);
   assert.ok(line !== undefined, 'la ligne qui attend porte la phrase d’attente');
-  assert.ok(contains(query(line, DOM.waiting) ?? undefined, EXPECTED.waiting));
+  assert.ok(contains(query(line, DOM.waiting) ?? undefined, 'En attente de ta réponse'));
   found(line, DOM.rowName, 'nom');
   found(line, DOM.rowSwitch, 'interrupteur');
   assert.ok(rows.some((one) => queryAll(one, DOM.tag).length > 0), 'une pastille');
@@ -872,4 +872,96 @@ test('essai de la fenêtre : chaque texte attendu est dans fr.ts, tel quel', () 
   for (const [name, expected] of Object.entries(EXPECTED)) {
     assert.ok(words.some((text) => text.includes(flat(expected))), `EXPECTED.${name} (« ${expected} ») n’est dans aucun texte de fr.ts`);
   }
+});
+
+// ── Relecture 1 du lot 2 ───────────────────────────────────────────────────
+
+test('I1 : le nom d’inscription n’est jamais retouché par la typographie, caractère pour caractère', () => {
+  const tricky = 'Mise à jour : Java !';
+  const named = entry({ id: 'mr-java', name: 'Java', scope: 'machine', registered: tricky, adjustable: true });
+  // Les espaces ordinaires du nom restent ordinaires ; celles du texte autour restent insécables.
+  assert.equal(fr.startup.registered(tricky), `Inscrite sous${' '}«${NBSP}${tricky}${NBSP}»`);
+  assert.equal(
+    fr.startup.waiting(tricky),
+    `En attente de ta réponse… Une petite fenêtre «${NBSP}Shinku${NBSP}» te demandera de confirmer «${NBSP}${tricky}${NBSP}». Si tu ne la vois pas, regarde dans la barre des tâches.`,
+  );
+  assert.equal(fr.startup.switchLabel('Java', 'alias', 1, tricky), `Lancer Java à l’ouverture de session (${tricky})`);
+  // Dans la page : la ligne, son `title`, la phrase d'attente et la région vivante.
+  const idle = htmlOf(startupView({ ...initialState(NOW), startup: view([named], [], { pc: 'consent' }) }, noActions));
+  assert.ok(idle.includes(`Inscrite sous «${NBSP}${tricky}${NBSP}»`), idle);
+  assert.ok(!idle.includes(`Mise à${NBSP}`) && !idle.includes('jour\u00a0:') && !idle.includes('jour\u202f'), 'aucune espace du nom n’est devenue insécable');
+  const waiting = htmlOf(startupView({ ...initialState(NOW), startup: view([named], [], { pc: 'consent', pending: { id: 'mr-java', enabled: false } }) }, noActions));
+  assert.equal(waiting.split(`«${NBSP}${tricky}${NBSP}».`).length - 1, 2, 'la ligne et la région vivante');
+  // Le nom reste tel quel même quand il ressemble à ce que la typographie transformerait.
+  for (const name of ['Alerte !', 'a ; b', 'Pourquoi ?', 'x : y']) {
+    assert.ok(fr.startup.registered(name).includes(`«${NBSP}${name}${NBSP}»`), name);
+    assert.ok(fr.startup.waiting(name).includes(`«${NBSP}${name}${NBSP}»`), name);
+  }
+});
+
+test('I3 : avec un accès, des lignes du PC sans interrupteur gardent leur pastille, une phrase et le bouton vers Windows', () => {
+  const stuck = entry({ id: 'mr-stuck', name: 'Autre', scope: 'machine', registered: 'Autre', adjustable: false });
+  const some = textOf(startupView({ ...initialState(NOW), startup: MACHINE_ONLY({}, [REALTEK, stuck]) }, noActions));
+  assert.ok(some.includes('Shinku ne sait pas régler celles qui n’ont pas d’interrupteur'), some);
+  // Le bouton de l'en-tête de page, et celui de la carte.
+  assert.equal(some.split('Apps de démarrage de Windows').length - 1, 2);
+  const none = textOf(startupView({ ...initialState(NOW), startup: MACHINE_ONLY({}) }, noActions));
+  assert.ok(!none.includes('celles qui n’ont pas d’interrupteur'));
+  assert.equal(none.split('Apps de démarrage de Windows').length - 1, 1);
+});
+
+test('m1 : pendant l’attente, l’interrupteur cite la phrase d’attente, et aucun clic n’atteint le cœur', () => {
+  const waitingView = MACHINE_ONLY({ pending: { id: 'mr-realtek', enabled: false } }, [entry({ id: 'ur-1', name: 'Discord' }), REALTEK]);
+  const written = page(waitingView);
+  assert.ok(written.includes('aria-describedby=startup-mr-realtek-d'), 'la description est la phrase d’attente, qui est dans la page');
+  assert.ok(!written.includes('startup-mr-realtek-r'));
+  const calls: string[] = [];
+  const spy = new Proxy({}, { get: (_t, name: string) => () => void calls.push(name) }) as import('../src/state.ts').Actions;
+  const say = { text: 'Discord est coupée.', undo: { id: 'ur-1', enabled: true } };
+  const clicks = (state: Partial<import('../src/state.ts').AppState>) =>
+    clicksOf(startupView({ ...initialState(NOW), route: 'startup', ...state } as never, spy));
+  for (const click of clicks({ startup: waitingView, startupSay: say })) {
+    click.fn();
+  }
+  assert.ok(!calls.includes('setStartupEntry') && !calls.includes('undoStartup'), `appelés pendant l’attente : ${calls.join(', ')}`);
+  // Le même essai au repos : les clics atteignent bien le cœur (l'essai n'est pas vide).
+  calls.length = 0;
+  for (const click of clicks({ startup: MACHINE_ONLY({}, [entry({ id: 'ur-1', name: 'Discord' }), REALTEK]), startupSay: say })) {
+    click.fn();
+  }
+  assert.equal(calls.filter((name) => name === 'setStartupEntry').length, 2);
+  assert.equal(calls.filter((name) => name === 'undoStartup').length, 1);
+  // Un geste en vol du compte rend aussi les clics inertes.
+  calls.length = 0;
+  for (const click of clicks({ startup: FEW, startupSay: say, startupBusy: 'ur-discord' })) {
+    click.fn();
+  }
+  assert.ok(!calls.includes('setStartupEntry') && !calls.includes('undoStartup'));
+});
+
+test('m5 : le nom accessible de l’interrupteur d’une ligne du PC cite son nom d’inscription, pas l’alias', () => {
+  const line = entry({ id: 'mr-r', name: 'Realtek', alias: 'RtkAud UService', scope: 'machine', registered: 'RtkAud⟨U+00A0⟩UService', adjustable: true });
+  const written = page(MACHINE_ONLY({}, [line]));
+  assert.ok(written.includes('aria-label=Lancer Realtek à l’ouverture de session (RtkAud⟨U+00A0⟩UService)'), written);
+  assert.ok(!written.includes('RtkAud UService'));
+  // Une ligne du compte garde l'alias.
+  assert.equal(fr.startup.switchLabel('Microsoft OneDrive', 'OneDrive'), 'Lancer Microsoft OneDrive à l’ouverture de session (OneDrive)');
+});
+
+test('m7 : une app de tous les comptes ne parle pas de « ta » session', () => {
+  const machine = entry({ id: 'mr-1', name: 'Realtek', scope: 'machine', registered: 'R', adjustable: true });
+  assert.ok(!sayDone(machine, false).text.includes('ta '), sayDone(machine, false).text);
+  assert.ok(sayDone(machine, false).text.includes('aucun compte de ce PC'));
+  assert.ok(sayDone(machine, true).text.includes('chaque compte'));
+  assert.ok(sayDone(entry(), true).text.includes('ta session'));
+  assert.ok(sayDone(entry(), false).text.includes('ta prochaine ouverture'));
+  // Le refus `unknownEntry` garde son texte.
+  assert.equal(sayRefused({ kind: 'startupRefused', reason: 'unknownEntry' })?.text, 'Cette entrée n’existe plus.');
+});
+
+test('m4 et m6 : la feuille de style montre l’inertie et ne coupe pas le nom d’inscription', () => {
+  const css = readFileSync(new URL('../src/styles/startup.css', import.meta.url), 'utf8');
+  assert.match(css, /\.startup \.sw\[aria-disabled='true'\]\s*\{\s*opacity: 0\.6;/);
+  assert.match(css, /\.startup \.row \.t2\.reg\s*\{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
+  assert.ok(!/#[0-9a-f]{3,8}\b|rgb\(\s*\d/i.test(css.slice(css.indexOf('.t2.reg'))), 'aucune couleur hors tokens');
 });

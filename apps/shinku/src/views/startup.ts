@@ -118,7 +118,7 @@ function switchButton(
     class="sw"
     data-fk=${startupFocus.entry(entry.id)}
     aria-checked=${on ? 'true' : 'false'}
-    aria-label=${fr.startup.switchLabel(entry.name, entry.alias, rank)}
+    aria-label=${fr.startup.switchLabel(entry.name, entry.alias, rank, entry.registered)}
     aria-describedby=${describedBy ?? nothing}
     aria-disabled=${isBusy(state) ? 'true' : nothing}
     @click=${() => (isBusy(state) ? undefined : actions.setStartupEntry(entry.id, !on))}
@@ -250,6 +250,10 @@ function machineSection(state: AppState, view: StartupView, actions: Actions): C
         ? html`<p class="d">${fr.startup.pc[view.pc as 'consent' | 'password' | 'direct']}</p>`
         : html`<p class="d">${fr.startup.machineHint}</p>
           ${openWindows(actions)}`}
+      ${hasPcAccess(view) && entriesOf(view, 'machine').some((entry) => !entry.adjustable)
+        ? html`<p class="d">${fr.startup.someStuck}</p>
+          ${openWindows(actions)}`
+        : nothing}
     </div>
     ${hasPcAccess(view) ? html`<p class="d pcaut">${fr.startup.pc.caution}</p>` : nothing}
     ${scopeCard(state, view, 'machine', actions)}

@@ -252,8 +252,15 @@ export interface Say {
 
 /** Après une coupure ou une remise réussie : la phrase, et de quoi la défaire. */
 export function sayDone(before: StartupEntry, enabled: boolean): Say {
+  const pc = before.scope === 'machine';
   return {
-    text: enabled ? fr.startup.say.restored(before.name) : fr.startup.say.cut(before.name, before.hint === 'sync'),
+    text: enabled
+      ? pc
+        ? fr.startup.say.restoredPc(before.name)
+        : fr.startup.say.restored(before.name)
+      : pc
+        ? fr.startup.say.cutPc(before.name, before.hint === 'sync')
+        : fr.startup.say.cut(before.name, before.hint === 'sync'),
     undo: { id: before.id, enabled: !enabled },
   };
 }

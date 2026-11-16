@@ -260,14 +260,45 @@ const INVISIBLE_LETTERS = [0x115f, 0x1160, 0x3164, 0xffa0];
  * sûr à lire est montré `⟨U+00A0⟩` ; 80 caractères au plus, puis « … ».
  */
 export function shownName(name: string): string {
-  const shown = [...name].map((character) => {
+  const limit = 80;
+  let text = '';
+  let width = 0;
+  for (const character of name) {
     const code = character.codePointAt(0) ?? 0;
+    // `char::is_alphanumeric` de Rust : Alphabetic, ou chiffre (Nd, Nl, No).
     const plain =
       !INVISIBLE_LETTERS.includes(code) &&
-        (/^[\p{L}\p{N}]$/u.test(character) || (code >= 0x20 && code <= 0x7e) || KEPT_SIGNS.includes(character));
-    return plain ? character : `⟨U+${code.toString(16).toUpperCase().padStart(4, '0')}⟩`;
-  });
-  return shown.length > 80 ? `${shown.slice(0, 80).join('')}…` : shown.join('');
+      (/^[\p{Alphabetic}\p{Nd}\p{Nl}\p{No}]$/u.test(character) ||
+        (code >= 0x20 && code <= 0x7e) ||
+        KEPT_SIGNS.includes(character));
+    const piece = plain ? character : `⟨U+${code.toString(16).toUpperCase().padStart(4, '0')}⟩`;
+    const size = [...piece].length;
+    // Un signe montré n'est jamais coupé en deux : on s'arrête avant celui qui déborde.
+    if (width + size > limit) {
+      return `${text}…`;
+    }
+    width += size;
+    text += piece;
+  }
+  return text;
+}
+
+/** `clean_text` du cœur, en gros : les blancs deviennent des espaces, les contrôles et caractères de forme disparaissent. */
+function cleanText(text: string): string {
+  return text
+    .replace(/\s/gu, ' ')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '')
+    .split(/\s+/u)
+    .filter((word) => word !== '')
+    .join(' ')
+    .trimEnd();
+}
+
+/** Comme le cœur (`raw_label`) : le nom brut nettoyé, sans `.lnk` pour un raccourci, s'il diffère du nom montré. */
+function machineAlias(seed: BootSeed): string | null {
+  const raw = seed.place.endsWith('f') ? seed.raw.replace(/\.lnk$/iu, '') : seed.raw;
+  const label = cleanText(raw);
+  return label !== '' && label.toLowerCase() !== seed.name.toLowerCase() ? label : null;
 }
 
 function bootEntry(seed: BootSeed, now: number, pc: StartupPc = 'consent'): StartupEntry {
@@ -282,7 +313,7 @@ function bootEntry(seed: BootSeed, now: number, pc: StartupPc = 'consent'): Star
   return {
     id: startupId(seed.place, seed.raw),
     name: seed.name,
-    alias: seed.alias ?? null,
+    alias: seed.alias ?? (machine ? machineAlias(seed) : null),
     // Le cœur ne lit l'éditeur que dans le fichier qu'il a trouvé.
     publisher: (seed.target ?? 'found') === 'found' ? (seed.publisher ?? null) : null,
     scope: machine ? 'machine' : 'user',
@@ -1406,6 +1437,10 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
       }
       if (options.boot.fail) {
         return startupRefused('failed');
+      }
+      if ((entry.state === 'enabled') === enabled) {
+        // Déjà dans l'état voulu : le cœur rend la vue tout de suite, sans accord ni `pending`.
+        return bootView();
       }
       if (entry.scope === 'machine') {
         // Le cœur rend la main à la fin de l'assistant ; la vue, relue pendant ce temps, dit `pending`.

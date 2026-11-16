@@ -995,7 +995,7 @@ test('le geste sur une ligne du PC n’est pas optimiste : la ligne attend, rien
   await flush();
   assert.equal(page.state().startup?.pending, null);
   assert.equal(page.state().startupBusy, null);
-  assert.equal(page.state().startupSay?.text, fr.startup.say.cut('Realtek', false));
+  assert.equal(page.state().startupSay?.text, fr.startup.say.cutPc('Realtek', false));
   assert.deepEqual(page.state().startupSay?.undo, { id: 'mr-realtek', enabled: true });
   mock.timers.tick(STARTUP_POLL_DELAY * 5);
   await flush();
@@ -1137,4 +1137,55 @@ test('une page quittée puis retrouvée pendant son propre geste voit l’attent
   assert.equal(page.state().startup?.pending, null);
   mock.timers.tick(STARTUP_POLL_DELAY * 3);
   assert.equal(page.of('startupView').length, 3);
+});
+
+test('m2 : revenu sur la page pendant son propre geste, la page relit la vue puis dit l’issue', async () => {
+  const cutView = PC();
+  cutView.entries = cutView.entries.map((found) => (found.id === 'mr-realtek' ? { ...found, state: 'disabled', disabledAt: NOW } : found));
+  const page = start();
+  await page.open(PC());
+  page.actions.setStartupEntry('mr-realtek', false);
+  page.actions.navigate('home');
+  page.actions.navigate('startup');
+  page.of('startupView')[1]?.resolve(PC_WAITING);
+  await flush();
+  page.of('setStartupEntry')[0]?.resolve(cutView);
+  await flush();
+  assert.equal(page.state().startupSay, null, 'pas avant que la vue soit relue');
+  page.of('startupView')[2]?.resolve(cutView);
+  await flush();
+  assert.equal(page.state().startupSay?.text, fr.startup.say.cutPc('Realtek', false));
+
+  const refused = start();
+  await refused.open(PC());
+  refused.actions.setStartupEntry('mr-realtek', false);
+  refused.actions.navigate('home');
+  refused.actions.navigate('startup');
+  refused.of('startupView')[1]?.resolve(PC_WAITING);
+  await flush();
+  refused.of('setStartupEntry')[0]?.reject(refuse('cancelled'));
+  await flush();
+  refused.of('startupView')[2]?.resolve(PC());
+  await flush();
+  assert.equal(refused.state().startupSay?.text, 'Rien n’a changé.');
+  assert.equal(refused.state().startup?.pending, null);
+});
+
+test('m3 : revenu sur la page pendant son propre geste, les interrupteurs restent inertes jusqu’à la réponse', async () => {
+  const page = start();
+  await page.open(PC());
+  page.actions.setStartupEntry('mr-realtek', false);
+  page.actions.navigate('home');
+  page.actions.navigate('startup');
+  assert.equal(page.state().startupBusy, 'mr-realtek');
+  // Même si la vue relue ne dit plus `pending` (l'assistant a fini, la réponse n'est pas revenue).
+  page.of('startupView')[1]?.resolve(PC());
+  await flush();
+  assert.equal(page.state().startup?.pending, null);
+  assert.equal(page.state().startupBusy, 'mr-realtek');
+  page.actions.setStartupEntry('ur-discord', false);
+  assert.equal(page.of('setStartupEntry').length, 1);
+  page.of('setStartupEntry')[0]?.resolve(PC());
+  await flush();
+  assert.equal(page.state().startupBusy, null);
 });
