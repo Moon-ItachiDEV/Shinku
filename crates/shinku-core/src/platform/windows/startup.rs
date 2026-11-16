@@ -71,7 +71,7 @@ const MAX_VALUE_NAME: usize = 16_384;
 
 /// Une ruche du registre.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Hive {
+pub(super) enum Hive {
     /// `HKEY_CURRENT_USER`.
     Current,
     /// `HKEY_LOCAL_MACHINE`.
@@ -79,7 +79,7 @@ enum Hive {
 }
 
 impl Hive {
-    fn root(self) -> HKEY {
+    pub(super) fn root(self) -> HKEY {
         match self {
             Self::Current => HKEY_CURRENT_USER,
             Self::Local => HKEY_LOCAL_MACHINE,
@@ -171,7 +171,7 @@ impl SystemStartupHost {
 }
 
 /// Une clé ouverte : fermée à la fin de sa vie, quoi qu'il arrive.
-struct Key(HKEY);
+pub(super) struct Key(pub(super) HKEY);
 
 impl Drop for Key {
     fn drop(&mut self) {
@@ -180,13 +180,13 @@ impl Drop for Key {
     }
 }
 
-fn os_error(code: WIN32_ERROR) -> io::Error {
+pub(super) fn os_error(code: WIN32_ERROR) -> io::Error {
     io::Error::from_raw_os_error(code.0 as i32)
 }
 
 /// Ouvre une clé. `None` si elle n'existe pas : une place absente est une
 /// place vide, pas une erreur.
-fn open_key(hive: Hive, path: &str, access: REG_SAM_FLAGS) -> io::Result<Option<Key>> {
+pub(super) fn open_key(hive: Hive, path: &str, access: REG_SAM_FLAGS) -> io::Result<Option<Key>> {
     let mut key = HKEY::default();
     // SAFETY: `path` est une chaîne terminée par zéro, valide pendant l'appel ;
     // `key` est une variable locale où Windows écrit le handle.
@@ -207,7 +207,7 @@ fn has_nul(name: &str) -> bool {
 }
 
 /// Les unités UTF-16 d'un texte, terminées par zéro.
-fn wide(text: &OsStr) -> Vec<u16> {
+pub(super) fn wide(text: &OsStr) -> Vec<u16> {
     text.encode_wide().chain(std::iter::once(0)).collect()
 }
 
@@ -482,12 +482,12 @@ fn folder_id(place: Place) -> &'static GUID {
 }
 
 /// L'appartement COM du fil appelant, pour la durée d'une lecture.
-struct ComScope {
+pub(super) struct ComScope {
     initialized: bool,
 }
 
 impl ComScope {
-    fn enter() -> Self {
+    pub(super) fn enter() -> Self {
         // SAFETY: appel sans pointeur. Si le fil a déjà un appartement d'un
         // autre type, l'appel échoue et COM reste utilisable tel qu'il est.
         let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
@@ -505,7 +505,7 @@ impl Drop for ComScope {
 }
 
 /// Ce qu'on tire d'un fichier `.lnk`.
-enum Shortcut {
+pub(super) enum Shortcut {
     /// La cible, telle que le raccourci l'écrit.
     Path(String),
     /// Une cible qui ne tient pas dans le tampon.
@@ -522,7 +522,7 @@ const TARGET_BUFFER: usize = 32_768;
 
 /// La cible d'un raccourci, telle qu'il l'écrit (`SLGP_RAWPATH`, sans la résoudre
 /// ni la réparer).
-fn shortcut_target(path: &Path) -> Shortcut {
+pub(super) fn shortcut_target(path: &Path) -> Shortcut {
     // SAFETY: `ShellLink` est la classe des raccourcis ; l'interface demandée
     // est celle que cette classe porte.
     let Ok(link) =

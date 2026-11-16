@@ -14,11 +14,24 @@ export function fakeDocument(): void {
 
 /** Le HTML d'un gabarit, ses valeurs écrites à la place de leurs trous (un bouton `@click` s'écrit `[geste]`). */
 export function htmlOf(value: unknown): string {
+  return write(value, false);
+}
+
+/**
+ * Le HTML tel que le navigateur le lirait : les valeurs d'attribut entre guillemets, et les liaisons qui
+ * n'écrivent rien dans la page (`@click`, `.checked`, `?x`, une valeur `nothing`) retirées. Pour lire la page comme un arbre.
+ */
+export function markupOf(value: unknown): string {
+  return write(value, true);
+}
+
+function write(value: unknown, markup: boolean): string {
+  const again = (inner: unknown): string => write(inner, markup);
   if (value === nothing || value === null || value === undefined || value === false) {
     return '';
   }
   if (Array.isArray(value)) {
-    return value.map(htmlOf).join('');
+    return value.map(again).join('');
   }
   if (typeof value === 'function') {
     return '[geste]';
@@ -26,17 +39,41 @@ export function htmlOf(value: unknown): string {
   if (typeof value === 'object' && '_$litDirective$' in value && 'values' in value) {
     const { values } = value as { values: unknown[] };
     const last = values.at(-1);
+    if (values.length === 1 && typeof last === 'function') {
+      // `ref(fonction)` : ni texte ni attribut.
+      return '';
+    }
     if (typeof last === 'function') {
       // `repeat(éléments, [clé,] gabarit)` : le gabarit s'écrit pour chaque élément.
       const items = [...(values[0] as Iterable<unknown>)];
-      return items.map((item, index) => htmlOf((last as (item: unknown, index: number) => unknown)(item, index))).join('');
+      return items.map((item, index) => again((last as (item: unknown, index: number) => unknown)(item, index))).join('');
     }
     // `keyed(clé, gabarit)` : seul le dernier argument s'écrit.
-    return htmlOf(last);
+    return again(last);
   }
   if (typeof value === 'object' && 'strings' in value && 'values' in value) {
     const template = value as { strings: readonly string[]; values: readonly unknown[] };
-    return template.strings.map((text, index) => text + (index < template.values.length ? htmlOf(template.values[index]) : '')).join('');
+    let out = '';
+    template.strings.forEach((text, index) => {
+      out += text;
+      if (index >= template.values.length) {
+        return;
+      }
+      const inner = template.values[index];
+      const binding = markup ? /\s([.@?]?[\w:-]+)=$/.exec(out) : null;
+      if (binding !== null) {
+        const name = binding[1] ?? '';
+        const silent = /^[.@?]/.test(name) || inner === nothing || inner === null || inner === undefined || inner === false;
+        if (silent) {
+          out = out.slice(0, out.length - binding[0].length);
+          return;
+        }
+        out += `"${again(inner).replace(/"/g, '&quot;')}"`;
+        return;
+      }
+      out += again(inner);
+    });
+    return out;
   }
   return String(value);
 }

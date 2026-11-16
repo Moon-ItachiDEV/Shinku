@@ -15,6 +15,7 @@ import { binView, duplicatesView, junkView, largeView, soonView } from './module
 import { settingsView } from './settings.ts';
 import { startupView } from './startup.ts';
 import { styles } from './style.ts';
+import { uninstallDialog, uninstallView } from './uninstall.ts';
 
 interface NavItem {
   route: Route;
@@ -128,6 +129,7 @@ function page(state: AppState, actions: Actions): TemplateResult {
     case 'startup':
       return startupView(state, actions);
     case 'uninstall':
+      return uninstallView(state, actions);
     case 'privacy':
       return soonView(state.route);
     case 'settings':
@@ -159,7 +161,7 @@ export function appView(state: AppState, actions: Actions): TemplateResult {
     ${ready
       ? html`${sidebar(state, actions)}
           <main class="main">${keyed(`${state.route}:${shownPane(state)}`, page(state, actions))}</main>
-          ${confirmDialog(state, actions)} ${pickerDialog(state, actions)}`
+          ${confirmDialog(state, actions)} ${pickerDialog(state, actions)} ${uninstallDialog(state, actions)}`
       : bootScreen(state)}
     <div class="toast ${state.toastShown ? 'show' : ''}" role="status">${state.toast}</div>
   </div>`;

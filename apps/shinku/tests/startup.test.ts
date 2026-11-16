@@ -117,17 +117,19 @@ test('une portée vide et lisible n’a pas de carte ; illisible, elle en a une'
 
 // ── Une ligne ──────────────────────────────────────────────────────────────
 
-test('l’initiale est la première lettre en majuscule ; un chiffre ou un symbole donne « # »', () => {
+test('l’initiale est le premier caractère alphanumérique en majuscule ; « # » s’il n’y en a aucun', () => {
   assert.equal(initialOf('Discord'), 'D');
   assert.equal(initialOf('discord'), 'D');
   assert.equal(initialOf('  épique'), 'É');
   assert.equal(initialOf('çà'), 'Ç');
   assert.equal(initialOf('Ɛlan'), 'Ɛ');
-  assert.equal(initialOf('7-Zip'), '#');
-  assert.equal(initialOf('1Password'), '#');
-  assert.equal(initialOf('_outil'), '#');
-  assert.equal(initialOf('[x]'), '#');
-  assert.equal(initialOf('\u{1F600} smile'), '#');
+  assert.equal(initialOf('7-Zip'), '7');
+  assert.equal(initialOf('1Password'), '1');
+  assert.equal(initialOf('_outil'), 'O');
+  assert.equal(initialOf('[x]'), 'X');
+  assert.equal(initialOf('\u{1F600} smile'), 'S');
+  assert.equal(initialOf('\u{1F600}'), '#');
+  assert.equal(initialOf('Notepad++'), 'N');
   assert.equal(initialOf(''), '#');
   assert.equal(initialOf('   '), '#');
   // Une lettre hors du plan de base reste entière, sans demi-paire.

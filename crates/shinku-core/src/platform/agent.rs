@@ -63,7 +63,7 @@ pub enum Autostart {
     DisabledInWindows,
 }
 
-/// Une page des réglages de Windows. Trois seulement, à adresses fixes.
+/// Une page des réglages de Windows. Quatre seulement, à adresses fixes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WindowsPage {
@@ -73,6 +73,8 @@ pub enum WindowsPage {
     Power,
     /// Apps de démarrage.
     StartupApps,
+    /// Apps installées (là où Windows retire aussi les apps du Microsoft Store).
+    Apps,
 }
 
 impl WindowsPage {
@@ -82,6 +84,7 @@ impl WindowsPage {
             Self::GameMode => "ms-settings:gaming-gamemode",
             Self::Power => "ms-settings:powersleep",
             Self::StartupApps => "ms-settings:startupapps",
+            Self::Apps => "ms-settings:appsfeatures",
         }
     }
 }
@@ -222,9 +225,11 @@ mod tests {
         assert_eq!(WindowsPage::GameMode.uri(), "ms-settings:gaming-gamemode");
         assert_eq!(WindowsPage::Power.uri(), "ms-settings:powersleep");
         assert_eq!(WindowsPage::StartupApps.uri(), "ms-settings:startupapps");
+        assert_eq!(WindowsPage::Apps.uri(), "ms-settings:appsfeatures");
         assert_eq!(serde_json::to_value(WindowsPage::GameMode).unwrap(), "gameMode");
         assert_eq!(serde_json::to_value(WindowsPage::Power).unwrap(), "power");
         assert_eq!(serde_json::to_value(WindowsPage::StartupApps).unwrap(), "startupApps");
+        assert_eq!(serde_json::to_value(WindowsPage::Apps).unwrap(), "apps");
         assert_eq!(serde_json::to_value(AgentState::Missing).unwrap(), "missing");
     }
 
