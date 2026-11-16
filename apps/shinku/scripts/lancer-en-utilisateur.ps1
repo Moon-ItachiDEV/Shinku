@@ -11,13 +11,16 @@
 # le contrôle de compte d'utilisateur : groupe Administrateurs en refus seul,
 # privilèges retirés, niveau d'intégrité moyen.
 #
+# `-Arguments` donne au programme sa ligne de commande, telle quelle.
+#
 # La première ligne écrite est « PID <numéro> », celui du programme lancé.
 #
 # Ce fichier commence par une marque d'ordre des octets (BOM) : sans elle,
 # Windows PowerShell 5 lirait ses lettres accentuées de travers.
 
 param(
-    [Parameter(Mandatory = $true)][string]$Programme
+    [Parameter(Mandatory = $true)][string]$Programme,
+    [string]$Arguments = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +44,7 @@ public static class StandardUser
     const int GENERIC_ALL = 0x10000000;
     const uint SE_GROUP_INTEGRITY = 0x20;
     const uint INFINITE = 0xFFFFFFFF;
+    const uint NORMAL_PRIORITY_CLASS = 0x20;
     const string MEDIUM_INTEGRITY = "S-1-16-8192";
 
     [StructLayout(LayoutKind.Sequential)]
@@ -154,7 +158,7 @@ public static class StandardUser
     }
 
     // Lance le programme et rend son numéro de processus.
-    public static int Start(string program)
+    public static int Start(string program, string arguments)
     {
         IntPtr own;
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, out own))
@@ -184,9 +188,13 @@ public static class StandardUser
         STARTUPINFO startup = new STARTUPINFO();
         startup.cb = Marshal.SizeOf(startup);
         PROCESS_INFORMATION created;
-        StringBuilder commandLine = new StringBuilder("\"" + program + "\"");
+        StringBuilder commandLine = new StringBuilder("\"" + program + "\"" + (arguments.Length > 0 ? " " + arguments : ""));
         // Sans bloc d'environnement : le programme reçoit celui de ce processus.
-        if (!CreateProcessAsUser(standard, program, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0,
+        // Priorité normale demandée en toutes lettres : sans elle, le programme
+        // hériterait de la priorité basse que les machines de l'intégration
+        // continue donnent à leurs étapes, alors que sur le PC de quelqu'un il
+        // part en priorité normale.
+        if (!CreateProcessAsUser(standard, program, commandLine, IntPtr.Zero, IntPtr.Zero, false, NORMAL_PRIORITY_CLASS,
                 IntPtr.Zero, null, ref startup, out created))
         {
             throw new Win32Exception();
@@ -210,7 +218,7 @@ public static class StandardUser
 '@
 
 try {
-    $id = [StandardUser]::Start($Programme)
+    $id = [StandardUser]::Start($Programme, $Arguments)
 } catch {
     # Windows a refusé de créer le processus : sa raison est le message.
     [Console]::Error.WriteLine($_.Exception.GetBaseException().Message)

@@ -12,14 +12,52 @@ import type {
   BackendError,
   DuplicateGroup,
   DuplicatesPage,
+  GameOption,
+  GameStatus,
+  GameView,
   KeepChoice,
   SessionView,
   Settings,
+  StartupView,
   Theme,
+  WindowsPage,
 } from './backend/types.ts';
 import { fr } from './i18n/fr.ts';
 import { cleanRequest, confirmedRequest, readiness, requestedSteps } from './model/clean.ts';
+import {
+  busyKey,
+  focusKey,
+  GAME_POLL_DELAY,
+  GESTURE_TIMEOUT,
+  isLeaving,
+  LEAVE_GRACE,
+  neighbour,
+  noteStop,
+  optionOf,
+  RELEASE_GRACE,
+  type Releasing,
+  shownApps,
+  VIEW_FAILURES,
+  withExpectedRelease,
+  withOption,
+  withQuietApp,
+  withReleased,
+} from './model/game.ts';
 import { reportKey, toggled } from './model/scan.ts';
+import {
+  entryById,
+  SAY_DELAY,
+  STARTUP_RELOAD_GAP,
+  TITLE_KEY,
+  focusTarget,
+  sayStale,
+  type Say,
+  sayDone,
+  sayRefused,
+  startupFocus,
+  withEntry,
+  withEntryEnabled,
+} from './model/startup.ts';
 import { type Actions, type AppState, initialState, type Route } from './state.ts';
 import { applyTheme } from './theme.ts';
 import { appView } from './views/shell.ts';
@@ -56,6 +94,8 @@ function errorMessage(error: unknown): string {
       return fr.toast[error.reason];
     case 'cleanNotStarted':
       return fr.toast.cleanNotStarted;
+    case 'gameRefused':
+      return fr.game.toast[error.reason];
     default:
       return fr.toast.unexpected;
   }
@@ -80,6 +120,18 @@ const NO_ACTIONS: Actions = {
   addFolder: () => {},
   removeFolder: () => {},
   acknowledgeIssue: () => {},
+  setGameOption: () => {},
+  setQuietApp: () => {},
+  releaseGame: () => {},
+  setGameStatus: () => {},
+  openPicker: () => {},
+  closePicker: () => {},
+  pickOpenApp: () => {},
+  setStartupEntry: () => {},
+  undoStartup: () => {},
+  holdStartupSay: () => {},
+  retryStartup: () => {},
+  openWindowsSettings: () => {},
   minimize: () => {},
   toggleMaximize: () => {},
   close: () => {},
@@ -90,10 +142,14 @@ export function renderOutside(root: HTMLElement): void {
   render(appView({ ...initialState(Date.now()), boot: 'outside' }, NO_ACTIONS), root);
 }
 
+/** Ce qui dessine l'état dans la page : `render` de lit-html, sauf dans les tests. */
+export type Draw = (view: ReturnType<typeof appView>, root: HTMLElement) => void;
+
 export class App {
   private state: AppState = initialState(Date.now());
   private readonly backend: Backend;
   private readonly root: HTMLElement;
+  private readonly draw: Draw;
   private renderQueued = false;
   private polling = false;
   private toastTimer: number | undefined;
@@ -107,10 +163,50 @@ export class App {
   private lastReportKey = '';
   private readonly loading = new Set<string>();
   private lastOverviewRefresh = 0;
+  private gameTimer: number | undefined;
+  /** Redessine l'en-tête quand le délai de son attente est atteint : le sondage peut être arrêté. */
+  private leaveTimer: number | undefined;
+  /**
+   * Change au départ et à la réception de chaque geste du mode jeu : une vue
+   * demandée avant l'un ou l'autre et arrivée après est ignorée.
+   */
+  private gameEpoch = 0;
+  /** Le numéro du dernier geste parti : seule sa réponse change la vue. */
+  private gameSeq = 0;
+  /** Les gestes du mode jeu en vol : tant qu'il y en a, aucune vue demandée par sondage n'est adoptée. */
+  private gamePending = 0;
+  /** Des gestes se sont croisés (l'un est parti avant la réponse de l'autre) : la vue est relue quand le dernier a répondu. */
+  private gamesCrossed = false;
+  private gameLoading = false;
+  /** Les demandes de la vue du mode jeu échouées de suite. */
+  private gameFailures = 0;
+  /** « Tout remettre maintenant » est parti : la page tient la partie pour remise en place le temps que l'agent le note. */
+  private releasing: Releasing | null = null;
+  /** Change à chaque ouverture ou fermeture du sélecteur : une liste arrivée trop tard est ignorée. */
+  private pickerEpoch = 0;
+  /** La page Démarrage est affichée : sa vue se charge à l'arrivée et au retour du focus, jamais en boucle. */
+  private startupVisit = 0;
+  private startupWatching = false;
+  /** Change au départ et à la réponse de chaque changement : une vue demandée avant lui et arrivée après est ignorée. */
+  private startupAction = 0;
+  /** Le numéro de la dernière demande de vue : seule sa réponse compte. */
+  private startupAsk = 0;
+  /** Les changements en vol : tant qu'il y en a un, aucune vue demandée n'est adoptée. */
+  private startupPending = 0;
+  private startupSayTimer: number | undefined;
+  /** « Réessayer » vient d'être pressé : le focus suivra la vue qui arrive. */
+  private startupRetried = false;
+  /** La zone de retour a le focus ou le pointeur : son délai de 12 secondes est suspendu. */
+  private sayFocus = false;
+  private sayHover = false;
+  /** Une vue est demandée, ou vient d'arriver : le retour de la fenêtre n'en relance pas une deuxième. */
+  private startupLoading = false;
+  private startupLoadedAt = 0;
 
-  constructor(backend: Backend, root: HTMLElement) {
+  constructor(backend: Backend, root: HTMLElement, draw: Draw = render) {
     this.backend = backend;
     this.root = root;
+    this.draw = draw;
   }
 
   // ── État et dessin ───────────────────────────────────────────────────────
@@ -121,7 +217,7 @@ export class App {
       this.renderQueued = true;
       queueMicrotask(() => {
         this.renderQueued = false;
-        render(appView(this.state, this.actions), this.root);
+        this.draw(appView(this.state, this.actions), this.root);
       });
     }
   }
@@ -135,7 +231,7 @@ export class App {
   // ── Démarrage ────────────────────────────────────────────────────────────
 
   async start(): Promise<void> {
-    render(appView(this.state, this.actions), this.root);
+    this.draw(appView(this.state, this.actions), this.root);
     try {
       const [overview, session] = await Promise.all([this.backend.overview(), this.backend.sessionView()]);
       applyTheme(overview.settings.theme);
@@ -152,7 +248,16 @@ export class App {
       this.set({ now: Date.now() });
       void this.refreshResults();
     }, CLOCK_DELAY);
-    window.addEventListener('focus', () => void this.refreshOverview(5000));
+    window.addEventListener('focus', () => {
+      void this.refreshOverview(5000);
+      void this.refreshGame();
+      void this.refreshStartup();
+    });
+    // Une fenêtre réduite ou cachée ne demande rien ; elle relit la vue dès qu'on la regarde de nouveau.
+    document.addEventListener('visibilitychange', () => {
+      void this.refreshGame();
+      void this.refreshStartup();
+    });
   }
 
   /** Relit le disque, la corbeille et les réglages. Rend `false` si rien n'a été relu. */
@@ -592,10 +697,608 @@ export class App {
     }
   }
 
+  // ── Mode jeu ─────────────────────────────────────────────────────────────
+
+  /**
+   * Tant que la page Mode jeu est affichée, la vue est redemandée toutes les
+   * deux secondes : l'agent écrit seul, et la page doit le montrer. Hors de la
+   * page, rien n'est demandé, et rien n'est gardé : la vue d'une visite ne sert
+   * pas à la suivante.
+   */
+  private watchGame(): void {
+    if (this.state.route !== 'gameMode') {
+      this.stopWatchingGame();
+      return;
+    }
+    if (this.gameTimer !== undefined) {
+      // Déjà sur la page : une seule minuterie, on relit seulement la vue.
+      void this.refreshGame();
+      return;
+    }
+    // Une visite neuve : ni la vue ni l'arrêt noté de la précédente.
+    this.set({ game: null, gameStoppedSince: null, gameFailed: false });
+    this.endLeaving();
+    this.gameFailures = 0;
+    this.releasing = null;
+    void this.refreshGame();
+    this.gameTimer = window.setInterval(() => {
+      if (this.state.route !== 'gameMode') {
+        // La route a changé sans passer par `navigate` : on cesse de demander.
+        this.stopWatchingGame();
+        return;
+      }
+      void this.refreshGame();
+    }, GAME_POLL_DELAY);
+  }
+
+  private stopWatchingGame(): void {
+    if (this.gameTimer === undefined) {
+      return;
+    }
+    window.clearInterval(this.gameTimer);
+    this.gameTimer = undefined;
+    this.set({ game: null, gameStoppedSince: null, gameFailed: false });
+    this.endLeaving();
+  }
+
+  private adoptGame(received: GameView): void {
+    if (this.state.route !== 'gameMode') {
+      return;
+    }
+    const now = Date.now();
+    // L'agent n'a peut-être pas encore noté ce que la personne vient de demander : la page ne revient pas en arrière.
+    const view = withExpectedRelease(received, this.releasing, now);
+    if (this.releasing !== null && view === received) {
+      this.releasing = null;
+    }
+    this.set({ game: view, gameStoppedSince: noteStop(this.state.gameStoppedSince, view, now), now });
+    this.settleLeaving();
+  }
+
+  /** L'attente de l'en-tête (« Ce n'est pas un jeu ») est-elle finie ? Si oui, elle tombe et le focus va où il faut. */
+  private settleLeaving(): void {
+    const leaving = this.state.gameLeaving;
+    const view = this.state.game;
+    const now = Date.now();
+    if (leaving === null || view === null || isLeaving(view, leaving, now, true)) {
+      return;
+    }
+    this.endLeaving();
+    this.set({ now });
+    // La partie a disparu : le focus va au titre. Sinon (délai dépassé, remise en place en attente, agent arrêté…),
+    // les boutons de l'en-tête sont encore là : il va à celui qui avait le focus.
+    this.focusKey(view.session?.path === leaving.path ? focusKey.headerNotGame : focusKey.title);
+  }
+
+  private endLeaving(): void {
+    window.clearTimeout(this.leaveTimer);
+    this.leaveTimer = undefined;
+    this.set({ gameLeaving: null });
+  }
+
+  private async refreshGame(): Promise<void> {
+    // Pas de demande pour une fenêtre cachée, ni pendant un geste : sa réponse est plus récente que tout sondage.
+    if (this.gameLoading || this.gamePending > 0 || document.hidden || this.state.route !== 'gameMode') {
+      return;
+    }
+    this.gameLoading = true;
+    const epoch = this.gameEpoch;
+    try {
+      const view = await this.backend.gameView();
+      this.gameFailures = 0;
+      if (epoch === this.gameEpoch && this.gamePending === 0 && this.state.route === 'gameMode') {
+        this.set({ gameFailed: false });
+        this.adoptGame(view);
+      }
+    } catch {
+      // La page garde sa dernière vue ; la prochaine demande dira. Si la première ne vient jamais, elle le dit.
+      this.gameFailures += 1;
+      if (this.gameFailures >= VIEW_FAILURES && this.state.game === null) {
+        this.set({ gameFailed: true });
+      }
+    } finally {
+      this.gameLoading = false;
+    }
+  }
+
+  /** Rend le focus au bouton qui porte cette clé (`data-fk`), une fois la page redessinée, si personne ne l'a pris. */
+  private focusKey(key: string): void {
+    queueMicrotask(() => {
+      const active = document.activeElement;
+      if (active !== null && active !== document.body) {
+        return;
+      }
+      for (const element of this.root.querySelectorAll<HTMLElement>('[data-fk]')) {
+        if (element.dataset['fk'] === key) {
+          element.focus();
+          return;
+        }
+      }
+    });
+  }
+
+  /**
+   * Envoie un geste du mode jeu. `key` : tant qu'il est en vol, le même geste
+   * n'est pas renvoyé et son bouton est désactivé. `optimistic` change la vue
+   * tout de suite ; `undo` la remet comme elle était si le cœur refuse, et la
+   * page relit alors la vue du cœur.
+   */
+  private async gameCommand(
+    request: () => Promise<GameView>,
+    options: {
+      key?: string;
+      /** Appelé si le geste est abandonné faute de réponse. */
+      abandoned?: () => void;
+      optimistic?: (view: GameView) => GameView;
+      undo?: (view: GameView) => GameView;
+    } = {},
+  ): Promise<boolean> {
+    const { key, abandoned, optimistic, undo } = options;
+    if (key !== undefined) {
+      if (this.state.gameBusy.includes(key)) {
+        return false;
+      }
+      this.set({ gameBusy: [...this.state.gameBusy, key] });
+    }
+    if (this.gamePending > 0) {
+      this.gamesCrossed = true;
+    }
+    this.gamePending += 1;
+    this.gameEpoch += 1;
+    this.gameSeq += 1;
+    const mine = this.gameSeq;
+    const before = this.state.game;
+    if (optimistic !== undefined && before !== null) {
+      this.set({ game: optimistic(before) });
+    }
+    // La réponse arrive (ou le geste est abandonné) : un sondage parti avant serait plus vieux qu'elle.
+    let over = false;
+    const answered = (): boolean => {
+      if (over) {
+        return false;
+      }
+      over = true;
+      window.clearTimeout(giveUp);
+      this.gamePending -= 1;
+      this.gameEpoch += 1;
+      if (key !== undefined) {
+        this.set({ gameBusy: this.state.gameBusy.filter((other) => other !== key) });
+      }
+      if (this.gamePending === 0 && this.gamesCrossed) {
+        // Le cœur a pu appliquer les gestes dans l'autre ordre : on relit tout de suite, sans attendre le sondage.
+        this.gamesCrossed = false;
+        queueMicrotask(() => void this.refreshGame());
+      }
+      return true;
+    };
+    // Un geste sans réponse bloquerait le sondage et son bouton pour toujours : passé le délai, on l'abandonne.
+    // Sa réponse, si elle arrive plus tard, est ignorée (`over`).
+    const giveUp = window.setTimeout(() => {
+      if (answered()) {
+        abandoned?.();
+        void this.refreshGame();
+      }
+    }, GESTURE_TIMEOUT);
+    try {
+      const view = await request();
+      if (!answered()) {
+        return false;
+      }
+      if (mine === this.gameSeq) {
+        this.adoptGame(view);
+      }
+      return true;
+    } catch (error) {
+      if (!answered()) {
+        return false;
+      }
+      const current = this.state.game;
+      if (undo !== undefined && current !== null) {
+        this.set({ game: undo(current) });
+      }
+      this.toast(errorMessage(error));
+      void this.refreshGame();
+      return false;
+    }
+  }
+
+  private async setGameOption(option: GameOption, on: boolean): Promise<void> {
+    const before = this.state.game;
+    if (before === null || optionOf(before, option) === on) {
+      return;
+    }
+    const previous = optionOf(before, option);
+    await this.gameCommand(() => this.backend.setGameOption(option, on), {
+      optimistic: (view) => withOption(view, option, on),
+      undo: (view) => withOption(view, option, previous),
+    });
+  }
+
+  private async setQuietApp(exe: string, on: boolean): Promise<void> {
+    const view = this.state.game;
+    const before = view?.apps.find((app) => app.exe === exe);
+    if (view === null || before === undefined || before.on === on) {
+      return;
+    }
+    if (!before.builtIn) {
+      // Une app ajoutée par la personne disparaît de la liste : rien ne se montre avant la réponse du cœur.
+      const keys = shownApps(view.apps).map((app) => focusKey.quiet(app.exe));
+      const done = await this.gameCommand(() => this.backend.setQuietApp(exe, on), { key: busyKey.quiet(exe) });
+      if (done) {
+        this.focusKey(neighbour(keys, focusKey.quiet(exe)) ?? focusKey.addApp);
+      }
+      return;
+    }
+    await this.gameCommand(() => this.backend.setQuietApp(exe, on), {
+      optimistic: (current) => withQuietApp(current, exe, on),
+      undo: (current) => withQuietApp(current, exe, before.on),
+    });
+  }
+
+  /** « Tout remettre maintenant » : la page montre tout de suite la partie remise en place ; l'agent le notera à son pas suivant. */
+  private async releaseGame(): Promise<void> {
+    const session = this.state.game?.session ?? null;
+    if (session === null || session.released) {
+      return;
+    }
+    this.releasing = { path: session.path, until: Date.now() + RELEASE_GRACE };
+    const request = this.gameCommand(() => this.backend.releaseGame(), {
+      key: busyKey.release,
+      optimistic: (view) => withReleased(view, true),
+      undo: (view) => {
+        // Le cœur a refusé : la partie n'est pas remise en place, la page ne le prétend plus.
+        this.releasing = null;
+        return withReleased(view, false);
+      },
+    });
+    // Le bouton disparaît : le focus va à celui qui reste.
+    this.focusKey(focusKey.headerNotGame);
+    await request;
+  }
+
+  /** « Ce n'est pas un jeu », « Retirer » et « Rétablir » : le focus va à la ligne voisine de celle qui disparaît. */
+  private async setGameStatus(path: string, status: GameStatus): Promise<void> {
+    const view = this.state.game;
+    const keys =
+      view === null
+        ? []
+        : status === 'forgotten' && view.notGames.some((entry) => entry.path === path)
+          ? view.notGames.map((entry) => focusKey.never(entry.path))
+          : view.games.map((game) => focusKey.game(game.path));
+    const row = view?.notGames.some((entry) => entry.path === path) ? focusKey.never(path) : focusKey.game(path);
+    // La partie en cours : l'en-tête attend que l'agent la termine (au plus LEAVE_GRACE), et le focus ira au titre quand elle aura disparu.
+    const ownGame = status === 'notGame' && view?.session?.path === path;
+    // Le cœur a refusé, ou le geste est abandonné : l'en-tête reprend son état, et son bouton, grisé, retrouve le focus.
+    const giveBack = (): void => {
+      if (ownGame && this.state.gameLeaving?.path === path) {
+        this.endLeaving();
+        this.focusKey(focusKey.headerNotGame);
+      }
+    };
+    if (ownGame) {
+      this.set({ gameLeaving: { path, until: Date.now() + LEAVE_GRACE } });
+      window.clearTimeout(this.leaveTimer);
+      this.leaveTimer = window.setTimeout(() => this.settleLeaving(), LEAVE_GRACE);
+    }
+    const done = await this.gameCommand(() => this.backend.setGameStatus(path, status), {
+      key: busyKey.status(path),
+      abandoned: giveBack,
+    });
+    if (!done) {
+      giveBack();
+    } else if (!ownGame) {
+      this.focusKey(neighbour(keys, row) ?? focusKey.addGame);
+    }
+  }
+
+  /** Ouvre le sélecteur ; la liste des apps ouvertes est demandée au cœur à ce moment-là. */
+  private async openPicker(kind: 'game' | 'app'): Promise<void> {
+    if (this.state.picker !== null) {
+      return;
+    }
+    this.pickerEpoch += 1;
+    const epoch = this.pickerEpoch;
+    this.set({ picker: { kind, apps: null } });
+    try {
+      const apps = await this.backend.openApps();
+      if (epoch === this.pickerEpoch) {
+        this.set({ picker: { kind, apps } });
+      }
+    } catch (error) {
+      if (epoch === this.pickerEpoch) {
+        this.set({ picker: null });
+        this.toast(errorMessage(error));
+      }
+    }
+  }
+
+  private closePicker(): void {
+    this.pickerEpoch += 1;
+    this.set({ picker: null });
+  }
+
+  /** Le choix part avec le numéro et le chemin que le cœur a donnés ; la boîte reste, ses choix grisés, jusqu'à la réponse. */
+  private async pickOpenApp(id: number): Promise<void> {
+    const picker = this.state.picker;
+    const chosen = picker?.apps?.find((app) => app.id === id);
+    if (picker === null || chosen === undefined || this.state.gameBusy.includes(busyKey.pick)) {
+      return;
+    }
+    const epoch = this.pickerEpoch;
+    await this.gameCommand(
+      () => (picker.kind === 'game' ? this.backend.addGame(id, chosen.path) : this.backend.addQuietApp(id, chosen.path)),
+      { key: busyKey.pick },
+    );
+    // Si la personne a fermé la boîte (ou en a ouvert une autre) entre-temps, il n'y a plus rien à refermer.
+    if (epoch === this.pickerEpoch) {
+      this.closePicker();
+    }
+  }
+
+  // ── Démarrage ────────────────────────────────────────────────────────────
+
+  /**
+   * À l'arrivée sur la page Démarrage, la vue est demandée une fois ; elle l'est
+   * de nouveau quand la fenêtre retrouve le focus (la personne a pu régler
+   * quelque chose dans Windows). Aucun sondage. Hors de la page, rien n'est
+   * demandé ni gardé : la vue d'une visite ne sert pas à la suivante.
+   */
+  private watchStartup(): void {
+    if (this.state.route !== 'startup') {
+      this.stopWatchingStartup();
+      return;
+    }
+    if (this.startupWatching) {
+      // Déjà sur la page : on relit seulement la vue.
+      void this.refreshStartup(true);
+      return;
+    }
+    this.startupWatching = true;
+    this.startupVisit += 1;
+    this.startupLoading = false;
+    this.startupLoadedAt = 0;
+    this.startupRetried = false;
+    this.clearSay();
+    this.set({ startup: null, startupFailed: false, startupBusy: null });
+    void this.refreshStartup(true);
+  }
+
+  private stopWatchingStartup(): void {
+    if (!this.startupWatching) {
+      return;
+    }
+    this.startupWatching = false;
+    this.startupVisit += 1;
+    this.startupLoading = false;
+    this.startupRetried = false;
+    this.clearSay();
+    this.set({ startup: null, startupFailed: false, startupBusy: null });
+  }
+
+  /** « Réessayer » sous le message d'erreur de la première vue. */
+  private retryStartup(): void {
+    this.set({ startupFailed: false });
+    // Le bouton disparaît le temps du chargement : le focus ira au titre, ou reviendra au bouton si la panne dure.
+    this.startupRetried = true;
+    void this.refreshStartup(true);
+  }
+
+  /**
+   * Demande la vue. Au retour de la fenêtre (`force` faux), une demande déjà en
+   * vol, ou finie depuis moins d'une demi-seconde, n'est pas relancée : le focus
+   * et la visibilité arrivent ensemble.
+   */
+  private async refreshStartup(force = false): Promise<void> {
+    // Pas de demande pour une fenêtre cachée, ni pendant un changement : sa réponse est plus récente que toute vue.
+    if (this.startupPending > 0 || document.hidden || this.state.route !== 'startup') {
+      return;
+    }
+    if (!force && (this.startupLoading || Date.now() - this.startupLoadedAt < STARTUP_RELOAD_GAP)) {
+      return;
+    }
+    this.startupAsk += 1;
+    const ask = this.startupAsk;
+    const action = this.startupAction;
+    const visit = this.startupVisit;
+    this.startupLoading = true;
+    const current = (): boolean =>
+      ask === this.startupAsk && action === this.startupAction && visit === this.startupVisit;
+    const finish = (): void => {
+      if (ask === this.startupAsk) {
+        this.startupLoading = false;
+        this.startupLoadedAt = Date.now();
+      }
+    };
+    try {
+      const view = await this.backend.startupView();
+      finish();
+      if (current()) {
+        this.adoptStartup(view);
+      }
+    } catch {
+      finish();
+      // La page garde sa dernière vue ; sans vue, elle le dit et propose « Réessayer ».
+      if (current() && this.state.startup === null) {
+        this.set({ startupFailed: true });
+        if (this.startupRetried) {
+          this.focusKey(startupFocus.retry);
+        }
+      }
+    }
+  }
+
+  /**
+   * Adopte une vue. Ce qui avait le focus est suivi : si sa ligne a disparu, le
+   * focus passe à la ligne voisine, sinon au titre. Une phrase du retour que la
+   * vue démentirait est effacée.
+   */
+  private adoptStartup(view: StartupView): void {
+    const before = this.state.startup;
+    // La clé du contrôle de ligne qui a le focus (interrupteur ou bouton de fin de ligne).
+    const key = (document.activeElement as { dataset?: Record<string, string | undefined> } | null)?.dataset?.['fk'];
+    const say = this.state.startupSay;
+    const retried = this.startupRetried && before === null;
+    this.set({ startup: view, startupFailed: false, now: Date.now() });
+    if (retried) {
+      this.startupRetried = false;
+      this.focusKey(TITLE_KEY);
+    }
+    if (say !== null && sayStale(say, view)) {
+      // Si le focus était dans la barre, il va à la ligne de la phrase, ou à sa voisine.
+      const wanted = say.undo === null ? null : focusTarget(before, view, startupFocus.entry(say.undo.id));
+      this.clearSay(wanted ?? TITLE_KEY);
+    }
+    const target = key === undefined ? null : focusTarget(before, view, key);
+    if (target !== null) {
+      this.focusKey(target);
+    }
+  }
+
+  /** Écrit dans la zone de retour ; elle s'efface seule au bout de 12 secondes, sauf tant qu'on la lit. */
+  private say(say: Say | null): void {
+    if (say === null) {
+      this.clearSay();
+      return;
+    }
+    this.set({ startupSay: say });
+    this.armSay();
+  }
+
+  private armSay(): void {
+    window.clearTimeout(this.startupSayTimer);
+    if (!this.sayFocus && !this.sayHover && this.state.startupSay !== null) {
+      this.startupSayTimer = window.setTimeout(() => this.clearSay(), SAY_DELAY);
+    }
+  }
+
+  /**
+   * Efface la phrase. Si la zone avait le focus, il retourne à `refocus` : par défaut l'interrupteur
+   * de la ligne de la phrase, sinon sa voisine ou le titre.
+   */
+  private clearSay(refocus?: string): void {
+    window.clearTimeout(this.startupSayTimer);
+    const say = this.state.startupSay;
+    const hadFocus = this.sayFocus;
+    this.sayFocus = false;
+    this.sayHover = false;
+    if (say === null) {
+      return;
+    }
+    this.set({ startupSay: null });
+    if (hadFocus && say.undo !== null) {
+      const view = this.state.startup;
+      this.focusKey(
+        refocus ?? (view === null ? TITLE_KEY : (focusTarget(view, view, startupFocus.entry(say.undo.id)) ?? TITLE_KEY)),
+      );
+    }
+  }
+
+  private holdStartupSay(by: 'focus' | 'hover', on: boolean): void {
+    if (by === 'focus') {
+      // Une fenêtre qui perd le focus système fait partir le focus de la barre sans que la personne l'ait
+      // quittée : le focus « logique » y reste, et la minuterie reste suspendue jusqu'à sa vraie sortie.
+      if (!on && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+        return;
+      }
+      this.sayFocus = on;
+    } else {
+      this.sayHover = on;
+    }
+    this.armSay();
+  }
+
+  /** Montre la ligne du geste : la zone de retour flotte au bas de la page et ne doit pas la cacher. */
+  private revealStartupRow(id: string): void {
+    queueMicrotask(() => {
+      for (const element of this.root.querySelectorAll<HTMLElement>('[data-fk]')) {
+        if (element.dataset['fk'] === startupFocus.entry(id)) {
+          const row = element.closest('li') ?? element;
+          if (typeof row.scrollIntoView === 'function') {
+            row.scrollIntoView({ block: 'nearest' });
+          }
+          return;
+        }
+      }
+    });
+  }
+
+  /**
+   * Coupe ou remet une entrée du compte. Un seul changement à la fois : le
+   * cœur en refuse un second. L'interrupteur bouge tout de suite ; si le cœur
+   * refuse, il revient et la zone de retour le dit.
+   */
+  private async setStartupEntry(id: string, enabled: boolean): Promise<void> {
+    const view = this.state.startup;
+    const before = view === null ? undefined : entryById(view, id);
+    if (view === null || before === undefined || !before.adjustable || this.startupPending > 0) {
+      return;
+    }
+    if ((before.state === 'enabled') === enabled) {
+      return;
+    }
+    const visit = this.startupVisit;
+    this.startupPending += 1;
+    this.startupAction += 1;
+    // Une vue en vol est périmée par ce geste.
+    this.startupLoading = false;
+    // Le geste suivant efface la phrase du précédent.
+    this.say(null);
+    this.set({ startup: withEntryEnabled(view, id, enabled, Date.now()), startupBusy: id });
+    const answered = (): boolean => {
+      this.startupPending -= 1;
+      this.startupAction += 1;
+      this.startupLoadedAt = 0;
+      if (visit !== this.startupVisit || this.state.route !== 'startup') {
+        // La personne a quitté la page entre-temps : la page suivante repart de zéro.
+        void this.refreshStartup(true);
+        return false;
+      }
+      return true;
+    };
+    try {
+      const answer: StartupView = await this.backend.setStartupEntry(id, enabled);
+      if (answered()) {
+        this.set({ startupBusy: null });
+        this.adoptStartup(answer);
+        // Le cœur a accepté, mais la vue montre l'entrée dans l'autre état : on ne dit pas ce qui n'est pas.
+        const said = sayDone(before, enabled);
+        this.say(sayStale(said, answer) ? { text: fr.startup.say.failed, undo: null } : said);
+        this.focusKey(startupFocus.entry(id));
+        this.revealStartupRow(id);
+      }
+    } catch (error) {
+      if (answered()) {
+        const current = this.state.startup;
+        this.set({ startup: current === null ? null : withEntry(current, before), startupBusy: null });
+        this.say(sayRefused(error));
+        this.focusKey(startupFocus.entry(id));
+        this.revealStartupRow(id);
+        void this.refreshStartup(true);
+      }
+    }
+  }
+
+  private undoStartup(): void {
+    const undo = this.state.startupSay?.undo;
+    if (undo !== null && undo !== undefined) {
+      void this.setStartupEntry(undo.id, undo.enabled);
+    }
+  }
+
+  private async openWindowsSettings(page: WindowsPage): Promise<void> {
+    try {
+      await this.backend.openWindowsSettings(page);
+    } catch (error) {
+      this.toast(errorMessage(error));
+    }
+  }
+
   // ── Gestes ───────────────────────────────────────────────────────────────
 
   private navigate(route: Route): void {
     this.set({ route });
+    this.watchGame();
+    this.watchStartup();
     this.ensureData();
     if (route === 'bin') {
       void this.refreshOverview(2000);
@@ -626,6 +1329,18 @@ export class App {
     addFolder: () => void this.addFolder(),
     removeFolder: (path) => void this.changeFolders(() => this.backend.removeExcludedFolder(path)),
     acknowledgeIssue: () => void this.acknowledgeIssue(),
+    setGameOption: (option, on) => void this.setGameOption(option, on),
+    setQuietApp: (exe, on) => void this.setQuietApp(exe, on),
+    releaseGame: () => void this.releaseGame(),
+    setGameStatus: (path: string, status: GameStatus) => void this.setGameStatus(path, status),
+    openPicker: (kind) => void this.openPicker(kind),
+    closePicker: () => this.closePicker(),
+    pickOpenApp: (id) => void this.pickOpenApp(id),
+    setStartupEntry: (id, enabled) => void this.setStartupEntry(id, enabled),
+    undoStartup: () => this.undoStartup(),
+    holdStartupSay: (by, on) => this.holdStartupSay(by, on),
+    retryStartup: () => this.retryStartup(),
+    openWindowsSettings: (page) => void this.openWindowsSettings(page),
     minimize: () => void this.backend.minimizeWindow(),
     toggleMaximize: () => void this.backend.toggleMaximizeWindow(),
     close: () => void this.backend.closeWindow(),

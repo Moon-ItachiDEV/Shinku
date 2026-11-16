@@ -19,9 +19,12 @@ use std::path::Path;
 
 use shinku_core::backend::{Backend, BackendError, DuplicatesPage, LargeFilesPage, Overview};
 use shinku_core::clean::{CleanPreview, CleanRequest};
+use shinku_core::game::view::{GameOption, GameStatus, GameView, OpenApp};
+use shinku_core::platform::agent::WindowsPage;
 use shinku_core::scan::report::{JunkReport, KeepChoice};
 use shinku_core::session::SessionView;
 use shinku_core::settings::{Settings, Theme};
+use shinku_core::startup::view::StartupView;
 use tauri::{State, WebviewWindow};
 
 use crate::app::paint_background;
@@ -157,4 +160,102 @@ pub fn remove_excluded_folder(
     path: String,
 ) -> Result<Settings, BackendError> {
     backend.include_folder(Path::new(&path))
+}
+
+/// Tout ce que la page « Mode jeu » affiche.
+#[tauri::command(async)]
+pub fn game_view(backend: State<'_, Backend>) -> GameView {
+    backend.game_view()
+}
+
+/// Allume ou éteint un interrupteur du mode jeu.
+#[tauri::command(async)]
+pub fn set_game_option(
+    backend: State<'_, Backend>,
+    option: GameOption,
+    on: bool,
+) -> Result<GameView, BackendError> {
+    backend.set_game_option(option, on)
+}
+
+/// Met une app de la liste en veilleuse pendant les parties, ou la laisse
+/// tranquille. `exe` n'est que comparé aux apps connues.
+#[tauri::command(async)]
+pub fn set_quiet_app(
+    backend: State<'_, Backend>,
+    exe: String,
+    on: bool,
+) -> Result<GameView, BackendError> {
+    backend.set_quiet_app(&exe, on)
+}
+
+/// Les apps ouvertes en ce moment, pour les sélecteurs de la page.
+#[tauri::command(async)]
+pub fn open_apps(backend: State<'_, Backend>) -> Vec<OpenApp> {
+    backend.open_apps()
+}
+
+/// Ajoute aux jeux l'app de ce numéro, dans la dernière liste rendue par
+/// [`open_apps`]. `path` doit être exactement son chemin dans cette liste : il
+/// n'est que comparé (si la liste a changé, la demande est refusée).
+#[tauri::command(async)]
+pub fn add_game(
+    backend: State<'_, Backend>,
+    id: u32,
+    path: String,
+) -> Result<GameView, BackendError> {
+    backend.add_game(id, &path)
+}
+
+/// Ajoute aux apps en veilleuse l'app de ce numéro, dans la dernière liste
+/// rendue par [`open_apps`]. Même règle pour `path`.
+#[tauri::command(async)]
+pub fn add_quiet_app(
+    backend: State<'_, Backend>,
+    id: u32,
+    path: String,
+) -> Result<GameView, BackendError> {
+    backend.add_quiet_app(id, &path)
+}
+
+/// Dit ce que la personne pense d'un jeu de la liste. `path` n'est que
+/// comparé aux jeux connus.
+#[tauri::command(async)]
+pub fn set_game_status(
+    backend: State<'_, Backend>,
+    path: String,
+    status: GameStatus,
+) -> Result<GameView, BackendError> {
+    backend.set_game_status(&path, status)
+}
+
+/// « Tout remettre maintenant » : l'agent rend à Windows ce qu'il a changé.
+#[tauri::command(async)]
+pub fn release_game(backend: State<'_, Backend>) -> GameView {
+    backend.release_game()
+}
+
+/// Tout ce que la page « Démarrage » affiche : les apps inscrites au démarrage
+/// de Windows, pour le compte et pour le PC.
+#[tauri::command(async)]
+pub fn startup_view(backend: State<'_, Backend>) -> StartupView {
+    backend.startup_view()
+}
+
+/// Coupe ou remet une app inscrite au démarrage du compte. `id` est celui que
+/// la page a reçu dans [`startup_view`] : le cœur ne s'en sert que pour
+/// retrouver l'entrée, la page n'envoie jamais un chemin ni un nom de valeur.
+#[tauri::command(async)]
+pub fn set_startup_entry(
+    backend: State<'_, Backend>,
+    id: String,
+    enabled: bool,
+) -> Result<StartupView, BackendError> {
+    backend.set_startup_entry(&id, enabled)
+}
+
+/// Ouvre l'une des trois pages des réglages de Windows que la page propose.
+#[tauri::command(async)]
+pub fn open_windows_settings(backend: State<'_, Backend>, page: WindowsPage) {
+    backend.open_windows_settings(page);
 }

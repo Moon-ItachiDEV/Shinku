@@ -109,11 +109,59 @@ export function formatAgo(then: number, now: number): string {
   return `il y a ${Math.max(1, years)}${NBSP}${plural(years, 'an', 'ans')}`;
 }
 
+/**
+ * Une durée de jeu : « 45 min », « 2 h 10 ». Moins d'une minute se lit « 1 min » ;
+ * une heure pile s'écrit sans minutes (« 2 h »).
+ */
+export function formatDuration(milliseconds: number): string {
+  const minutes = Math.max(1, Math.floor(Math.max(0, milliseconds) / MINUTE));
+  if (minutes < 60) {
+    return `${minutes}${NBSP}min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}${NBSP}h` : `${hours}${NBSP}h${NBSP}${String(rest).padStart(2, '0')}`;
+}
+
 /** Heure locale : « 14:32 ». */
 export function formatClock(timestamp: number): string {
   const date = new Date(timestamp);
   const two = (value: number) => String(value).padStart(2, '0');
   return `${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+
+/**
+ * Un début, pour finir la phrase « depuis … » : « 14:32 » le jour même,
+ * « hier, 23:40 » la veille, sinon « le 14 nov., 23:40 » (avec l'année si ce
+ * n'est pas l'année en cours). Jours et heures sont ceux de la machine.
+ */
+export function formatSince(then: number, now: number): string {
+  const date = new Date(then);
+  const today = new Date(now);
+  const clock = formatClock(then);
+  const dayOf = (value: Date): number => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  // Les jours se comptent sur le calendrier, pas en tranches de 24 h : un changement d'heure ne les décale pas.
+  const days = Math.round((dayOf(today) - dayOf(date)) / DAY);
+  if (days <= 0) {
+    return clock;
+  }
+  if (days === 1) {
+    return `hier, ${clock}`;
+  }
+  return `${formatDay(then, now)}, ${clock}`;
+}
+
+/**
+ * Un jour, pour finir une phrase : « le 15 nov. », avec l'année si ce n'est pas
+ * l'année en cours (« le 2 nov. 2024 »). Les jours sont ceux de la machine.
+ */
+export function formatDay(then: number, now: number): string {
+  const date = new Date(then);
+  const day = date.getDate() === 1 ? '1er' : String(date.getDate());
+  const year = date.getFullYear() === new Date(now).getFullYear() ? '' : ` ${date.getFullYear()}`;
+  return `le ${day}${NBSP}${MONTHS[date.getMonth()] ?? ''}${year}`;
 }
 
 /** Sépare un chemin en nom et dossier parent : pour Windows (`\`) et pour le développement (`/`). */

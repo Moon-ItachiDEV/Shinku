@@ -159,6 +159,10 @@ function welcomePane(state: AppState, actions: Actions): TemplateResult {
  * dans le grand chiffre « à libérer » : la ligne dit pourquoi.
  */
 function doneText(row: Extract<ScanRow, { status: 'done' }>): string {
+  // Le démarrage ne se compte pas en octets : ce sont des apps inscrites.
+  if (row.id === 'startup') {
+    return fr.scan.startupCount(row.items);
+  }
   if (row.lot === 'auto') {
     return formatBytes(row.bytes);
   }
@@ -186,11 +190,14 @@ function rowStatus(row: ScanRow): { indicator: TemplateResult; text: string; ton
     case 'unavailable':
       return {
         indicator: html`<span class="pip off"></span>`,
-        text: row.id === 'duplicates' ? fr.scan.notSearched : fr.scan.notMeasured,
+        text:
+          row.id === 'duplicates'
+            ? fr.scan.notSearched
+            : row.id === 'startup'
+              ? fr.scan.startupNotMeasured
+              : fr.scan.notMeasured,
         tone: 'wait',
       };
-    case 'soon':
-      return { indicator: html`<span class="pip off"></span>`, text: fr.common.soon, tone: 'wait' };
   }
 }
 
@@ -315,6 +322,7 @@ function resultsPane(state: AppState, actions: Actions): TemplateResult {
   });
 
   const large = category(summary, 'largeFiles');
+  const startup = category(summary, 'startup');
   const reviewRows = html`<button type="button" class="row" @click=${() => actions.navigate('large')}>
       <span class="ricon">${navIcon('large', 16)}</span>
       <span class="tx">
@@ -328,7 +336,7 @@ function resultsPane(state: AppState, actions: Actions): TemplateResult {
       <span class="ricon">${navIcon('startup', 16)}</span>
       <span class="tx">
         <span class="t1">${fr.nav.startup}</span>
-        <span class="t2">${fr.common.soon}</span>
+        <span class="t2">${startup?.state === 'ready' ? fr.results.startupHint(startup.items) : fr.results.startupNotMeasured}</span>
       </span>
       ${chevronIcon()}
     </button>`;

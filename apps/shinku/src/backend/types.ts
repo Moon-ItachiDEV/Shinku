@@ -13,7 +13,6 @@ export interface Settings {
   theme: Theme;
   autoScan: 'never' | 'weekly' | 'monthly';
   notifyFromGb: number;
-  gameModeOnLaunch: boolean;
   shaderCacheLimitGb: number | null;
   recycleBinAlert: boolean;
   recycleBinThresholdGb: number;
@@ -22,6 +21,20 @@ export interface Settings {
   useRecycleBin: boolean;
   /** « Dossiers jamais touchés », sous leur forme habituelle (`C:\…`). */
   excludedFolders: string[];
+  /** Mode jeu automatique : éteint par défaut. */
+  gameModeAuto: boolean;
+  /** Alimentation « Performances élevées » pendant la partie. */
+  gameModePower: boolean;
+  /** Apps d'arrière-plan en veilleuse pendant la partie. */
+  gameModeQuietApps: boolean;
+  /** Apps cochées par la personne (noms d'exécutables). */
+  gameModeQuietAdded: string[];
+  /** Apps cochées d'office que la personne a décochées. */
+  gameModeQuietRemoved: string[];
+  /** Jeux ajoutés par la personne (chemins d'exécutables). */
+  gameModeGames: string[];
+  /** « Ce n'est pas un jeu » : programmes jamais traités comme des jeux. */
+  gameModeNotGames: string[];
 }
 
 /** Ce qui n'a pas pu être relu dans le fichier des réglages. */
@@ -305,6 +318,92 @@ export interface DuplicatesPage {
 
 export type FolderRefusal = 'notAbsolute' | 'notAFolder' | 'notUnicode';
 
+// ── Le mode jeu ────────────────────────────────────────────────────────────
+
+/** Les trois interrupteurs du mode jeu. */
+export type GameOption = 'auto' | 'power' | 'quietApps';
+/** Le programme de veille (`shinku-agent.exe`) : en marche, arrêté, ou absent de l'installation. */
+export type AgentState = 'running' | 'stopped' | 'missing';
+export type PowerOutcome =
+  | 'applied'
+  | 'alreadyFast'
+  | 'onBattery'
+  | 'unavailable'
+  | 'unsuited'
+  | 'custom'
+  | 'refused'
+  | 'off';
+export type PowerSupport = 'available' | 'unavailable' | 'unsuited';
+export type GameSource = 'added' | 'library';
+export type WindowsPage = 'gameMode' | 'power' | 'startupApps';
+export type GameStatus = 'notGame' | 'forgotten';
+
+/** La partie en cours, telle que l'agent l'a notée. */
+export interface GameSession {
+  name: string;
+  path: string;
+  since: number;
+  source: GameSource;
+  power: PowerOutcome;
+  /** Apps distinctes en veilleuse en ce moment. */
+  quietedApps: number;
+  released: boolean;
+  restorePending: boolean;
+}
+
+/** Le bilan de la dernière partie terminée. */
+export interface LastGame {
+  name: string;
+  started: number;
+  ended: number;
+  /** `null` : l'alimentation n'avait pas été changée. */
+  powerRestored: boolean | null;
+  appsRestored: number;
+  complete: boolean;
+}
+
+export interface QuietApp {
+  exe: string;
+  label: string;
+  on: boolean;
+  running: boolean;
+  builtIn: boolean;
+}
+
+export interface KnownGame {
+  path: string;
+  name: string;
+  source: GameSource;
+  lastPlayed: number | null;
+}
+
+export interface GameView {
+  auto: boolean;
+  power: boolean;
+  quietApps: boolean;
+  agent: AgentState;
+  /** Désactivé par la personne dans les apps de démarrage de Windows. */
+  startupDisabled: boolean;
+  session: GameSession | null;
+  last: LastGame | null;
+  powerSupport: PowerSupport;
+  onBattery: boolean;
+  /** Apps intégrées et apps ajoutées. */
+  apps: QuietApp[];
+  /** Jeux ajoutés, puis jeux vus (sans ceux de `notGames`), le plus récent d'abord. */
+  games: KnownGame[];
+  notGames: Array<{ path: string; name: string }>;
+}
+
+/** Une app ouverte que la personne peut choisir. L'`id` ne vaut que pour la dernière liste rendue. */
+export interface OpenApp {
+  id: number;
+  name: string;
+  path: string;
+}
+
+export type GameRefusal = 'unknownApp' | 'unknownGame' | 'notAGame' | 'protectedApp' | 'listFull';
+
 /** Une demande refusée par le cœur. */
 export type BackendError =
   | { kind: 'settingsUnchecked' }
@@ -313,7 +412,55 @@ export type BackendError =
   | { kind: 'folderRefused'; reason: FolderRefusal }
   | { kind: 'cleanRunning' }
   | { kind: 'cleanRefused'; reason: CleanRefusal }
-  | { kind: 'cleanNotStarted'; reason: string };
+  | { kind: 'cleanNotStarted'; reason: string }
+  | { kind: 'gameRefused'; reason: GameRefusal }
+  | { kind: 'startupRefused'; reason: StartupRefusal };
+
+// ── Le démarrage ───────────────────────────────────────────────────────────
+
+/** Le compte (réglable ici), ou tout le PC (en lecture seule dans ce lot). */
+export type StartupScope = 'user' | 'machine';
+/** `unknown` : Shinku ne sait pas lire le réglage de Windows, la ligne n'a pas d'interrupteur. */
+export type StartupState = 'enabled' | 'disabled' | 'unknown';
+export type StartupTarget = 'found' | 'missing' | 'hosted' | 'unknown';
+export type StartupOrigin = 'registry' | 'folder';
+export type StartupMark =
+  /** Coupée par Shinku, à cette date. */
+  | { kind: 'cutByShinku'; at: number }
+  /** Coupée par Shinku, puis remise par l'app elle-même ; `cut` : la date de la coupure. */
+  | { kind: 'cameBack'; cut: number };
+
+export interface StartupEntry {
+  /** L'identifiant que le cœur a donné : c'est tout ce que la page lui renvoie. */
+  id: string;
+  name: string;
+  /** Le nom sous lequel l'app est inscrite, s'il diffère de `name`. */
+  alias: string | null;
+  /** Ce que le fichier déclare, pas une identité vérifiée. */
+  publisher: string | null;
+  scope: StartupScope;
+  origin: StartupOrigin;
+  state: StartupState;
+  /** La date de la coupure, lue dans Windows, si elle est plausible. */
+  disabledAt: number | null;
+  mark: StartupMark | null;
+  target: StartupTarget;
+  /** Le programme qui porte la commande, si `target` vaut `hosted`. */
+  host: string | null;
+  hint: 'sync' | null;
+  /** L'entrée de Shinku lui-même (mode jeu automatique). */
+  own: boolean;
+  adjustable: boolean;
+}
+
+export interface StartupView {
+  /** Le compte d'abord, puis le PC ; triées. */
+  entries: StartupEntry[];
+  /** Les portées dont une place n'a pas pu être lue. */
+  unreadable: StartupScope[];
+}
+
+export type StartupRefusal = 'unknownEntry' | 'notAdjustable' | 'busy' | 'failed';
 
 /** Ce que l'interface peut demander. Deux réalisations : Tauri, et la démo. */
 export interface Backend {
@@ -336,6 +483,25 @@ export interface Backend {
   /** Ouvre le sélecteur de dossier de Windows. `null` si l'utilisateur annule. */
   addExcludedFolder(): Promise<Settings | null>;
   removeExcludedFolder(path: string): Promise<Settings>;
+  /** Le mode jeu : réglages, état de l'agent, partie en cours, jeux et apps connus. */
+  gameView(): Promise<GameView>;
+  setGameOption(option: GameOption, on: boolean): Promise<GameView>;
+  /** `exe` n'est que comparé à la liste connue du cœur. */
+  setQuietApp(exe: string, on: boolean): Promise<GameView>;
+  /** Les apps ouvertes ; les `id` rendus ne valent que pour cette liste. */
+  openApps(): Promise<OpenApp[]>;
+  /** `path` n'est que comparé : le cœur vérifie qu'il est bien celui du numéro `id` dans sa dernière liste. */
+  addGame(id: number, path: string): Promise<GameView>;
+  addQuietApp(id: number, path: string): Promise<GameView>;
+  /** `path` n'est que comparé aux chemins que le cœur connaît. */
+  setGameStatus(path: string, status: GameStatus): Promise<GameView>;
+  /** « Tout remettre maintenant ». */
+  releaseGame(): Promise<GameView>;
+  /** Le démarrage : les apps inscrites, du compte et du PC. */
+  startupView(): Promise<StartupView>;
+  /** `id` n'est que comparé aux entrées que le cœur connaît ; il rend la vue entière. */
+  setStartupEntry(id: string, enabled: boolean): Promise<StartupView>;
+  openWindowsSettings(page: WindowsPage): Promise<void>;
   minimizeWindow(): Promise<void>;
   toggleMaximizeWindow(): Promise<void>;
   closeWindow(): Promise<void>;

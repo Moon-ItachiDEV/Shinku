@@ -138,6 +138,8 @@ export const fr = typeset({
     working: 'Analyse…',
     comparing: (done: number) => `Comparaison… ${done}${NBSP}%`,
     notMeasured: 'Non mesurée',
+    startupNotMeasured: 'Non mesuré',
+    startupCount: (count: number) => (count === 0 ? 'Aucune app active' : countOf(count, 'app active', 'apps actives')),
     notSearched: 'Non recherchés',
     none: 'Rien',
     optional: (bytes: number) => `${formatBytes(bytes)} au choix`,
@@ -161,6 +163,11 @@ export const fr = typeset({
     binEmpty: 'Vide',
     binUnknown: 'Non mesurée',
     review: 'À vérifier toi-même',
+    startupHint: (count: number) =>
+      count === 0
+        ? 'Aucune app active au démarrage'
+        : `${countOf(count, 'app active', 'apps actives')} au démarrage de Windows`,
+    startupNotMeasured: 'Non mesuré',
     largeHint: (count: number, threshold: number) =>
       count === 0
         ? `Aucun fichier de plus de ${formatLimit(threshold)}`
@@ -330,9 +337,6 @@ export const fr = typeset({
 
   soon: {
     cap: 'Ce module arrive dans une prochaine version.',
-    startup: 'Les apps qui se lancent avec Windows, et le temps qu’elles te coûtent à chaque allumage.',
-    gameMode:
-      'Met en pause ce qui tourne en arrière-plan pendant que tu joues. Tout reprend quand tu quittes le jeu.',
     uninstall:
       'Supprime une app avec ce qu’elle laisse derrière elle : dossiers, raccourcis et entrées du registre.',
     privacy:
@@ -355,8 +359,157 @@ export const fr = typeset({
     foldersNote: 'Changer cette liste efface les résultats en cours : relance ensuite une analyse.',
     addFolder: 'Ajouter un dossier',
     removeFolder: (path: string) => `Retirer ${path}`,
-    later: 'Les autres réglages arriveront avec leurs modules : lancement avec Windows, analyse automatique, corbeille et mode jeu.',
+    later: 'Les autres réglages arriveront avec leurs modules : lancement avec Windows, analyse automatique et corbeille.',
     version: (version: string) => `Shinku version ${version}`,
+  },
+
+  game: {
+    eyebrow: 'Mode jeu',
+    titleOff: 'Le mode jeu est éteint',
+    titleIdle: 'Shinku veille sur tes parties',
+    titlePlaying: (name: string) => `En jeu : ${name}`,
+    titlePending: 'Remise en place en cours',
+    textOff:
+      'Allume-le une fois. Ensuite, lance ton jeu comme d’habitude : Shinku le reconnaît tout seul et ne lance jamais rien à ta place.',
+    textIdle:
+      'Lance ton jeu comme d’habitude. Shinku applique tes réglages, puis remet tout en place quand tu le quittes.',
+    // `since` : « 14:32 », « hier, 23:40 » ou « le 14 nov., 23:40 » (voir formatSince).
+    textPlaying: (since: string) => `Mode jeu actif depuis ${since}. Tout revient en place quand tu quittes le jeu.`,
+    textReleased: 'Remis en place pour cette partie. Le mode jeu reprendra à la prochaine.',
+    textLeaving: 'Shinku remet tout en place…',
+    textPending: 'Shinku n’a pas encore pu tout remettre en place. Il réessaie tout seul.',
+    release: 'Tout remettre maintenant',
+    notAGame: 'Ce n’est pas un jeu',
+    notAGameNamed: (name: string) => `Ce n’est pas un jeu : ${name}`,
+    lastOk: (name: string, duration: string) =>
+      `Dernière partie : ${name}, ${duration}. Tout a été remis en place.`,
+    lastIncomplete: (name: string, duration: string) =>
+      `Dernière partie : ${name}, ${duration}. Tout n’a pas pu être remis en place : vérifie le mode d’alimentation de Windows.`,
+    powerApplied: 'Alimentation en performances élevées',
+    powerAlreadyFast: 'Alimentation déjà en performances élevées',
+    powerOnBattery: 'Alimentation inchangée : tu es sur batterie',
+    powerCustom: 'Alimentation inchangée : ton PC a son propre mode',
+    powerRefused: 'Windows a refusé de changer l’alimentation',
+    quietCount: (count: number) => countOf(count, 'app en veilleuse', 'apps en veilleuse'),
+    auto: 'Mode jeu automatique',
+    autoHint:
+      'S’active quand un jeu passe au premier plan, sans rien lancer. Shinku démarre alors avec Windows, en arrière-plan et sans fenêtre.',
+    agentMissing: 'Cette installation de Shinku n’a pas son programme de veille. Réinstalle Shinku pour l’avoir.',
+    agentStopped: 'La veille de Shinku ne démarre pas. Ferme Shinku, puis rouvre-le.',
+    startupDisabled:
+      'Shinku est désactivé dans les apps de démarrage de Windows : le mode jeu ne veillera qu’après avoir ouvert Shinku.',
+    during: 'Pendant que tu joues',
+    power: 'Alimentation en performances élevées',
+    powerHint:
+      `Windows passe sur son mode «${NBSP}Performances élevées${NBSP}» le temps de la partie, puis reprend ton mode habituel. Jamais sur batterie. Dans ce mode, le PC ne se met pas en veille tout seul.`,
+    powerUnavailable: `Ce PC ne propose pas le mode «${NBSP}Performances élevées${NBSP}» : son alimentation se règle dans Windows.`,
+    powerUnsuited:
+      'Sur ce processeur, AMD recommande de garder le mode normal de Windows : Shinku n’y touche pas.',
+    powerOpen: 'Réglages d’alimentation de Windows',
+    onBattery: 'Sur batterie',
+    quiet: 'Apps d’arrière-plan en veilleuse',
+    quietHint: 'Elles restent ouvertes, mais passent après ton jeu. Celle que tu utilises retrouve sa vitesse.',
+    open: 'Ouverte',
+    addedApp: 'Ajoutée par toi',
+    quietAlso: (list: string) => `Aussi mises en veilleuse si tu les ouvres : ${list}.`,
+    quietAdvice: 'Évite d’y mettre une app qui joue du son ou de la vidéo pendant ta partie.',
+    quietAdd: 'Ajouter une app ouverte',
+    games: 'Tes jeux',
+    gamesHint: 'Les jeux rangés dans le dossier habituel de Steam, Epic, Xbox, GOG, Riot, Ubisoft ou EA sont reconnus tout seuls.',
+    gamesEmpty: 'Aucun jeu pour l’instant. Ils apparaîtront ici après ta première partie.',
+    added: 'Ajouté par toi',
+    recognised: 'Reconnu tout seul',
+    lastPlayed: (ago: string) => `joué ${ago}`,
+    remove: (name: string) => `Retirer ${name}`,
+    addGame: 'Ajouter un jeu ouvert',
+    addGameHint: 'Un jeu n’est pas reconnu (Battle.net, Minecraft…) ? Ouvre-le, puis ajoute-le ici.',
+    never: 'Jamais traités comme des jeux',
+    restore: 'Rétablir',
+    restoreNamed: (name: string) => `Rétablir ${name}`,
+    pickGame: 'Choisis ton jeu',
+    pickApp: 'Choisis une app',
+    pickHint: 'Seules les apps ouvertes en ce moment sont listées.',
+    pickEmpty: 'Aucune app ouverte à ajouter. Ouvre-la, puis reviens ici.',
+    cancel: 'Annuler',
+    windows: 'Windows s’en occupe déjà',
+    winMode: 'Mode Jeu de Windows',
+    winModeHint:
+      'Il donne la priorité au jeu et retient les mises à jour pendant la partie. Shinku ne le refait pas.',
+    winOpen: 'Réglages de Windows',
+    winNotif: 'Notifications',
+    winNotifHint: 'Windows 11 les coupe tout seul pendant un jeu en plein écran.',
+    promise:
+      'Shinku ne promet pas d’images par seconde en plus : il fait passer les apps que tu as choisies après ton jeu, puis remet tout en place.',
+    toast: {
+      unknownApp: 'Cette app n’est plus dans la liste.',
+      unknownGame: 'Ce jeu n’est plus dans la liste.',
+      notAGame: 'Shinku ne traite jamais cette app comme un jeu.',
+      protectedApp: 'Cette app ne peut pas être mise en veilleuse.',
+      listFull: 'La liste est pleine.',
+    },
+  },
+
+  startup: {
+    eyebrow: 'Démarrage',
+    // Les apps de la liste, coupées comprises. Aucune : la page le dit, sans compter.
+    title: (count: number) =>
+      count === 0 ? 'Aucune app inscrite ici' : `${countOf(count, 'app inscrite', 'apps inscrites')} au démarrage`,
+    // `running` : lues actives ; `cut` : lues coupées. Les entrées que Shinku ne sait pas lire ne sont dans aucun des deux.
+    summary: (running: number, cut: number) =>
+      `${
+        running === 0
+          ? 'Aucune ne se lance'
+          : `${formatCount(running)}${NBSP}${plural(running, 'se lance', 'se lancent')}`
+      } à l’ouverture de ta session, ${
+        cut === 0 ? 'aucune n’est coupée' : `${formatCount(cut)}${NBSP}${plural(cut, 'est coupée', 'sont coupées')}`
+      }.`,
+    scope:
+      'Shinku liste ce que règle le Gestionnaire des tâches, sauf les apps du Microsoft Store. Les tâches planifiées et les services ne sont pas ici.',
+    openWindows: 'Apps de démarrage de Windows',
+    user: 'Pour ton compte',
+    machine: 'Pour tous les comptes de ce PC',
+    machineHint: 'Ces apps se règlent dans Windows pour l’instant : il faut l’accord d’un administrateur.',
+    unreadable: 'Shinku n’a pas pu lire toute cette liste.',
+    note: 'Couper une app ne la désinstalle pas et ne supprime rien : elle ne se lance plus toute seule, et tu peux toujours l’ouvrir toi-même. Certaines apps se réinscrivent d’elles-mêmes : règle-le aussi dans leurs options. L’éditeur affiché est celui que le fichier déclare.',
+    unknownPublisher: 'Éditeur inconnu',
+    hostedBy: (host: string) => `Lancée par ${host}`,
+    alias: (alias: string) => `inscrite sous «${NBSP}${alias}${NBSP}»`,
+    folder: 'raccourci du dossier Démarrage',
+    // `date` : « le 15 nov. » (voir formatDay).
+    missing: 'Semble désinstallée',
+    cameBack: (date: string) => `S’est remise toute seule depuis ${date}`,
+    cutByShinku: (date: string) => `Coupée par Shinku ${date}`,
+    cutOn: (date: string) => `Coupée ${date}`,
+    cut: 'Coupée',
+    active: 'Active',
+    sync: 'Synchronise tes fichiers',
+    // `rank` : 2 pour la deuxième ligne de même nom et de même alias dans une carte, et ainsi de suite.
+    switchLabel: (name: string, alias: string | null, rank = 1) =>
+      `Lancer ${name} à l’ouverture de session${alias === null ? '' : ` (${alias})`}${rank > 1 ? ` (${rank})` : ''}`,
+    own: 'Réglé par le Mode jeu',
+    ownCut: 'Coupée dans Windows',
+    seeGameMode: 'Voir le Mode jeu',
+    unreadableEntry: 'Shinku ne sait pas lire son réglage',
+    notAdjustableHere: 'Shinku ne peut pas la régler ici',
+    openInWindows: 'Ouvrir dans Windows',
+    // Le nom accessible du bouton d'une ligne : il cite l'app, et contient le texte visible.
+    openInWindowsFor: (name: string) => `Ouvrir dans Windows, pour ${name}`,
+    undo: 'Annuler',
+    retry: 'Réessayer',
+    // Entre l'éditeur, le programme porteur, le nom d'inscription et le raccourci.
+    separator: ' · ',
+    // L'initiale d'un nom qui ne commence pas par une lettre.
+    initialFallback: '#',
+    say: {
+      cut: (name: string, sync: boolean) =>
+        `${name} est coupée. Si elle est ouverte, elle le reste : elle ne se lancera plus toute seule à ta prochaine ouverture de session.${
+          sync ? ' Tes fichiers ne se synchroniseront plus tant que tu ne l’ouvres pas.' : ''
+        }`,
+      restored: (name: string) => `${name} se lancera de nouveau à l’ouverture de ta session.`,
+      failed: 'Le changement n’a pas pu être fait.',
+      unknownEntry: 'Cette entrée n’existe plus.',
+      notAdjustable: 'Cette entrée ne se règle pas ici.',
+    },
   },
 
   toast: {

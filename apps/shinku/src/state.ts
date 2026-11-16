@@ -7,14 +7,22 @@ import type {
   CleanPreview,
   CleanRequest,
   DuplicatesPage,
+  GameOption,
+  GameStatus,
+  GameView,
   KeepChoice,
   JunkReport,
   LargeFilesPage,
+  OpenApp,
   Overview,
   SessionView,
+  StartupView,
   Theme,
+  WindowsPage,
 } from './backend/types.ts';
+import type { Leaving } from './model/game.ts';
 import { type CleanRowId, type Selection, UNTOUCHED } from './model/scan.ts';
+import type { Say } from './model/startup.ts';
 
 /** Les entrées du menu latéral. */
 export type Route =
@@ -40,6 +48,13 @@ export type HomePane = 'home' | 'scan' | 'results';
 export interface CleanConfirmation {
   preview: CleanPreview;
   request: CleanRequest;
+}
+
+/** Le sélecteur du mode jeu : un jeu ou une app à choisir parmi celles qui sont ouvertes. */
+export interface Picker {
+  kind: 'game' | 'app';
+  /** `null` tant que le cœur n'a pas rendu la liste. */
+  apps: OpenApp[] | null;
 }
 
 export interface AppState {
@@ -71,6 +86,26 @@ export interface AppState {
   /** Message bref affiché en bas de l'écran ; son texte reste le temps qu'il s'efface. */
   toast: string;
   toastShown: boolean;
+  /** La dernière vue du mode jeu ; `null` tant que le cœur n'a pas répondu. */
+  game: GameView | null;
+  /** Depuis quand l'agent du mode jeu est vu arrêté, le mode automatique allumé, ou `null`. */
+  gameStoppedSince: number | null;
+  /** Le chemin de la partie dont « Ce n'est pas un jeu » est parti : l'en-tête attend que l'agent la termine. */
+  gameLeaving: Leaving | null;
+  /** Plusieurs demandes de suite de la vue du mode jeu ont échoué : la page le dit au lieu de « Chargement… ». */
+  gameFailed: boolean;
+  /** Les gestes du mode jeu en vol (voir `busyKey`) : leurs boutons attendent la réponse. */
+  gameBusy: readonly string[];
+  /** Le sélecteur de jeu ou d'app, tant qu'il est ouvert. */
+  picker: Picker | null;
+  /** La dernière vue de la page Démarrage ; `null` tant que le cœur n'a pas répondu. */
+  startup: StartupView | null;
+  /** La vue du démarrage n'a pas pu être lue : la page le dit au lieu de « Chargement… ». */
+  startupFailed: boolean;
+  /** L'entrée dont le changement est en vol : tous les interrupteurs attendent sa réponse, `null` si aucun. */
+  startupBusy: string | null;
+  /** La zone de retour : ce que le dernier geste a donné, ou `null`. */
+  startupSay: Say | null;
   /** L'heure qu'il est, rafraîchie de temps en temps : pour « il y a 8 mois ». */
   now: number;
 }
@@ -104,6 +139,16 @@ export function initialState(now: number): AppState {
     pickingFolder: false,
     toast: '',
     toastShown: false,
+    game: null,
+    gameStoppedSince: null,
+    gameLeaving: null,
+    gameFailed: false,
+    gameBusy: [],
+    picker: null,
+    startup: null,
+    startupFailed: false,
+    startupBusy: null,
+    startupSay: null,
     now,
   };
 }
@@ -132,6 +177,24 @@ export interface Actions {
   addFolder(): void;
   removeFolder(path: string): void;
   acknowledgeIssue(): void;
+  setGameOption(option: GameOption, on: boolean): void;
+  setQuietApp(exe: string, on: boolean): void;
+  /** « Tout remettre maintenant ». */
+  releaseGame(): void;
+  setGameStatus(path: string, status: GameStatus): void;
+  openPicker(kind: 'game' | 'app'): void;
+  closePicker(): void;
+  /** La personne a choisi une app ouverte dans le sélecteur. */
+  pickOpenApp(id: number): void;
+  /** Coupe ou remet une entrée du compte. */
+  setStartupEntry(id: string, enabled: boolean): void;
+  /** « Annuler » dans la zone de retour : le geste inverse du dernier. */
+  undoStartup(): void;
+  /** La barre de retour a (ou n'a plus) le focus ou le survol : tant que oui, elle ne s'efface pas. */
+  holdStartupSay(by: 'focus' | 'hover', on: boolean): void;
+  /** « Réessayer » : la première vue du démarrage n'est pas venue. */
+  retryStartup(): void;
+  openWindowsSettings(page: WindowsPage): void;
   minimize(): void;
   toggleMaximize(): void;
   close(): void;

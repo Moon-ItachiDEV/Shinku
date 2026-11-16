@@ -3152,6 +3152,8 @@ name = "shinku-agent"
 version = "0.1.0"
 dependencies = [
  "shinku-core",
+ "static_vcruntime",
+ "tauri-winres",
 ]
 
 [[package]]
@@ -3171,6 +3173,7 @@ name = "shinku-helper"
 version = "0.1.0"
 dependencies = [
  "shinku-core",
+ "static_vcruntime",
 ]
 
 [[package]]

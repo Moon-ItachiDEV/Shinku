@@ -1,0 +1,180 @@
+/*
+ * La page Mode jeu. Elle réutilise les cartes, les lignes et les boutons des
+ * Paramètres, et le squelette commun des pages de réglages (page.css) ; ce
+ * fichier n'ajoute que ce qui lui est propre. Aucune couleur nouvelle : tout
+ * vient de tokens.css, clair et sombre.
+ */
+
+.gchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.game .glast {
+  margin-top: 10px;
+}
+
+/* ── Interrupteurs ──────────────────────────────────────────────────────── */
+
+/* Le grand interrupteur de la carte principale ; le dessin de `.sw` est dans forms.css. */
+.sw.big {
+  width: 46px;
+  height: 26px;
+}
+
+.sw.big::before {
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+}
+
+.sw.big[aria-checked='true']::before {
+  transform: translateX(20px);
+}
+
+.srow.tall {
+  min-height: 72px;
+}
+
+.srow .tag {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.gmain {
+  margin-top: 18px;
+}
+
+/*
+ * Réglable, mais atténué tant que le mode jeu automatique est éteint : seul
+ * l'habillage s'estompe (interrupteurs, cases, fond des pastilles). Les
+ * libellés, les descriptions et le texte des pastilles gardent leur couleur,
+ * donc leur contraste : à 0,6, le texte d'une pastille de 11 px tombait à
+ * environ 3,4:1 (mesuré en clair et en sombre).
+ */
+.card.dim .sw,
+.card.dim .box {
+  opacity: 0.6;
+}
+
+.card.dim .tag {
+  background: rgb(var(--ov) / calc(0.025 * var(--ov-k)));
+}
+
+/* Le bloc des apps : une case par app, puis les précisions. */
+.gquiet > .d {
+  margin-top: 10px;
+}
+
+.gquiet .list + .d {
+  margin-top: 12px;
+}
+
+.glist > li + li {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+.glist .row.short {
+  min-height: 40px;
+}
+
+/*
+ * La seconde ligne d'une rangée : en sombre, sur le fond éclairé des cartes,
+ * le gris le plus doux tombait sous 4:1 (mesuré). Elle prend le gris du texte
+ * courant, comme sur la page Démarrage.
+ */
+.game .row .t2 {
+  color: var(--text-2);
+}
+
+/*
+ * Une app ajoutée par la personne n'a pas de case (elle se retire par sa
+ * croix) : son nom garde la place de la case (18 px) et de l'écart (14 px),
+ * pour rester aligné sur les noms des lignes à case.
+ */
+.gquiet .row.static > .tx {
+  margin-left: 32px;
+}
+
+/* Une case et sa pastille « Ouverte », qui est hors de l'étiquette de la case. */
+.gcheck {
+  display: flex;
+  align-items: center;
+}
+
+.gcheck > .row {
+  flex: 1;
+  min-width: 0;
+}
+
+.gcheck > .tag {
+  flex-shrink: 0;
+  height: 22px;
+  margin-right: 18px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.game .add {
+  margin-top: 12px;
+}
+
+.game .gintro {
+  margin-bottom: 12px;
+}
+
+.game .gempty {
+  padding: 4px 0 2px;
+}
+
+.game .add + .d {
+  margin-top: 8px;
+}
+
+.game .list .row .st {
+  flex-shrink: 0;
+}
+
+.game .row .ghost.small {
+  flex-shrink: 0;
+}
+
+h3.gnever {
+  margin: 22px 0 10px;
+}
+
+/* ── Sélecteur ──────────────────────────────────────────────────────────── */
+
+.pickl {
+  max-height: min(320px, 42vh);
+  overflow-y: auto;
+}
+
+.pickl > li + li {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+.pickl .row {
+  min-height: 52px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pickl .row:hover {
+    background: rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+  }
+}
+
+/* ── Fenêtre basse : tout se resserre ───────────────────────────────────── */
+
+@media (max-height: 760px) {
+  .gmain {
+    margin-top: 14px;
+  }
+
+  .srow.tall {
+    min-height: 64px;
+  }
+}

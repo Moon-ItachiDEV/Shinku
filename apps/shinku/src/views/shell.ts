@@ -9,9 +9,11 @@ import { binOverThreshold, mainVolume } from '../model/scan.ts';
 import type { Actions, AppState, Route } from '../state.ts';
 import { closeIcon, hole, type IconName, mark, maximizeIcon, minimizeIcon, navIcon } from './art.ts';
 import { confirmDialog } from './clean.ts';
+import { gameView, pickerDialog } from './game.ts';
 import { homeView, shownPane } from './home.ts';
 import { binView, duplicatesView, junkView, largeView, soonView } from './modules.ts';
 import { settingsView } from './settings.ts';
+import { startupView } from './startup.ts';
 import { styles } from './style.ts';
 
 interface NavItem {
@@ -121,8 +123,10 @@ function page(state: AppState, actions: Actions): TemplateResult {
       return largeView(state, actions);
     case 'bin':
       return binView(state);
-    case 'startup':
     case 'gameMode':
+      return gameView(state, actions);
+    case 'startup':
+      return startupView(state, actions);
     case 'uninstall':
     case 'privacy':
       return soonView(state.route);
@@ -155,7 +159,7 @@ export function appView(state: AppState, actions: Actions): TemplateResult {
     ${ready
       ? html`${sidebar(state, actions)}
           <main class="main">${keyed(`${state.route}:${shownPane(state)}`, page(state, actions))}</main>
-          ${confirmDialog(state, actions)}`
+          ${confirmDialog(state, actions)} ${pickerDialog(state, actions)}`
       : bootScreen(state)}
     <div class="toast ${state.toastShown ? 'show' : ''}" role="status">${state.toast}</div>
   </div>`;
