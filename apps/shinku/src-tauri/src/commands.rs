@@ -243,16 +243,33 @@ pub fn startup_view(backend: State<'_, Backend>) -> StartupView {
     backend.startup_view()
 }
 
-/// Coupe ou remet une app inscrite au démarrage du compte. `id` est celui que
-/// la page a reçu dans [`startup_view`] : le cœur ne s'en sert que pour
-/// retrouver l'entrée, la page n'envoie jamais un chemin ni un nom de valeur.
+/// La fenêtre de Shinku, pour que l'accord de Windows s'ouvre devant elle
+/// (0 : aucune, ou hors de Windows).
+fn owner_of(window: &WebviewWindow) -> isize {
+    #[cfg(windows)]
+    {
+        window.hwnd().map_or(0, |handle| handle.0 as isize)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        0
+    }
+}
+
+/// Coupe ou remet une app inscrite au démarrage, du compte ou du PC. `id` est
+/// celui que la page a reçu dans [`startup_view`] : le cœur ne s'en sert que pour
+/// retrouver l'entrée, la page n'envoie jamais un chemin, une commande ni un nom
+/// de valeur. Pour une entrée du PC, l'appel rend la main quand l'assistant élevé
+/// a fini (la fenêtre sert de propriétaire à l'accord de Windows).
 #[tauri::command(async)]
 pub fn set_startup_entry(
     backend: State<'_, Backend>,
+    window: WebviewWindow,
     id: String,
     enabled: bool,
 ) -> Result<StartupView, BackendError> {
-    backend.set_startup_entry(&id, enabled)
+    backend.set_startup_entry(&id, enabled, owner_of(&window))
 }
 
 /// Tout ce que la page « Désinstallation » affiche : les apps installées et où

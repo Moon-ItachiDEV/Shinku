@@ -1,37 +1,22 @@
 //! `shinku-helper.exe` : l'assistant élevé de Shinku.
 //!
 //! C'est le seul exécutable de Shinku qui tourne en administrateur, et
-//! seulement le temps d'une session de nettoyage. Il n'accepte que les verbes
-//! de [`shinku_core::helper`], refait sa propre analyse avec ses propres
-//! règles et ne touche jamais au profil d'un utilisateur.
+//! seulement le temps d'un changement : un processus par changement, pas de
+//! canal, pas d'assistant qui reste en marche. Il fait ce que dit sa ligne de
+//! commande (quatre mots, voir [`shinku_core::helper::request`]), après avoir
+//! montré lui-même quelle entrée il va changer, puis sort avec un code
+//! ([`shinku_core::helper::startup::Code`]).
 //!
-//! À cette étape, il ne sait que dire ce qu'il acceptera : aucune action
-//! élevée n'est encore écrite. Le canal nommé et le nettoyage du système
-//! arrivent avec l'exécuteur.
+//! Il n'a **pas** de fenêtre noire (`windows_subsystem = "windows"`) : il n'écrit
+//! rien dans une console, donc plus de `--verbes` ni de `--version`. Tout le
+//! travail est dans le cœur ; ce fichier ne fait que durcir, brancher, sortir.
+#![windows_subsystem = "windows"]
 
 use std::process::ExitCode;
 
-use shinku_core::helper::Verb;
-
-/// Code de sortie d'une demande refusée.
-const REFUSED: u8 = 2;
-
 fn main() -> ExitCode {
-    let mut arguments = std::env::args().skip(1);
-    match (arguments.next().as_deref(), arguments.next()) {
-        (Some("--verbes"), None) => {
-            for verb in Verb::ALL {
-                println!("{verb}");
-            }
-            ExitCode::SUCCESS
-        }
-        (Some("--version"), None) => {
-            println!("shinku-helper {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
-        _ => {
-            eprintln!("shinku-helper : aucune action élevée n'est disponible dans cette version.");
-            ExitCode::from(REFUSED)
-        }
-    }
+    // Avant tout : ne charger de bibliothèque que depuis System32.
+    shinku_core::platform::harden_helper_process();
+    let arguments = shinku_core::platform::helper_arguments();
+    ExitCode::from(shinku_core::helper::run_command_line(&arguments))
 }

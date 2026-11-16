@@ -1,16 +1,46 @@
 //! Ce que l'assistant élevé (`shinku-helper.exe`) accepte qu'on lui demande.
 //!
-//! Des verbes, pas des primitives : l'interface demande « nettoie telle
-//! catégorie », jamais un chemin, une commande ou une clé de registre.
-//! L'assistant refait sa propre analyse avec ses propres règles, compilées
-//! dans son binaire, et ne touche jamais au profil d'un utilisateur.
+//! **Contre qui l'assistant protège.** Un programme qui tourne sous le compte,
+//! sans droits, contrôle entièrement `shinku.exe` : même utilisateur, même
+//! niveau d'intégrité. Rien de ce que `shinku.exe` vérifie n'est donc une
+//! barrière contre lui : ce sont des garde-fous contre nos propres erreurs. La
+//! seule barrière est l'accord de Windows (voir `docs/conception.md`, section
+//! « Contre qui l'assistant protège »).
 //!
-//! Ce module ne contient que le vocabulaire, commun aux deux côtés du canal.
-//! La liste des verbes est fermée : une demande est l'un de ces mots, à la
-//! lettre près, ou elle est refusée. Chaque verbe doit rester sans danger
-//! même si un programme malveillant l'envoie.
+//! Il y a deux vocabulaires, tous deux **fermés** :
+//!
+//! - les verbes de nettoyage ci-dessous ([`Verb`]), vocabulaire du futur canal
+//!   de nettoyage : sans paramètre, **pas encore exécutés** ;
+//! - la demande de démarrage ([`request`]), seule exécutée aujourd'hui : quatre
+//!   mots, dont **un nom** d'entrée. Elle n'est **pas** « sans danger même si un
+//!   programme malveillant l'envoie » : au pire, elle coupe ou remet une entrée
+//!   qui existe déjà sous `HKLM` ou dans le dossier Démarrage commun, après une
+//!   question posée par l'assistant lui-même.
+//!
+//! L'assistant refait sa propre analyse avec ses propres règles, compilées dans
+//! son binaire, et ne touche jamais au profil d'un utilisateur.
+//!
+//! - [`request`] : la demande, pure ;
+//! - [`location`] : où l'assistant a le droit de se trouver, pure ;
+//! - [`startup`] : ce qu'il fait, écrit contre un trait.
 
+pub mod location;
+pub mod request;
+pub mod startup;
+
+use std::ffi::OsString;
 use std::fmt;
+
+/// Fait ce que dit la ligne de commande de l'assistant (quatre mots, voir
+/// [`request`]) et rend le code de sortie ([`startup::Code`]). Sans machine
+/// Windows (ailleurs que sous Windows), c'est un échec : l'assistant n'a rien à
+/// y faire.
+pub fn run_command_line(arguments: &[OsString]) -> u8 {
+    match crate::platform::machine_startup() {
+        Some(machine) => startup::run(machine.as_ref(), arguments),
+        None => startup::Code::Failed as u8,
+    }
+}
 
 /// Une zone du système que seul un administrateur peut nettoyer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

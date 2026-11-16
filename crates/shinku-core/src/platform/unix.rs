@@ -13,6 +13,7 @@ use crate::fs::to_internal_path;
 use crate::game::host::{GameHost, InertHost};
 use crate::model::Timestamp;
 use crate::startup::host::{InertStartupHost, StartupHost};
+use crate::startup::launcher::ElevatedHelper;
 
 #[derive(Debug)]
 pub(super) struct SystemEnvironment {
@@ -100,6 +101,24 @@ pub(super) fn game_host() -> Arc<dyn GameHost> {
 /// Hors de Windows, le module « Démarrage » ne voit rien : aucune entrée.
 pub(super) fn startup_host() -> Arc<dyn StartupHost> {
     Arc::new(InertStartupHost)
+}
+
+/// Hors de Windows, l'assistant n'a pas de machine.
+pub(super) fn machine_startup() -> Option<Box<dyn crate::helper::startup::MachineStartup>> {
+    None
+}
+
+/// Hors de Windows, il n'y a rien à durcir.
+pub(super) fn harden_helper_process() {}
+
+/// Hors de Windows, les arguments de la ligne de commande.
+pub(super) fn helper_arguments() -> Vec<std::ffi::OsString> {
+    std::env::args_os().skip(1).collect()
+}
+
+/// Hors de Windows, aucune entrée du PC ne se règle.
+pub(super) fn elevated_helper() -> Arc<dyn ElevatedHelper> {
+    Arc::new(crate::startup::launcher::InertHelper)
 }
 
 /// Hors de Windows, le module « Désinstallation » ne voit rien : aucune app, et

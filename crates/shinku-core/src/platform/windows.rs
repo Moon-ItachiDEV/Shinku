@@ -9,6 +9,9 @@
 pub(super) mod agent;
 mod apps;
 mod game;
+mod helper_host;
+mod launcher;
+mod security;
 mod shell;
 mod startup;
 
@@ -57,8 +60,10 @@ use super::{Desktop, Environment, KnownFolder, RecycleBin, RecycleError, Rights,
 use crate::apps::host::AppsHost;
 use crate::fs::{fold_path, to_internal_path};
 use crate::game::host::GameHost;
+use crate::helper::startup::MachineStartup;
 use crate::model::Timestamp;
 use crate::startup::host::StartupHost;
+use crate::startup::launcher::ElevatedHelper;
 
 /// Valeur de `GetDriveTypeW` pour un disque interne.
 const DRIVE_FIXED: u32 = 3;
@@ -315,6 +320,26 @@ impl Environment for SystemEnvironment {
 /// Le mode jeu sur cette machine.
 pub(super) fn game_host() -> Arc<dyn GameHost> {
     Arc::new(game::SystemHost::new())
+}
+
+/// L'assistant élevé, vu de `shinku.exe`.
+pub(super) fn elevated_helper() -> Arc<dyn ElevatedHelper> {
+    Arc::new(launcher::SystemHelper::new())
+}
+
+/// Ce que fait l'assistant élevé sur cette machine.
+pub(super) fn machine_startup() -> Option<Box<dyn MachineStartup>> {
+    Some(Box::new(helper_host::SystemMachineStartup))
+}
+
+/// Durcit le processus de l'assistant : bibliothèques depuis `System32` seulement.
+pub(super) fn harden_helper_process() {
+    helper_host::harden();
+}
+
+/// Les arguments de la ligne de commande de l'assistant, sans le nom du programme.
+pub(super) fn helper_arguments() -> Vec<OsString> {
+    helper_host::arguments()
 }
 
 /// Le module « Désinstallation » sur cette machine.

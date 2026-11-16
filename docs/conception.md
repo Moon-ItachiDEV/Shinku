@@ -10,8 +10,20 @@ notes couvrent le « comment ».
 | Programme | Rôle | Droits |
 | --- | --- | --- |
 | `shinku.exe` | La fenêtre et le cœur : analyse tout ce qui appartient à l'utilisateur. | Ceux de l'utilisateur, jamais plus. |
-| `shinku-helper.exe` | Les actions sur la machine. N'accepte que des verbes fixes. | Administrateur, à la demande. Squelette pour l'instant. |
+| `shinku-helper.exe` | Les actions sur la machine. N'accepte que des verbes fixes. | Administrateur, à la demande, un processus par changement (voir « Qui l'assistant protège »). |
 | `shinku-agent.exe` | Le mode jeu, sans fenêtre (voir plus bas). Plus tard, l'analyse planifiée. | Ceux de l'utilisateur ; il refuse de tourner en administrateur. |
+
+### Qui l'assistant protège, et contre qui
+
+Un assistant élevé est une porte : la question est qui peut la pousser. Quatre
+cas, du plus étroit au plus large.
+
+| Cas | Ce que l'assistant garantit |
+| --- | --- |
+| A. La page ment (code de la page compromis) | Elle n'envoie qu'un identifiant : jamais un chemin, un nom libre, une commande. Le cœur retrouve l'entrée lui-même. |
+| B. Un programme du compte lance l'assistant avec une autre demande | La demande n'a que quatre mots fixes ; l'assistant relit lui-même les noms, ne change que ce qu'il trouve, et **affiche** ce qu'il va changer dans une fenêtre de Windows. Sans clic, rien ne bouge. |
+| C. Un programme du compte remplace l'assistant | Le lanceur refuse un assistant hors d'un dossier que seuls les administrateurs modifient (décision pure, voir « Démarrage ») ; l'assistant se revérifie lui-même ; le fichier est gardé ouvert, en lecture seule partagée, pendant que Windows le lance. |
+| D. Un administrateur malveillant | Hors de portée : il peut déjà tout faire. |
 
 Toute la logique vit dans `shinku-core`. Les trois programmes ne font que
 l'appeler : ce qui décide se teste donc sans fenêtre, sans Windows et sans
@@ -155,17 +167,18 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | `%LOCALAPPDATA%\Shinku\game.json` | Le journal du mode jeu : la partie en cours, le bilan de la dernière, les jeux reconnus. Écrit par l'agent seulement. |
 | `%LOCALAPPDATA%\Shinku\startup.json` | Ce que le module Démarrage a coupé (au plus 200 lignes : identifiant, nom, dates, `FILETIME` écrit). Écrit par la fenêtre seulement. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, valeur `Shinku` | Lance l'agent avec Windows. La seule écriture que Shinku fasse dans une clé `Run`. Présente seulement quand le mode jeu automatique est allumé. |
-| `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | Une valeur de douze octets par entrée de démarrage du compte que la personne coupe ou remet (voir « Démarrage »). Le même réglage que le Gestionnaire des tâches. Jamais sous `HKLM`. |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | Une valeur de douze octets par entrée de démarrage du compte que la personne coupe ou remet (voir « Démarrage »). Le même réglage que le Gestionnaire des tâches. Écrite par `shinku.exe`. |
+| `HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | La même valeur de douze octets pour une entrée du PC. Écrite **seulement par `shinku-helper.exe`**, élevé, après un clic dans une fenêtre de Windows (vue 64 bits). |
 | `%LOCALAPPDATA%\fr.shinku.app\` | Le cache de WebView2 pour la fenêtre. |
 
-Rien d'autre, et rien hors du PC. Shinku n'écrit jamais sous `HKLM` (le lot du
-module Démarrage qui réglera les entrées du PC passera par l'assistant élevé,
-voir plus bas). L'analyse ne modifie aucun fichier. Seul le
+Rien d'autre, et rien hors du PC. `shinku.exe` n'écrit jamais sous `HKLM` : la
+seule écriture de ce genre est la valeur d'approbation ci-dessus, faite par
+l'assistant élevé. L'analyse ne modifie aucun fichier. Seul le
 grand vide supprime, et seulement ce que décrit la section qui lui est
 consacrée. Le mode jeu change des réglages en cours de partie (priorité de
 processus, mode d'alimentation), jamais un fichier de la personne ; il remet
 tout en place. Le module Démarrage ne change que des approbations de démarrage
-du compte, et ne supprime aucune entrée.
+(du compte, ou du PC par l'assistant), et ne supprime aucune entrée.
 
 Un fichier de réglages illisible n'est jamais écrasé en silence : Shinku repart
 des valeurs par défaut, le dit, et bloque l'analyse tant que l'utilisateur n'a
@@ -621,8 +634,10 @@ les apps **inscrites** au démarrage et permet d'en couper une d'un interrupteur
 **au même endroit que le Gestionnaire des tâches** : l'app reste installée,
 rien n'est supprimé, et elle se remet d'un clic, dans Shinku ou dans Windows.
 Tout est dans `crates/shinku-core/src/startup/` (`mod.rs`, `command.rs`,
-`approval.rs`, `host.rs`, `store.rs`, `view.rs`, `desk.rs`) et, pour Windows,
-`platform/windows/startup.rs`.
+`approval.rs`, `host.rs`, `store.rs`, `view.rs`, `desk.rs`, `access.rs`,
+`launcher.rs`, `shown.rs`), `helper/` (`request.rs`, `location.rs`, `startup.rs`) et,
+pour Windows, `platform/windows/` (`startup.rs`, `launcher.rs`, `helper_host.rs`,
+`security.rs`).
 
 Les règles du produit :
 
@@ -633,7 +648,7 @@ Les règles du produit :
   « apps inscrites au démarrage », jamais « rien ne se lance » ni « plus rien » ;
 - Shinku ne supprime aucune entrée : il ne fait que l'approuver ou la
   désapprouver, là où Windows le fait ;
-- aucune écriture sous `HKLM`.
+- `shinku.exe` n'écrit rien sous `HKLM` ; le PC se règle par l'assistant (voir « Régler une entrée du PC »).
 
 ### Les six places
 
@@ -904,21 +919,72 @@ Il **ne prouve pas** que Windows respecte ces valeurs à l'ouverture de la
 session : aucune session ne s'ouvre sur la machine d'essai. Cette preuve reste
 la recette à la main ci-dessus.
 
-### Le lot suivant : régler les entrées du PC
+### Régler une entrée du PC : l'assistant élevé
 
-Régler une entrée de `HKLM` demande un administrateur : ce sera le travail de
-l'assistant élevé `shinku-helper.exe`, relu à part. Ses exigences sont déjà
-arrêtées :
+Régler une entrée de `HKLM` demande un administrateur. `shinku-helper.exe` est
+lancé **une fois par changement** (`ShellExecuteExW`, verbe `runas`), avec
+quatre mots : `demarrage1`, `couper` ou `remettre`, la place (`run`, `run32`,
+`dossier`), le nom en UTF-16 hexadécimal minuscule. La page n'envoie que
+l'identifiant ; le cœur retrouve la place et le nom.
 
-- **il ne lit que des noms** : ni variables, ni fichiers, ni ressources de
-  version dans le processus élevé. Tout ce qui demande d'ouvrir un fichier ou de
-  développer une variable se fait dans `shinku.exe`, sans élévation ;
-- **il ne se lance que depuis un dossier inscriptible par les seuls
-  administrateurs** (un assistant élevé qu'un programme du compte pourrait
-  remplacer serait une porte ouverte) ;
-- **il dit lui-même, une fois élevé, quelle entrée il va changer** : ce que la
-  personne approuve dans la fenêtre de Windows est ce que l'assistant affiche,
-  pas ce que la page prétend.
+Règles de ce lot, chacune a un essai qui échoue si on la retire :
+
+- **l'assistant ne lit que des noms** : valeurs de `Run` sans leurs données,
+  noms de fichiers du dossier commun ; ni variable, ni ressource de version ;
+- **il se revérifie** : son dossier est sûr (propriétaire administrateurs,
+  système ou TrustedInstaller ; aucun droit d'écriture pour un autre) et il est
+  fils direct de ce dossier, comparé par composants du chemin final ;
+- **il montre ce qu'il fait** : une boîte `MessageBoxW` affiche l'entrée
+  (nom affiché sans caractère trompeur, `⟨U+XXXX⟩` pour les autres) ; l'échéance
+  est de deux minutes, atomique (un clic tardif ne change rien) ;
+- **ordre** : demande valide, droits, dossier sûr, noms, entrée trouvée
+  **une seule fois**, question, puis relecture de l'entrée et de l'approbation
+  avant d'écrire, écriture, relecture. Un nom absent donne le code 4, jamais
+  une boîte ;
+- **codes de sortie** 0 fait, 1 déjà dans l'état, 2 demande illisible, 3 refusé
+  ou délai, 4 entrée introuvable, 5 droits insuffisants, 6 dossier non sûr,
+  7 entrée changée pendant la question, 8 écriture échouée ;
+- **le cœur ne croit pas le code de sortie** : il relit l'approbation et ne
+  met `startup.json` à jour que d'après la valeur relue ;
+- **pas de verrou pendant l'attente** : la fenêtre répond pendant la boîte de
+  Windows ; une seconde demande donne « occupé » ; `pending` dit à la page quelle
+  entrée attend ;
+- **accès** (`pc` dans la vue) : `consent` (administrateur, UAC), `password`
+  (compte standard, mot de passe), `direct` (déjà élevé, refusé aussi pour la
+  fenêtre), `unavailable` (assistant absent ou mal placé, UAC éteint). Décision
+  pure à partir du jeton et de la politique ;
+- **refus** : `cancelled` (UAC refusé ou boîte refusée), `needsAdmin`.
+
+Fermer `shinku.exe` pendant l'attente n'arrête pas l'assistant : il termine ou
+expire seul. La désinstallation ne remet pas les entrées coupées.
+
+#### Liste fermée des fonctions Windows de l'assistant
+
+`SetDefaultDllDirectories`, `RegCreateKeyExW` (ouvre l'approbation),
+`RegEnumValueW` (sans données), `RegQueryInfoKeyW`, `RegQueryValueExW`,
+`RegSetValueExW`, `FindFirstFileExW`/`FindNextFileW`/`FindClose`,
+`CreateFileW` (lecture des droits seule), `GetFileInformationByHandle`,
+`GetFinalPathNameByHandleW`, `GetSecurityInfo`, `GetAclInformation`, `GetAce`,
+`GetSid*`, `GetCurrentProcess`, `GetSystemTimeAsFileTime`, `MessageBoxW`. Côté
+`shinku.exe` pour le lancement : `GetSystemDirectoryW`, `ShellExecuteExW`,
+`WaitForSingleObject`, `GetExitCodeProcess`. Aucune autre.
+
+#### Limites connues
+
+- le dossier du PC est vérifié, pas le contenu du fichier (la signature viendra
+  avec la version publique) ;
+- une entrée dont le nom dépasse 255 unités ou dont la place est un dossier non
+  sûr est montrée, non réglable ;
+- l'ouverture avec partage en lecture seule bloque le remplacement du fichier
+  pendant le lancement ; elle ne remplace pas la vérification de l'assistant.
+
+#### Ce que seul un vrai PC montre (D10)
+
+Droits réels de `Program Files`, fenêtre UAC (consentement, mot de passe, refus),
+apparence et protection de la boîte, fichier gardé ouvert pendant
+`ShellExecuteExW`, `GetFinalPathNameByHandleW` sur un vrai volume, effet du
+réglage sur l'ouverture de session. Les essais sous Wine ne le prouvent pas ;
+l'essai `SHINKU_ESSAI_ASSISTANT` (inconnu, code 4) se lance à la main sur l'installé.
 
 ## Désinstallation
 
@@ -1442,6 +1508,9 @@ d'environnement que dans un programme sans droits d'administrateur.
   peut ainsi faire supprimer ce que Shinku juge inutile, ce qu'il pouvait
   déjà faire lui-même avec les mêmes droits ; il n'y gagne aucune élévation.
   À réexaminer avec le helper.
+- **Signature de l'assistant, vérifiée par `shinku.exe`.** Avant de lancer
+  l'assistant, `shinku.exe` doit vérifier sa signature (certificat de Shinku) :
+  le dossier sûr ne prouve pas le contenu. Aujourd'hui rien n'est signé.
 - **Recette Démarrage à la main.** Couper puis rouvrir une session, sur un vrai
   Windows 11, pour une entrée de chaque place du compte, dans les deux sens
   (voir « Démarrage »). Aucun essai automatique ne l'a faite.

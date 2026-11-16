@@ -21,6 +21,7 @@ use crate::apps::host::AppsHost;
 use crate::game::host::GameHost;
 use crate::model::Timestamp;
 use crate::startup::host::StartupHost;
+use crate::startup::launcher::ElevatedHelper;
 
 pub mod agent;
 mod bin_rule;
@@ -283,6 +284,29 @@ pub fn game_host() -> Arc<dyn GameHost> {
 /// ne voit rien ailleurs.
 pub fn startup_host() -> Arc<dyn StartupHost> {
     imp::startup_host()
+}
+
+/// L'assistant élevé, vu de `shinku.exe` : le vrai lanceur sous Windows, un
+/// lanceur qui ne règle rien ailleurs.
+pub fn elevated_helper() -> Arc<dyn ElevatedHelper> {
+    imp::elevated_helper()
+}
+
+/// Ce que l'assistant élevé fait sur cette machine : sous Windows, la vraie ;
+/// ailleurs, rien (`None`).
+pub fn machine_startup() -> Option<Box<dyn crate::helper::startup::MachineStartup>> {
+    imp::machine_startup()
+}
+
+/// Durcit le processus de l'assistant (bibliothèques depuis `System32` seulement).
+/// À appeler **avant tout** autre chose.
+pub fn harden_helper_process() {
+    imp::harden_helper_process();
+}
+
+/// Les arguments de la ligne de commande de l'assistant, sans le nom du programme.
+pub fn helper_arguments() -> Vec<std::ffi::OsString> {
+    imp::helper_arguments()
 }
 
 /// La machine du module « Désinstallation » : la vraie sous Windows, une machine

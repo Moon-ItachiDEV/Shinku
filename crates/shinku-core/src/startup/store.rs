@@ -29,7 +29,7 @@ use serde_json::Value;
 use crate::game::store::{APP_DIR, read_bounded};
 use crate::platform::{Environment, KnownFolder};
 use crate::settings::write_replacing;
-use crate::startup::{DISPLAY_LIMIT, Entry, EntryId, Mark, Place, Scope, State, clean_text};
+use crate::startup::{DISPLAY_LIMIT, Entry, EntryId, Mark, Place, State, clean_text};
 
 /// Version du format de `startup.json`.
 pub const STARTUP_VERSION: u32 = 1;
@@ -45,7 +45,8 @@ pub const CAME_BACK_MS: i64 = 14 * 24 * 3600 * 1000;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CutLine {
-    /// L'identifiant de l'entrée (une entrée du compte).
+    /// L'identifiant de l'entrée (du compte, ou du PC depuis que l'assistant
+    /// élevé les règle).
     pub id: EntryId,
     /// Son nom affiché à ce moment-là (pour qui lirait le fichier).
     pub name: String,
@@ -268,14 +269,11 @@ fn integer(value: Option<&Value>) -> Option<i64> {
     value?.as_i64()
 }
 
-/// Une ligne du fichier, si elle est bien formée : un identifiant d'une entrée
-/// **du compte**, une date, un `FILETIME` non nul.
+/// Une ligne du fichier, si elle est bien formée : un identifiant d'une entrée,
+/// une date, un `FILETIME` non nul.
 fn parse_line(value: &Value) -> Option<CutLine> {
     let line = value.as_object()?;
     let id = EntryId::parse(line.get("id")?.as_str()?)?;
-    if id.place().scope() != Scope::User {
-        return None;
-    }
     let at_ms = integer(line.get("atMs"))?;
     let file_time = line.get("fileTime")?.as_u64().filter(|&time| time != 0)?;
     let name = line
@@ -385,14 +383,24 @@ mod tests {
             { "id": id("G").to_string(), "atMs": 1, "fileTime": -4 },
             { "id": id("H").to_string(), "atMs": 1.5, "fileTime": 2 },
             { "id": id("I").to_string(), "atMs": 1, "fileTime": 2.5 },
-            // Une ligne du PC n'a rien à faire ici : Shinku n'y écrit pas.
-            { "id": EntryId::new(Place::MachineRun, "M").to_string(), "atMs": 1, "fileTime": 2 },
             good("A"),
             good("Z"),
         ]});
         write_raw(&store, &document.to_string());
         let names: Vec<String> = store.load().cut.into_iter().map(|line| line.name).collect();
         assert_eq!(names, ["A", "Z"], "la ligne en double aussi est écartée");
+    }
+
+    #[test]
+    fn a_line_of_the_pc_is_kept_since_the_helper_cuts_those_too() {
+        let (_temp, store) = store();
+        let document = json!({ "cut": [
+            { "id": EntryId::new(Place::MachineRun, "M").to_string(), "name": "M", "atMs": 1, "fileTime": 2 },
+            { "id": EntryId::new(Place::MachineFolder, "F.lnk").to_string(), "name": "F", "atMs": 1, "fileTime": 2 },
+        ]});
+        write_raw(&store, &document.to_string());
+        let names: Vec<String> = store.load().cut.into_iter().map(|line| line.name).collect();
+        assert_eq!(names, ["M", "F"]);
     }
 
     #[test]
@@ -478,7 +486,7 @@ mod tests {
     }
 
     fn listing(host: &FakeStartupHost, store: &StartupStore) -> startup::Listing {
-        startup::enumerate(host, None, Some(store))
+        startup::enumerate(host, None, Some(store), startup::MachineRules::CLOSED)
     }
 
     fn discord(listing: &startup::Listing) -> &Entry {
@@ -691,7 +699,7 @@ mod tests {
     #[test]
     fn without_a_file_to_write_the_view_still_has_its_marks() {
         let host = pc();
-        let view = startup::enumerate(&host, None, None);
+        let view = startup::enumerate(&host, None, None, startup::MachineRules::CLOSED);
         assert_eq!(discord(&view).mark, None);
         assert_eq!(view.entries.len(), 1);
         // Un dossier qui n'existe pas et ne peut pas se créer : les marques se lisent quand même.
@@ -702,9 +710,19 @@ mod tests {
         file.remember(id("Discord"), "Discord", 5, stamp);
         good.save(&file).unwrap();
         let blocked = StartupStore::at(good.path().join("sous").join("startup.json"));
-        assert_eq!(discord(&startup::enumerate(&host, None, Some(&blocked))).mark, None);
         assert_eq!(
-            discord(&startup::enumerate(&host, None, Some(&good))).mark,
+            discord(&startup::enumerate(
+                &host,
+                None,
+                Some(&blocked),
+                startup::MachineRules::CLOSED
+            ))
+            .mark,
+            None
+        );
+        assert_eq!(
+            discord(&startup::enumerate(&host, None, Some(&good), startup::MachineRules::CLOSED))
+                .mark,
             Some(Mark::CutByShinku { at_ms: 5 })
         );
     }

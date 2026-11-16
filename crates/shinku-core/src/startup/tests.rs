@@ -32,7 +32,7 @@ fn entry<'a>(listing: &'a Listing, raw_name: &str) -> &'a Entry {
 }
 
 fn list(host: &FakeStartupHost) -> Listing {
-    enumerate(host, Some(OWN), None)
+    enumerate(host, Some(OWN), None, MachineRules::CLOSED)
 }
 
 fn id_of(host: &FakeStartupHost, name: &str) -> EntryId {
@@ -384,7 +384,9 @@ fn a_value_named_shinku_with_another_command_is_an_ordinary_entry() {
     assert!(!entry(&list(&host), "Autre").own);
     // Sans commande connue (installation introuvable), aucune entrée n'est la sienne.
     host.add(Place::UserRun, "Shinku", OWN);
-    assert!(enumerate(&host, None, None).entries.iter().all(|entry| !entry.own));
+    assert!(
+        enumerate(&host, None, None, MachineRules::CLOSED).entries.iter().all(|entry| !entry.own)
+    );
 }
 
 // --- Ce qui se règle ---
@@ -841,5 +843,5 @@ fn the_inert_host_counts_nothing_instead_of_saying_zero() {
 }
 
 fn list_with(host: &dyn StartupHost) -> Listing {
-    enumerate(host, Some(OWN), None)
+    enumerate(host, Some(OWN), None, MachineRules::CLOSED)
 }

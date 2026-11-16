@@ -265,7 +265,8 @@ impl Backend {
         let startup = StartupDesk::new(
             platform::startup_host(),
             StartupStore::for_machine(environment.as_ref()),
-        );
+        )
+        .with_helper(platform::elevated_helper());
         let backend = Self::new(environment, Arc::new(MemoryCache::new()), store)
             .with_game(game)
             .with_startup(startup)
@@ -619,11 +620,20 @@ impl Backend {
         self.startup.view()
     }
 
-    /// Coupe ou remet une entrée du compte, désignée par son identifiant, puis
-    /// rend la vue d'après. Un seul changement à la fois : un second appel
-    /// simultané est refusé (`busy`).
-    pub fn set_startup_entry(&self, id: &str, enabled: bool) -> Result<StartupView, BackendError> {
-        self.startup.set(id, enabled).map_err(|reason| BackendError::StartupRefused { reason })
+    /// Coupe ou remet une entrée, du compte ou du PC, désignée par son
+    /// identifiant, puis rend la vue d'après. Un seul changement à la fois : un
+    /// second appel simultané est refusé (`busy`). Pour une entrée du PC, `owner`
+    /// est la fenêtre de Shinku (0 : aucune) et l'appel rend la main quand
+    /// l'assistant élevé a fini.
+    pub fn set_startup_entry(
+        &self,
+        id: &str,
+        enabled: bool,
+        owner: isize,
+    ) -> Result<StartupView, BackendError> {
+        self.startup
+            .set_for(id, enabled, owner)
+            .map_err(|reason| BackendError::StartupRefused { reason })
     }
 
     // --- Désinstallation ---
@@ -1047,22 +1057,22 @@ mod tests {
         let id = view.entries.iter().find(|entry| entry.name == "A").unwrap().id.to_string();
         let machine = view.entries.iter().find(|entry| entry.name == "PC").unwrap().id.to_string();
 
-        let view = backend.set_startup_entry(&id, false).unwrap();
+        let view = backend.set_startup_entry(&id, false, 0).unwrap();
         assert!(view.entries.iter().find(|entry| entry.name == "A").unwrap().disabled_at.is_some());
         let refused = |result: Result<StartupView, BackendError>| match result {
             Err(BackendError::StartupRefused { reason }) => reason,
             other => panic!("un refus était attendu : {other:?}"),
         };
         assert_eq!(
-            refused(backend.set_startup_entry("pas un id", true)),
+            refused(backend.set_startup_entry("pas un id", true, 0)),
             StartupRefusal::UnknownEntry
         );
         assert_eq!(
-            refused(backend.set_startup_entry(&machine, false)),
+            refused(backend.set_startup_entry(&machine, false, 0)),
             StartupRefusal::NotAdjustable
         );
         host.refuse_writes();
-        assert_eq!(refused(backend.set_startup_entry(&id, true)), StartupRefusal::Failed);
+        assert_eq!(refused(backend.set_startup_entry(&id, true, 0)), StartupRefusal::Failed);
         assert_eq!(
             BackendError::StartupRefused { reason: StartupRefusal::Busy }.to_string(),
             "démarrage : un autre changement est en cours"

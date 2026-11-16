@@ -36,15 +36,24 @@ use self::command::Target;
 use self::host::{FileIdentity, RawEntry, StartupHost};
 use self::store::StartupStore;
 
+pub mod access;
 pub mod approval;
 pub mod command;
 pub mod desk;
 pub mod host;
+pub mod launcher;
+pub mod shown;
 pub mod store;
 pub mod view;
 
 /// Nombre de caractères d'un nom affiché, au plus.
 pub const DISPLAY_LIMIT: usize = 80;
+
+/// Longueur maximale (en unités UTF-16) d'un nom de valeur de registre ou de
+/// fichier que Shinku lit : au-delà, l'entrée est laissée de côté (la place est
+/// dite incomplète). C'est aussi la borne du nom dans une demande à l'assistant
+/// élevé.
+pub const MAX_NAME: usize = 255;
 
 /// Nombre d'entrées lues dans une place, au plus. Au-delà, la place est dite
 /// **incomplète** : on ne cache pas ce qu'on n'a pas lu, on le dit.
@@ -305,6 +314,9 @@ pub struct Entry {
     pub own: bool,
     /// Vrai si Shinku sait la régler.
     pub adjustable: bool,
+    /// Pour une entrée du PC : le nom sous lequel elle est inscrite, mis en
+    /// forme par [`shown::shown_name`] (le même que la boîte de l'assistant).
+    pub registered: Option<String>,
     name_exact: bool,
 }
 
@@ -313,6 +325,21 @@ impl Entry {
     pub const fn scope(&self) -> Scope {
         self.place.scope()
     }
+}
+
+/// Ce que Shinku peut faire pour les entrées du PC : ce que le guichet apprend
+/// de l'assistant élevé avant chaque lecture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MachineRules {
+    /// Les entrées du PC peuvent se régler (l'accès n'est pas `unavailable`).
+    pub allowed: bool,
+    /// Le dossier Démarrage commun est sûr.
+    pub folder_safe: bool,
+}
+
+impl MachineRules {
+    /// Rien du PC ne se règle : le lot 1.
+    pub const CLOSED: Self = Self { allowed: false, folder_safe: false };
 }
 
 /// Ce que les six places contiennent.
@@ -470,6 +497,7 @@ fn build(host: &dyn StartupHost, own: Option<&str>, place: Place, raw: RawEntry)
         .is_some_and(|path| apps::is_sync_app(&file_name(path)))
         .then_some(Hint::Sync);
     let is_own = is_own(place, &raw.name, &raw.command, own);
+    let registered = (place.scope() == Scope::Machine).then(|| shown::shown_name(&raw.name).text);
 
     Entry {
         id: EntryId::new(place, &raw.name),
@@ -488,12 +516,18 @@ fn build(host: &dyn StartupHost, own: Option<&str>, place: Place, raw: RawEntry)
         hint,
         own: is_own,
         adjustable: false,
+        registered,
         name_exact: raw.name_exact,
     }
 }
 
 /// Lit ces places. Les entrées sont triées par portée, puis par nom.
-fn collect(host: &dyn StartupHost, own: Option<&str>, places: &[Place]) -> Listing {
+fn collect(
+    host: &dyn StartupHost,
+    own: Option<&str>,
+    places: &[Place],
+    machine: MachineRules,
+) -> Listing {
     let mut listing = Listing::default();
     for &place in places {
         match host.entries(place) {
@@ -516,11 +550,16 @@ fn collect(host: &dyn StartupHost, own: Option<&str>, places: &[Place]) -> Listi
         *counts.entry(entry.id).or_default() += 1;
     }
     for entry in &mut listing.entries {
-        entry.adjustable = entry.scope() == Scope::User
-            && matches!(entry.state, State::Enabled | State::Disabled)
+        let plain = matches!(entry.state, State::Enabled | State::Disabled)
             && entry.name_exact
             && !entry.own
             && counts.get(&entry.id) == Some(&1);
+        // Une entrée du PC demande en plus un accès, un nom qui tient dans la
+        // demande à l'assistant, et, pour le dossier commun, un dossier sûr.
+        let machine_ok = machine.allowed
+            && entry.raw_name.encode_utf16().count() <= MAX_NAME
+            && (entry.place != Place::MachineFolder || machine.folder_safe);
+        entry.adjustable = plain && (entry.scope() == Scope::User || machine_ok);
     }
     // Compte d'abord, PC ensuite ; dans chaque portée, par nom sans casse, puis
     // par alias, puis par identifiant. Le tri est stable : les places gardent
@@ -537,6 +576,7 @@ fn collect(host: &dyn StartupHost, own: Option<&str>, places: &[Place]) -> Listi
 }
 
 /// Les six places, avec ce que `startup.json` sait de ce que Shinku a coupé.
+/// `machine` dit ce que Shinku peut faire pour les entrées du PC.
 ///
 /// `own` est la commande exacte que le mode jeu écrit pour cette installation
 /// dans la valeur `Run` de Shinku : une entrée qui la porte est celle de Shinku
@@ -545,8 +585,9 @@ pub fn enumerate(
     host: &dyn StartupHost,
     own: Option<&str>,
     store: Option<&StartupStore>,
+    machine: MachineRules,
 ) -> Listing {
-    let mut listing = collect(host, own, &Place::ALL);
+    let mut listing = collect(host, own, &Place::ALL, machine);
     if let Some(store) = store {
         let mut file = store.load();
         // Une place lue en partie ne prouve pas qu'une entrée a disparu.
@@ -612,8 +653,49 @@ impl Probe {
     }
 }
 
+/// Relit la place de cette entrée et la rend, si elle y est **une seule fois** et
+/// qu'elle se règle. On relit la place, pas la dernière vue de la page : la
+/// machine a pu changer entre-temps.
+pub fn locate(
+    host: &dyn StartupHost,
+    own: Option<&str>,
+    id: EntryId,
+    machine: MachineRules,
+) -> Result<Entry, ToggleError> {
+    let listing = collect(host, own, &[id.place()], machine);
+    if !listing.unreadable.is_empty() {
+        return Err(ToggleError::Failed);
+    }
+    let mut matching = listing.entries.into_iter().filter(|entry| entry.id == id);
+    let (Some(entry), None) = (matching.next(), matching.next()) else {
+        return Err(ToggleError::UnknownEntry);
+    };
+    if entry.adjustable { Ok(entry) } else { Err(ToggleError::NotAdjustable) }
+}
+
+/// Relit la place de cette entrée et la rend si elle y est **une seule fois**
+/// (réglable ou non). `None` : introuvable, en double, ou place illisible.
+pub fn reread(
+    host: &dyn StartupHost,
+    own: Option<&str>,
+    id: EntryId,
+    machine: MachineRules,
+) -> Option<Entry> {
+    let listing = collect(host, own, &[id.place()], machine);
+    if !listing.unreadable.is_empty() {
+        return None;
+    }
+    let mut matching = listing.entries.into_iter().filter(|entry| entry.id == id);
+    match (matching.next(), matching.next()) {
+        (Some(entry), None) => Some(entry),
+        _ => None,
+    }
+}
+
 /// Change l'état d'une entrée **du compte**, puis relit l'approbation pour
-/// vérifier que Windows la lit comme voulu.
+/// vérifier que Windows la lit comme voulu. Une entrée du PC passe par
+/// l'assistant élevé ([`desk::StartupDesk::set`]), jamais par ici : cette
+/// fonction ne les voit pas réglables.
 ///
 /// Les deux seules écritures sont [`approval::cut_bytes`] et
 /// [`approval::restore_bytes`], et seulement pour une entrée lue active ou
@@ -624,19 +706,7 @@ pub fn toggle(
     id: EntryId,
     enabled: bool,
 ) -> Result<Change, ToggleError> {
-    // On relit la place de l'entrée, pas la dernière vue de la page : la
-    // machine a pu changer entre-temps.
-    let listing = collect(host, own, &[id.place()]);
-    if !listing.unreadable.is_empty() {
-        return Err(ToggleError::Failed);
-    }
-    let mut matching = listing.entries.iter().filter(|entry| entry.id == id);
-    let (Some(entry), None) = (matching.next(), matching.next()) else {
-        return Err(ToggleError::UnknownEntry);
-    };
-    if !entry.adjustable {
-        return Err(ToggleError::NotAdjustable);
-    }
+    let entry = locate(host, own, id, MachineRules::CLOSED)?;
     let wanted = if enabled { State::Enabled } else { State::Disabled };
     if entry.state == wanted {
         return Ok(Change { name: entry.name.clone(), file_time: entry.file_time, changed: false });

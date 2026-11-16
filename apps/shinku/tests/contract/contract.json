@@ -188,6 +188,12 @@
       "cleaning",
       "cleaned"
     ],
+    "startupAccess": [
+      "consent",
+      "password",
+      "direct",
+      "unavailable"
+    ],
     "startupHint": [
       "sync"
     ],
@@ -203,7 +209,9 @@
       "unknownEntry",
       "notAdjustable",
       "busy",
-      "failed"
+      "failed",
+      "cancelled",
+      "needsAdmin"
     ],
     "startupScope": [
       "user",
@@ -919,6 +927,10 @@
       "useRecycleBin": "boolean",
       "version": "number"
     },
+    "startupPending": {
+      "enabled": "boolean",
+      "id": "string"
+    },
     "startupView": {
       "entries": [
         {
@@ -937,11 +949,14 @@
           "origin": "string",
           "own": "boolean",
           "publisher": "string",
+          "registered": "string",
           "scope": "string",
           "state": "string",
           "target": "string"
         }
       ],
+      "pc": "string",
+      "pending": "null",
       "unreadable": [
         "string"
       ]

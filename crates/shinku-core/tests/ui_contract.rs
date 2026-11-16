@@ -47,9 +47,10 @@ use shinku_core::scan::report::{CategoryState, DuplicatesState, KeepChoice};
 use shinku_core::scan::{Phase, ScanOptions};
 use shinku_core::session::SessionState;
 use shinku_core::settings::{AutoScan, Language, LoadIssue, SettingsStore, Theme};
+use shinku_core::startup::access::PcAccess;
 use shinku_core::startup::host::{FakeStartupHost, StartupHost};
 use shinku_core::startup::store::{StartupFile, StartupStore};
-use shinku_core::startup::view::StartupRefusal;
+use shinku_core::startup::view::{StartupPending, StartupRefusal};
 use shinku_core::startup::{EntryId, Hint, Mark, Origin, Place, Scope, State, TargetKind};
 
 /// Le contrat connu, lu à la compilation : le test ne dépend d'aucun chemin
@@ -317,8 +318,12 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         .and_then(|entry| entry["id"].as_str())
         .expect("l'entrée Steam")
         .to_owned();
-    let view = backend.set_startup_entry(&steam, false).expect("Steam est coupée");
+    let view = backend.set_startup_entry(&steam, false, 0).expect("Steam est coupée");
     samples.insert("startupView", to_json(&view));
+    samples.insert(
+        "startupPending",
+        to_json(&StartupPending { id: EntryId::new(Place::MachineRun, "Essai"), enabled: false }),
+    );
 
     // La désinstallation : la liste, puis chaque phase, puis les restes.
     samples.insert("appsView.idle", to_json(&backend.apps_view()));
@@ -607,9 +612,10 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     enums.insert("startupTarget", variants!(TargetKind: Found, Missing, Hosted, Unknown));
     enums.insert("startupOrigin", variants!(Origin: Registry, Folder));
     enums.insert("startupHint", variants!(Hint: Sync));
+    enums.insert("startupAccess", variants!(PcAccess: Consent, Password, Direct, Unavailable));
     enums.insert(
         "startupRefusal",
-        variants!(StartupRefusal: UnknownEntry, NotAdjustable, Busy, Failed),
+        variants!(StartupRefusal: UnknownEntry, NotAdjustable, Busy, Failed, Cancelled, NeedsAdmin),
     );
     // Les marques portent des champs : le `match` veille à ce qu'il n'en manque pas.
     fn every_mark_has_a_name(mark: Mark) {
