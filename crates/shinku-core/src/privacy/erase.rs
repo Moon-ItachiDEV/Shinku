@@ -71,6 +71,10 @@ pub struct Gate<'a> {
     /// l'exécuter si Shinku se ferme. Elle empêche la fermeture de la fenêtre
     /// de couper le lot entre son premier marquage et son dernier effacement.
     pub critical: &'a dyn Fn(&mut dyn FnMut() -> TraceOutcome) -> TraceOutcome,
+    /// Appelé avec le nom du fichier juste avant chaque marquage ; une erreur tient lieu
+    /// d'échec du marquage. Rien ne le fait en production (`Ok`) : il sert aux essais, qui
+    /// y lisent l'ordre du marquage et y font échouer le k-ième.
+    pub before_mark: &'a dyn Fn(&str) -> Result<(), RemoveError>,
 }
 
 impl std::fmt::Debug for Gate<'_> {
@@ -83,7 +87,12 @@ impl Gate<'static> {
     /// Un navigateur fermé, un dossier inchangé, une section sans condition (essais).
     #[cfg(test)]
     pub const fn free() -> Self {
-        Self { closed: &|| true, same_lot: &|| true, critical: &|body| body() }
+        Self {
+            closed: &|| true,
+            same_lot: &|| true,
+            critical: &|body| body(),
+            before_mark: &|_| Ok(()),
+        }
     }
 }
 
@@ -141,7 +150,8 @@ pub fn erase_lot(lot: &[LotFile], open: Opener<'_>, gate: &Gate<'_>) -> TraceOut
     if lot.iter().any(|file| rules::is_forbidden(&file.name) || file.expected.file_id.is_none()) {
         return TraceOutcome::Failed;
     }
-    let mut open_files: Vec<Removal> = Vec::with_capacity(lot.len());
+    // Chaque poignée garde l'indice de son fichier : le nom qu'on annonce au marquage est celui de la poignée marquée.
+    let mut open_files: Vec<(usize, Removal)> = Vec::with_capacity(lot.len());
     for at in marking_order(lot) {
         let removal = match open(&lot[at]) {
             Ok(removal) => removal,
@@ -152,7 +162,7 @@ pub fn erase_lot(lot: &[LotFile], open: Opener<'_>, gate: &Gate<'_>) -> TraceOut
             Ok(_) => return TraceOutcome::Failed,
             Err(error) => return opening_failed(&error),
         }
-        open_files.push(removal);
+        open_files.push((at, removal));
     }
     (gate.critical)(&mut || {
         // Les poignées sont tenues : le navigateur ne peut plus ouvrir ces fichiers.
@@ -163,9 +173,13 @@ pub fn erase_lot(lot: &[LotFile], open: Opener<'_>, gate: &Gate<'_>) -> TraceOut
         if !(gate.same_lot)() {
             return TraceOutcome::Changed;
         }
-        for removal in &mut open_files {
-            if let Err(error) = removal.mark() {
-                // `open_files` est lâché plus tard : les demandes déjà posées sont retirées.
+        for (at, removal) in &mut open_files {
+            let marked = (gate.before_mark)(&lot[*at].name).and_then(|()| removal.mark());
+            if let Err(error) = marked {
+                // Les demandes déjà posées sont retirées **ici**, avant que la section ne
+                // rende son verrou : une fermeture qui attend ne peut pas finir le
+                // processus entre l'échec et les retraits.
+                open_files.clear();
                 return match error {
                     RemoveError::Locked => TraceOutcome::InUse,
                     _ => TraceOutcome::Failed,
@@ -175,7 +189,7 @@ pub fn erase_lot(lot: &[LotFile], open: Opener<'_>, gate: &Gate<'_>) -> TraceOut
         // Tout est marqué : même un arrêt brutal ici supprime l'ensemble, Windows
         // fermant les poignées avec la demande posée. Confirmé dans l'ordre inverse.
         let mut failed = false;
-        while let Some(removal) = open_files.pop() {
+        while let Some((_, removal)) = open_files.pop() {
             if removal.commit().is_err() {
                 failed = true;
             }
@@ -790,6 +804,47 @@ mod tests {
                 *opened.borrow(),
                 ["History", "History-wal", "Favicons", "Favicons-journal"]
             );
+        }
+
+        #[test]
+        fn the_marking_itself_goes_base_first_then_its_own_annexes() {
+            let temp = tempfile::tempdir().unwrap();
+            let names = ["History-wal", "Favicons-journal", "History", "Favicons"];
+            let lot = lot_of(temp.path(), &names);
+            let marked = RefCell::new(Vec::new());
+            let note = |name: &str| {
+                marked.borrow_mut().push(name.to_owned());
+                Ok(())
+            };
+            let gate = Gate { before_mark: &note, ..Gate::free() };
+            assert_eq!(erase_lot(&lot, &open_real, &gate), TraceOutcome::Erased);
+            assert_eq!(
+                *marked.borrow(),
+                ["History", "History-wal", "Favicons", "Favicons-journal"]
+            );
+        }
+
+        #[test]
+        fn a_marking_that_fails_in_the_middle_releases_everything_inside_the_section() {
+            let temp = tempfile::tempdir().unwrap();
+            let lot = lot_of(temp.path(), &NAMES);
+            let seen = RefCell::new(0usize);
+            let fail_third = |_: &str| {
+                *seen.borrow_mut() += 1;
+                if *seen.borrow() == 3 { Err(RemoveError::AccessDenied) } else { Ok(()) }
+            };
+            let released = RefCell::new(false);
+            // La section : à sa sortie (avant de rendre le verrou à une fermeture qui attend),
+            // les fichiers ne sont plus tenus (sous Windows, une ouverture sans partage le dirait).
+            let critical = |body: &mut dyn FnMut() -> TraceOutcome| {
+                let outcome = body();
+                *released.borrow_mut() = lot.iter().all(|file| open_real(file).is_ok());
+                outcome
+            };
+            let gate = Gate { before_mark: &fail_third, critical: &critical, ..Gate::free() };
+            assert_eq!(erase_lot(&lot, &open_real, &gate), TraceOutcome::Failed);
+            assert!(*released.borrow(), "les demandes sont retirées dans la section");
+            assert_eq!(present(temp.path(), &NAMES), [true; 4]);
         }
 
         #[test]

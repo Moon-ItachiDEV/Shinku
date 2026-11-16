@@ -425,7 +425,12 @@ impl PrivacyDesk {
         erase_lot(
             &lot,
             &open_real,
-            &Gate { closed: &closed, same_lot: &same_lot, critical: &critical },
+            &Gate {
+                closed: &closed,
+                same_lot: &same_lot,
+                critical: &critical,
+                before_mark: &|_| Ok(()),
+            },
         )
     }
 }

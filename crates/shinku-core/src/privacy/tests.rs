@@ -361,6 +361,26 @@ fn a_directory_in_place_of_a_lot_file_makes_the_line_inert_and_nothing_goes() {
 }
 
 #[test]
+fn a_lot_that_passed_the_per_trace_check_does_not_start_if_the_close_comes_first() {
+    use std::time::Duration;
+    let pc = pc();
+    let dir = pc.profile(Browser::Chrome, "Default");
+    let id = pc.history_id(Browser::Chrome, 0);
+    // Au premier contrôle du navigateur, le lot a déjà passé le contrôle par trace ;
+    // la fermeture arrive ici, puis le lot entre dans la section.
+    let (entered, release) = pc.host.block_process_call(1);
+    std::thread::scope(|scope| {
+        let release = release;
+        let eraser = scope.spawn(|| pc.erase(std::slice::from_ref(&id)));
+        entered.recv_timeout(Duration::from_secs(10)).expect("le lot est au premier contrôle");
+        pc.desk.close();
+        release.send(()).unwrap();
+        assert_eq!(eraser.join().unwrap(), [TraceOutcome::Failed]);
+    });
+    assert!(exists(&dir, &history_lot(Browser::Chrome)).iter().all(|e| *e), "rien n'est marqué");
+}
+
+#[test]
 fn closing_waits_for_the_lot_in_progress_and_then_nothing_starts() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;

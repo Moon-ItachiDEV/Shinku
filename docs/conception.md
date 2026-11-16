@@ -1043,6 +1043,12 @@ Aucun essai ne voit ces règles si on les retire :
   (`SHINKU_ESSAI_ASSISTANT`, sur NTFS, élevé : écriture et suppression refusées
   par violation de partage), pas par les essais ordinaires.
 
+Pour la Confidentialité, deux courses ne sont pas essayables simplement et ne sont tenues
+que par relecture : l'état du grand vide est lu **après** la prise du verrou d'exclusivité
+(`Backend::erase_traces` ; lu avant, aucun essai ne tombe) ; un lien qui apparaît entre
+l'énumération d'une clé de registre et la suppression d'une de ses valeurs (le faux hôte ne sait
+pas le rendre en pleine suppression).
+
 Sont en revanche tenus par un essai : la sortie avec le code 8 de `main` si le
 durcissement échoue (essai de structure du crate de l'assistant), la décision de
 l'échéance, la lecture des droits (descripteurs fabriqués), les valeurs de
@@ -1384,8 +1390,9 @@ qui échoue (`inUse`, `failed`, `changed`) et rien n'est touché, annexes compri
 revérifié fermé **et le dossier du profil est relisté** : les fichiers de la règle
 présents doivent être exactement ceux qui sont ouverts, sinon `changed` et rien n'est
 marqué (une annexe apparue depuis l'inventaire) ; (4) tout est marqué, **chaque base
-avant ses propres annexes** (`marking_order`), puis tout est confirmé. Une base ne part
-jamais sans ses annexes : `partial` n'existe pas pour les fichiers (il vaut pour le
+avant ses propres annexes** (`marking_order`), puis tout est confirmé. La garantie réelle : **une base ne reste jamais sans ses
+annexes, et rien ne part si une seule ouverture échoue** (un arrêt brutal pendant le marquage
+peut en revanche supprimer la base et laisser ses annexes, voir « Exclusivité ») ; `partial` n'existe pas pour les fichiers (il vaut pour le
 registre et pour `recent`). Pour lire le nombre de noms et « en ligne uniquement » sur
 l'entrée ouverte, `fs::Removal::facts` a été ajouté ; ses autres usages (le grand vide)
 sont inchangés.
@@ -1407,7 +1414,7 @@ d'écrire des valeurs ; refusée si elle porte `SymbolicLinkValue` de type
 `REG_LINK`. Les noms sont énumérés (4096 valeurs, 255 unités au plus), puis
 supprimés **par nom**, la valeur d'index (`MRUList`, `MRUListEx`) d'abord ; la clé
 reste ; puis **relecture** : des valeurs restées ou revenues (l'Explorateur qui
-réécrit ce qu'il a en mémoire) donnent `partial`, jamais `erased`. Un nom de valeur qui contient un zéro n'est **jamais** passé à la suppression (Windows le couperait et viserait une autre valeur) : la valeur reste, la liste est dite incomplète, donc `partial`. Le compte affiché (`typed`) ne compte ni les valeurs d'index (`MRUList`, `MRUListEx`) ni le nom vide.
+réécrit ce qu'il a en mémoire) donnent `partial`, jamais `erased`. Un nom de valeur qui contient un zéro n'est **jamais** passé à la suppression (Windows le couperait et viserait une autre valeur) : la valeur reste, et c'est la relecture qui la voit : `failed` si elle est seule dans sa clé (rien n'est parti), `partial` si d'autres valeurs sont parties. Le compte affiché (`typed`) ne compte ni les valeurs d'index (`MRUList`, `MRUListEx`) ni le nom vide.
 
 ### Identifiants, nom des profils, résultats
 
@@ -1433,7 +1440,8 @@ attend, sur un verrou, la fin de la section critique d'un lot de fichiers
 (de la revérification du navigateur au dernier effacement : quelques appels
 système sur des fichiers déjà ouverts, donc très court). Les fichiers d'un profil sont
 donc tenus **par construction** : la fermeture ne peut pas tomber entre le premier
-marquage et le dernier effacement. Ils le sont aussi **par l'ordre** : chaque base est
+marquage et le dernier effacement. Sur un échec de marquage aussi : les
+demandes déjà posées sont retirées dans la section, avant qu'elle ne rende son verrou. Ils le sont aussi **par l'ordre** : chaque base est
 marquée avant ses annexes, de sorte que même un arrêt qu'aucun verrou n'arrête (le
 Gestionnaire des tâches, un plantage) ne laisse que des annexes sans base. Mais l'ensemble
 **n'est pas atomique** : le registre, les récents et le presse-papiers sont faits trace par
@@ -1453,10 +1461,22 @@ dommage (l'index part d'abord) et sans bilan affiché.
   posé plus haut (`…\Explorer`) serait suivi. Il faut déjà un programme du même
   compte pour le poser.
 - Les noms de fichiers d'un lot sont comparés **exactement** : un `HISTORY` en majuscules
-  n'est pas vu (la ligne dit « Rien à effacer »), sans danger.
+  n'est pas vu, donc pas effacé : si aucun autre fichier de la règle n'est là, la ligne dit
+  « Rien à effacer » ; sinon elle est proposée, l'effacement dit « Effacé » et `HISTORY` reste.
+  Sans danger pour le reste du profil.
 - `lockfile` est ouvert avec l'accès en écriture, **jamais écrit ni créé** : c'est la
   demande d'écriture qui entre en conflit de partage avec un navigateur ouvert
   **[à vérifier sur le vrai Windows]**.
+- Si le retrait d'une demande de suppression échoue après l'échec du marquage d'un autre fichier,
+  l'erreur est avalée (`let _ =` dans `fs/windows.rs`, code partagé avec le grand vide, non
+  touché ici) : le fichier déjà marqué part, et le lot est à moitié effacé. Très improbable
+  (le même appel vient de réussir sur ce fichier).
+- Le **volume** n'est pas comparé à l'ouverture : seule l'identité du fichier l'est
+  (identifiant, taille, date, un seul nom), et l'ouverture se fait par le chemin, non par rapport à
+  la poignée du dossier. Si le dossier du profil était remplacé par une jonction entre la liste
+  et l'ouverture, un fichier d'un autre volume ne passerait que s'il avait le même identifiant
+  de fichier, la même taille et la même date à 100 ns ; ce n'est pas impossible en théorie, ce
+  n'est pas un cas réaliste. La chaîne de dossiers est de toute façon revérifiée juste avant.
 - Pas de nom en double distingué (« Perso (2) ») : deux profils de même nom
   portent des numéros différents.
 - Ne sont pas faits : cookies et données de sites, Firefox, Opera, versions
