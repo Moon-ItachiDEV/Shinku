@@ -39,6 +39,8 @@ import type {
   SessionView,
   Settings,
   StartupEntry,
+  StartupPc,
+  StartupPending,
   StartupRefusal,
   StartupScope,
   StartupView,
@@ -75,7 +77,14 @@ export interface BootDemo {
   load: 'ok' | 'fail';
   /** Shinku est coupé dans Windows (`?bootshinku=off`). */
   shinku: 'on' | 'off';
+  /** Ce que Windows laisse faire sur le PC (`?bootpc=consent|password|direct|none`) ; `none` : rien (`unavailable`). */
+  pc: StartupPc;
+  /** Comment finit un changement du PC (`?bootpcflow=wait|cancel|admin|fail`) : toujours après une attente. */
+  pcflow: 'wait' | 'cancel' | 'admin' | 'fail';
 }
+
+/** Combien de temps la démo laisse la petite fenêtre « Shinku » attendre, avant `?speed`. */
+export const PC_WAIT = 4500;
 
 export interface MockOptions {
   /** Accélère l'analyse simulée (1 : durée normale, environ 7 secondes). */
@@ -122,6 +131,8 @@ export function demoOptions(search: string): MockOptions {
   const power = query.get('power');
   const boot = query.get('boot');
   const read = query.get('bootread');
+  const pc = query.get('bootpc');
+  const pcflow = query.get('bootpcflow');
   return {
     speed: Number.isFinite(speed) && speed > 0 ? speed : 1,
     issue: issue === 'unreadable' || issue === 'partial' ? issue : 'none',
@@ -142,6 +153,8 @@ export function demoOptions(search: string): MockOptions {
       read: read === 'user' || read === 'machine' ? read : 'all',
       load: query.get('bootload') === 'fail' ? 'fail' : 'ok',
       shinku: query.get('bootshinku') === 'off' ? 'off' : 'on',
+      pc: pc === 'password' || pc === 'direct' ? pc : pc === 'none' ? 'unavailable' : 'consent',
+      pcflow: pcflow === 'cancel' || pcflow === 'admin' || pcflow === 'fail' ? pcflow : 'wait',
     },
     apps: appsDemoOptions(query),
   };
@@ -237,7 +250,27 @@ interface BootSeed {
   own?: boolean | undefined;
 }
 
-function bootEntry(seed: BootSeed, now: number): StartupEntry {
+/** Les signes courants que le cœur garde tels quels, en plus des lettres, des chiffres et de l'ASCII imprimable. */
+const KEPT_SIGNS = '«»’‘“”–—·…®©™°€£';
+/** Les quatre lettres invisibles que le cœur montre comme le reste. */
+const INVISIBLE_LETTERS = [0x115f, 0x1160, 0x3164, 0xffa0];
+
+/**
+ * Le nom d'inscription tel que le cœur le montre (`startup::shown_name`) : rien n'est retiré, ce qui n'est pas
+ * sûr à lire est montré `⟨U+00A0⟩` ; 80 caractères au plus, puis « … ».
+ */
+export function shownName(name: string): string {
+  const shown = [...name].map((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    const plain =
+      !INVISIBLE_LETTERS.includes(code) &&
+        (/^[\p{L}\p{N}]$/u.test(character) || (code >= 0x20 && code <= 0x7e) || KEPT_SIGNS.includes(character));
+    return plain ? character : `⟨U+${code.toString(16).toUpperCase().padStart(4, '0')}⟩`;
+  });
+  return shown.length > 80 ? `${shown.slice(0, 80).join('')}…` : shown.join('');
+}
+
+function bootEntry(seed: BootSeed, now: number, pc: StartupPc = 'consent'): StartupEntry {
   const machine = seed.place.startsWith('m');
   const state = seed.state ?? 'enabled';
   const cutAt =
@@ -266,7 +299,8 @@ function bootEntry(seed: BootSeed, now: number): StartupEntry {
     host: seed.host ?? null,
     hint: seed.sync === true && (seed.target ?? 'found') === 'found' ? 'sync' : null,
     own: seed.own === true,
-    adjustable: !machine && state !== 'unknown' && seed.own !== true,
+    adjustable: (machine ? pc !== 'unavailable' : true) && state !== 'unknown' && seed.own !== true,
+    registered: machine ? shownName(seed.raw) : null,
   };
 }
 
@@ -280,7 +314,7 @@ const FEW_BOOT: readonly BootSeed[] = [
   { place: 'ur', raw: 'Shinku', name: 'Shinku', publisher: 'Shinku', own: true },
   { place: 'ur', raw: 'Ancien outil', name: 'Ancien outil', state: 'unknown' },
   { place: 'mr', raw: 'SecurityHealth', name: 'Sécurité Windows', alias: 'SecurityHealth', publisher: 'Microsoft Corporation' },
-  { place: 'mr', raw: 'RtkAudUService', name: 'Realtek HD Audio Universal Service', publisher: 'Realtek Semiconductor' },
+  { place: 'mr', raw: 'RtkAud\u00A0UService', name: 'Realtek HD Audio Universal Service', publisher: 'Realtek Semiconductor' },
   { place: 'mr', raw: 'LGHUB', name: 'Logitech G HUB', publisher: 'Logitech, Inc.', state: 'disabled', cutOn: { month: 10, day: 2, yearsAgo: 1 } },
   { place: 'mw', raw: 'SunJavaUpdateSched', name: 'Java Update Scheduler', publisher: 'Oracle Corporation' },
 ];
@@ -534,12 +568,17 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
           ? { ...seed, state: 'disabled', cutDaysAgo: 2 }
           : seed,
         Date.now(),
+        options.boot.pc,
       ),
     ),
   );
+  /** Le changement du PC que la petite fenêtre attend : la vue le dit tant qu'il est là, comme le cœur. */
+  let bootPending: StartupPending | null = null;
   const bootView = (): StartupView => ({
     entries: structuredClone(bootEntries),
     unreadable: options.boot.read === 'all' ? [] : [options.boot.read],
+    pc: options.boot.pc,
+    pending: bootPending === null ? null : { ...bootPending },
   });
   let issue: LoadIssue | null =
     options.issue === 'unreadable'
@@ -1361,8 +1400,27 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
       if (!entry.adjustable) {
         return startupRefused('notAdjustable');
       }
+      // Un changement du PC attend : le cœur n'en accepte pas d'autre, du compte ou du PC.
+      if (bootPending !== null) {
+        return startupRefused('busy');
+      }
       if (options.boot.fail) {
         return startupRefused('failed');
+      }
+      if (entry.scope === 'machine') {
+        // Le cœur rend la main à la fin de l'assistant ; la vue, relue pendant ce temps, dit `pending`.
+        bootPending = { id, enabled };
+        await delay(PC_WAIT / options.speed);
+        bootPending = null;
+        if (options.boot.pcflow === 'cancel') {
+          return startupRefused('cancelled');
+        }
+        if (options.boot.pcflow === 'admin') {
+          return startupRefused('needsAdmin');
+        }
+        if (options.boot.pcflow === 'fail') {
+          return startupRefused('failed');
+        }
       }
       if ((entry.state === 'enabled') !== enabled) {
         const now = Date.now();

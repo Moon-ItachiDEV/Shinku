@@ -48,6 +48,7 @@ import {
 import { reportKey, toggled } from './model/scan.ts';
 import {
   entryById,
+  isWaiting,
   SAY_DELAY,
   STARTUP_RELOAD_GAP,
   TITLE_KEY,
@@ -56,7 +57,9 @@ import {
   type Say,
   sayDone,
   sayRefused,
+  shouldPoll,
   startupFocus,
+  STARTUP_POLL_DELAY,
   withEntry,
   withEntryEnabled,
 } from './model/startup.ts';
@@ -229,6 +232,8 @@ export class App {
   /** Les changements en vol : tant qu'il y en a un, aucune vue demandée n'est adoptée. */
   private startupPending = 0;
   private startupSayTimer: number | undefined;
+  /** La relecture de la vue tant que le cœur attend la personne : une seule minuterie, comme `appsTimer`. */
+  private startupTimer: number | undefined;
   /** « Réessayer » vient d'être pressé : le focus suivra la vue qui arrive. */
   private startupRetried = false;
   /** La zone de retour a le focus ou le pointeur : son délai de 12 secondes est suspendu. */
@@ -1125,6 +1130,29 @@ export class App {
     this.startupRetried = false;
     this.clearSay();
     this.set({ startup: null, startupFailed: false, startupBusy: null });
+    this.syncStartupPoll();
+  }
+
+  /**
+   * Arme la relecture toutes les deux secondes tant que la vue dit qu'un changement du PC attend (même d'une
+   * page rechargée : c'est le cœur qui le sait), et l'arrête dans tout autre cas, dont celui où ce geste-ci
+   * attend lui-même : sa réponse suffit. Jamais armée deux fois ; la suivante part deux secondes après la réponse.
+   */
+  private syncStartupPoll(): void {
+    const wanted =
+      this.startupWatching && this.state.route === 'startup' && shouldPoll(this.state.startup, this.startupPending > 0);
+    if (!wanted) {
+      window.clearTimeout(this.startupTimer);
+      this.startupTimer = undefined;
+      return;
+    }
+    if (this.startupTimer !== undefined) {
+      return;
+    }
+    this.startupTimer = window.setTimeout(() => {
+      this.startupTimer = undefined;
+      void this.refreshStartup(true).finally(() => this.syncStartupPoll());
+    }, STARTUP_POLL_DELAY);
   }
 
   /** « Réessayer » sous le message d'erreur de la première vue. */
@@ -1142,7 +1170,8 @@ export class App {
    */
   private async refreshStartup(force = false): Promise<void> {
     // Pas de demande pour une fenêtre cachée, ni pendant un changement : sa réponse est plus récente que toute vue.
-    if (this.startupPending > 0 || document.hidden || this.state.route !== 'startup') {
+    // Sauf pour une visite qui n'a encore rien : le cœur répond tout de suite, avec `pending` si le changement attend.
+    if ((this.startupPending > 0 && this.state.startup !== null) || document.hidden || this.state.route !== 'startup') {
       return;
     }
     if (!force && (this.startupLoading || Date.now() - this.startupLoadedAt < STARTUP_RELOAD_GAP)) {
@@ -1204,6 +1233,7 @@ export class App {
     if (target !== null) {
       this.focusKey(target);
     }
+    this.syncStartupPoll();
   }
 
   /** Écrit dans la zone de retour ; elle s'efface seule au bout de 12 secondes, sauf tant qu'on la lit. */
@@ -1282,7 +1312,7 @@ export class App {
   private async setStartupEntry(id: string, enabled: boolean): Promise<void> {
     const view = this.state.startup;
     const before = view === null ? undefined : entryById(view, id);
-    if (view === null || before === undefined || !before.adjustable || this.startupPending > 0) {
+    if (view === null || before === undefined || !before.adjustable || this.startupPending > 0 || isWaiting(view)) {
       return;
     }
     if ((before.state === 'enabled') === enabled) {
@@ -1295,7 +1325,12 @@ export class App {
     this.startupLoading = false;
     // Le geste suivant efface la phrase du précédent.
     this.say(null);
-    this.set({ startup: withEntryEnabled(view, id, enabled, Date.now()), startupBusy: id });
+    // Une ligne du PC ne bouge pas avant la réponse : Windows peut refuser, ou la personne annuler. Elle montre l'attente.
+    const machine = before.scope === 'machine';
+    this.set({
+      startup: machine ? { ...view, pending: { id, enabled } } : withEntryEnabled(view, id, enabled, Date.now()),
+      startupBusy: id,
+    });
     const answered = (): boolean => {
       this.startupPending -= 1;
       this.startupAction += 1;
@@ -1321,7 +1356,15 @@ export class App {
     } catch (error) {
       if (answered()) {
         const current = this.state.startup;
-        this.set({ startup: current === null ? null : withEntry(current, before), startupBusy: null });
+        this.set({
+          startup:
+            current === null
+              ? null
+              : machine
+                ? { ...current, pending: null }
+                : withEntry(current, before),
+          startupBusy: null,
+        });
         this.say(sayRefused(error));
         this.focusKey(startupFocus.entry(id));
         this.revealStartupRow(id);

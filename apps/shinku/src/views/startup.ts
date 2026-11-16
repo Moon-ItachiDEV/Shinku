@@ -14,16 +14,20 @@ import {
   detailId,
   detailParts,
   entriesOf,
+  hasPcAccess,
   initialOf,
+  isWaiting,
   labelRanks,
   machineChip,
   rowEnd,
+  registeredId,
   rowTags,
   showsScope,
   startupCounts,
   startupFocus,
   startupSummary,
   TITLE_KEY,
+  waitingText,
 } from '../model/startup.ts';
 import type { Actions, AppState } from '../state.ts';
 import { moduleArt } from './art.ts';
@@ -31,8 +35,11 @@ import { stage } from './parts.ts';
 
 type Content = TemplateResult | typeof nothing;
 
-/** Un geste en vol : les interrupteurs et « Annuler » attendent la réponse du cœur, un seul changement à la fois. */
-const isBusy = (state: AppState): boolean => state.startupBusy !== null;
+/**
+ * Un geste en vol, ou un changement du PC qui attend la personne (même d'une page rechargée) : les interrupteurs
+ * et « Annuler » sont inertes, un seul changement à la fois.
+ */
+const isBusy = (state: AppState): boolean => state.startupBusy !== null || isWaiting(state.startup);
 
 // ── En-tête ────────────────────────────────────────────────────────────────
 
@@ -70,7 +77,7 @@ function sayZone(state: AppState, actions: Actions): TemplateResult {
   // Tant que la personne a le focus dans la barre ou la survole, elle ne s'efface pas.
   // La phrase seule est annoncée (région vivante permanente, hors écran) ; « Annuler » reste dans la barre.
   return html`<div class="pzone">
-    <div class="sr" aria-live="polite">${say?.text ?? ''}</div>
+    <div class="sr" aria-live="polite">${say?.text ?? waitingText(state.startup)?.text ?? ''}</div>
     ${say === null
       ? nothing
       : html`<p
@@ -101,7 +108,7 @@ function switchButton(
   state: AppState,
   entry: StartupEntry,
   rank: number,
-  hasDetails: boolean,
+  describedBy: string | null,
   actions: Actions,
 ): TemplateResult {
   const on = entry.state === 'enabled';
@@ -112,10 +119,23 @@ function switchButton(
     data-fk=${startupFocus.entry(entry.id)}
     aria-checked=${on ? 'true' : 'false'}
     aria-label=${fr.startup.switchLabel(entry.name, entry.alias, rank)}
-    aria-describedby=${hasDetails ? detailId(entry.id) : nothing}
+    aria-describedby=${describedBy ?? nothing}
     aria-disabled=${isBusy(state) ? 'true' : nothing}
     @click=${() => (isBusy(state) ? undefined : actions.setStartupEntry(entry.id, !on))}
   ></button>`;
+}
+
+/** Les lignes que l'interrupteur cite en description (leurs identifiants, séparés par une espace) ; `null` : aucune. */
+function describedBy(state: AppState, entry: StartupEntry, details: string): string | null {
+  const waiting = waitingText(state.startup);
+  if (waiting !== null && waiting.id === entry.id) {
+    return detailId(entry.id);
+  }
+  const ids = [
+    ...(entry.registered === null ? [] : [registeredId(entry.id)]),
+    ...(details === '' ? [] : [detailId(entry.id)]),
+  ];
+  return ids.length === 0 ? null : ids.join(' ');
 }
 
 /** Ce que la fin de la ligne montre : un interrupteur, ou la raison de son absence. */
@@ -123,12 +143,12 @@ function rowControl(
   state: AppState,
   entry: StartupEntry,
   rank: number,
-  hasDetails: boolean,
+  describedBy: string | null,
   actions: Actions,
 ): Content {
   switch (rowEnd(entry)) {
     case 'switch':
-      return switchButton(state, entry, rank, hasDetails, actions);
+      return switchButton(state, entry, rank, describedBy, actions);
     case 'own':
       return html`<span class="pend">
         <span class="d">${fr.startup.own}</span>
@@ -158,18 +178,33 @@ function rowControl(
   }
 }
 
+/** Les lignes sous le nom : la réponse attendue si ce changement attend, sinon le nom d'inscription (PC) et les détails. */
+function lines(state: AppState, entry: StartupEntry, details: string): Content {
+  const waiting = waitingText(state.startup);
+  if (waiting !== null && waiting.id === entry.id) {
+    // Un texte long : il passe à la ligne, il n'est pas coupé. Il est annoncé par la zone de retour.
+    return html`<span class="t2 wait" id=${detailId(entry.id)}>${waiting.text}</span>`;
+  }
+  return html`${entry.registered === null
+    ? nothing
+    : html`<span class="t2 path" id=${registeredId(entry.id)} title=${fr.startup.registered(entry.registered)}
+        >${fr.startup.registered(entry.registered)}</span
+      >`}
+  ${details === ''
+    ? nothing
+    : html`<span class="t2 path" id=${detailId(entry.id)} title=${details}>${details}</span>`}`;
+}
+
 function row(state: AppState, entry: StartupEntry, rank: number, actions: Actions): TemplateResult {
   const details = detailParts(entry).join(fr.startup.separator);
   return html`<li class="row static">
     <span class="av" aria-hidden="true">${initialOf(entry.name)}</span>
     <span class="tx">
       <span class="t1 path" title=${entry.name}>${entry.name}</span>
-      ${details === ''
-        ? nothing
-        : html`<span class="t2 path" id=${detailId(entry.id)} title=${details}>${details}</span>`}
+      ${lines(state, entry, details)}
     </span>
     ${rowTags(entry, state.now).map((tag) => html`<span class="tag" title=${tag}>${tag}</span>`)}
-    ${rowControl(state, entry, rank, details !== '', actions)}
+    ${rowControl(state, entry, rank, describedBy(state, entry, details), actions)}
   </li>`;
 }
 
@@ -211,9 +246,12 @@ function machineSection(state: AppState, view: StartupView, actions: Actions): C
   return html`<section class="psec">
     <h2 class="sub flat">${fr.startup.machine}</h2>
     <div class="pline pmach">
-      <p class="d">${fr.startup.machineHint}</p>
-      ${openWindows(actions)}
+      ${hasPcAccess(view)
+        ? html`<p class="d">${fr.startup.pc[view.pc as 'consent' | 'password' | 'direct']}</p>`
+        : html`<p class="d">${fr.startup.machineHint}</p>
+          ${openWindows(actions)}`}
     </div>
+    ${hasPcAccess(view) ? html`<p class="d pcaut">${fr.startup.pc.caution}</p>` : nothing}
     ${scopeCard(state, view, 'machine', actions)}
   </section>`;
 }

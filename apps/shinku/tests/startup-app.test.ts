@@ -10,7 +10,7 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 
 import type { Backend, StartupEntry, StartupView } from '../src/backend/types.ts';
 import { fr } from '../src/i18n/fr.ts';
-import { SAY_DELAY, STARTUP_RELOAD_GAP } from '../src/model/startup.ts';
+import { entryById as findEntry, SAY_DELAY, STARTUP_POLL_DELAY, STARTUP_RELOAD_GAP } from '../src/model/startup.ts';
 import { IDLE_SESSION } from '../src/state.ts';
 
 // ── Un faux environnement de page ──────────────────────────────────────────
@@ -102,6 +102,7 @@ function entry(id: string, parts: Partial<StartupEntry> = {}): StartupEntry {
     hint: null,
     own: false,
     adjustable: true,
+    registered: null,
     ...parts,
   };
 }
@@ -113,8 +114,12 @@ const SHINKU = entry('ur-shinku', { name: 'Shinku', own: true, adjustable: false
 const OLD = entry('ur-old', { name: 'Ancien outil', state: 'unknown', adjustable: false });
 const SECURITY = entry('mr-security', { name: 'Sécurité Windows', scope: 'machine', adjustable: false });
 
-function view(entries: StartupEntry[] = [DISCORD, STEAM, ONEDRIVE, SHINKU, OLD, SECURITY], unreadable: StartupView['unreadable'] = []): StartupView {
-  return { entries, unreadable };
+function view(
+  entries: StartupEntry[] = [DISCORD, STEAM, ONEDRIVE, SHINKU, OLD, SECURITY],
+  unreadable: StartupView['unreadable'] = [],
+  more: Partial<StartupView> = {},
+): StartupView {
+  return { entries, unreadable, pc: 'unavailable', pending: null, ...more };
 }
 
 /** La vue telle que le cœur la rend après avoir coupé `id`. */
@@ -473,10 +478,11 @@ test('la réponse d’un geste arrivée après avoir quitté la page ne remplit 
   again.actions.setStartupEntry('ur-discord', false);
   again.actions.navigate('home');
   again.actions.navigate('startup');
-  assert.equal(again.of('startupView').length, 1, 'pas de demande tant qu’un geste est en vol');
+  // Une visite qui n'a rien encore demande la vue : le cœur répond tout de suite (avec `pending` si le PC attend).
+  assert.equal(again.of('startupView').length, 2, 'la nouvelle visite demande sa vue, même si le geste est en vol');
   again.of('setStartupEntry')[0]?.resolve(cut(view(), 'ur-discord'));
   await flush();
-  assert.equal(again.of('startupView').length, 2);
+  assert.equal(again.of('startupView').length, 3, 'et relit la vue quand le geste a répondu');
   assert.equal(again.state().startupSay, null);
 });
 
@@ -949,4 +955,186 @@ test('« Réessayer » : après le rechargement le focus va au titre ; si la pan
   await flush();
   assert.equal(buttons.retry.focus.mock.callCount(), 1);
   assert.equal(buttons.title.focus.mock.callCount(), 1, 'pas de focus au titre sans vue');
+});
+
+// ── Le PC avec l'accord de Windows (lot 2) ─────────────────────────────────
+
+const REALTEK = entry('mr-realtek', { name: 'Realtek', scope: 'machine', registered: 'RtkAudUService' });
+const PC = (more: Partial<StartupView> = {}): StartupView =>
+  view([DISCORD, REALTEK], [], { pc: 'consent', ...more });
+const PC_WAITING = PC({ pending: { id: 'mr-realtek', enabled: false } });
+const refuse = (reason: string) => ({ kind: 'startupRefused', reason });
+
+/** Laisse passer deux secondes, le temps d'une relecture, et la laisse arriver. */
+async function pollOnce(page: ReturnType<typeof start>, answer: StartupView): Promise<void> {
+  mock.timers.tick(STARTUP_POLL_DELAY);
+  page.of('startupView').at(-1)?.resolve(answer);
+  await flush();
+}
+
+test('le geste sur une ligne du PC n’est pas optimiste : la ligne attend, rien ne bouge, aucune relecture', async () => {
+  const page = start();
+  await page.open(PC());
+  page.actions.setStartupEntry('mr-realtek', false);
+  assert.deepEqual(page.state().startup?.pending, { id: 'mr-realtek', enabled: false });
+  assert.equal(findEntry(page.state().startup as StartupView, 'mr-realtek')?.state, 'enabled', 'la ligne ne change qu’à la réponse');
+  assert.equal(page.of('setStartupEntry').length, 1);
+  // Cette page attend elle-même la réponse : pas de relecture.
+  mock.timers.tick(STARTUP_POLL_DELAY * 5);
+  await flush();
+  assert.equal(page.of('startupView').length, 1);
+  // Les autres interrupteurs sont inertes.
+  page.actions.setStartupEntry('ur-discord', false);
+  assert.equal(page.of('setStartupEntry').length, 1);
+
+  const done = PC();
+  done.entries = done.entries.map((found) =>
+    found.id === 'mr-realtek' ? { ...found, state: 'disabled', disabledAt: NOW, mark: { kind: 'cutByShinku', at: NOW } } : found,
+  );
+  page.of('setStartupEntry')[0]?.resolve(done);
+  await flush();
+  assert.equal(page.state().startup?.pending, null);
+  assert.equal(page.state().startupBusy, null);
+  assert.equal(page.state().startupSay?.text, fr.startup.say.cut('Realtek', false));
+  assert.deepEqual(page.state().startupSay?.undo, { id: 'mr-realtek', enabled: true });
+  mock.timers.tick(STARTUP_POLL_DELAY * 5);
+  await flush();
+  assert.equal(page.of('startupView').length, 1, 'plus d’attente : plus de relecture');
+});
+
+test('« Annuler » après une coupure du PC redemande l’accord : même geste, sens inverse', async () => {
+  const page = start();
+  await page.open(PC());
+  page.actions.setStartupEntry('mr-realtek', false);
+  const cutView = PC();
+  cutView.entries = cutView.entries.map((found) => (found.id === 'mr-realtek' ? { ...found, state: 'disabled' } : found));
+  page.of('setStartupEntry')[0]?.resolve(cutView);
+  await flush();
+  page.actions.undoStartup();
+  assert.deepEqual(page.of('setStartupEntry')[1]?.args, ['mr-realtek', true]);
+  assert.deepEqual(page.state().startup?.pending, { id: 'mr-realtek', enabled: true });
+});
+
+test('Windows refuse : « Rien n’a changé. » après une annulation, la phrase de l’administrateur sinon', async () => {
+  for (const [reason, text] of [
+    ['cancelled', fr.startup.say.cancelled],
+    ['needsAdmin', fr.startup.say.needsAdmin],
+    ['failed', fr.startup.say.failed],
+  ] as const) {
+    const page = start();
+    await page.open(PC());
+    page.actions.setStartupEntry('mr-realtek', false);
+    page.of('setStartupEntry')[0]?.reject(refuse(reason));
+    await flush();
+    assert.equal(page.state().startupSay?.text, text, reason);
+    assert.equal(page.state().startupSay?.undo, null, reason);
+    assert.equal(page.state().startup?.pending, null, reason);
+    assert.equal(page.state().startupBusy, null, reason);
+    assert.equal(findEntry(page.state().startup as StartupView, 'mr-realtek')?.state, 'enabled', reason);
+    // La vue est relue, comme après tout refus.
+    assert.equal(page.of('startupView').length, 2, reason);
+  }
+  assert.equal(fr.startup.say.cancelled, 'Rien n’a changé.');
+  assert.equal(fr.startup.say.needsAdmin, 'Il faut un administrateur pour régler cette app.');
+});
+
+test('un autre changement attendait déjà (`busy`) : rien n’est dit, la vue relue montre l’attente et la page la suit', async () => {
+  const page = start();
+  await page.open(PC());
+  page.actions.setStartupEntry('mr-realtek', false);
+  page.of('setStartupEntry')[0]?.reject(refuse('busy'));
+  await flush();
+  assert.equal(page.state().startupSay, null);
+  page.of('startupView')[1]?.resolve(PC({ pending: { id: 'ur-other', enabled: false } }));
+  await flush();
+  assert.notEqual(page.state().startup?.pending, null);
+  mock.timers.tick(STARTUP_POLL_DELAY);
+  assert.equal(page.of('startupView').length, 3);
+});
+
+test('une page rechargée pendant l’attente relit la vue toutes les deux secondes, puis s’arrête quand `pending` a disparu', async () => {
+  const page = start();
+  // La page vient de s'ouvrir : le cœur dit qu'un changement attend, sans que cette page l'ait demandé.
+  await page.open(PC_WAITING);
+  assert.equal(page.of('setStartupEntry').length, 0);
+  assert.equal(page.of('startupView').length, 1);
+  // Les interrupteurs sont inertes.
+  page.actions.setStartupEntry('ur-discord', false);
+  page.actions.setStartupEntry('mr-realtek', true);
+  assert.equal(page.of('setStartupEntry').length, 0);
+
+  mock.timers.tick(STARTUP_POLL_DELAY - 1);
+  assert.equal(page.of('startupView').length, 1, 'pas avant deux secondes');
+  mock.timers.tick(1);
+  assert.equal(page.of('startupView').length, 2);
+  // Jamais empilée : la suivante part deux secondes après la réponse, pas avant.
+  mock.timers.tick(STARTUP_POLL_DELAY * 3);
+  assert.equal(page.of('startupView').length, 2);
+  page.of('startupView')[1]?.resolve(PC_WAITING);
+  await flush();
+  assert.equal(page.of('startupView').length, 2);
+  await pollOnce(page, PC());
+  assert.equal(page.of('startupView').length, 3);
+  assert.equal(page.state().startup?.pending, null);
+  // Fini : plus de relecture, et les interrupteurs répondent de nouveau.
+  mock.timers.tick(STARTUP_POLL_DELAY * 5);
+  await flush();
+  assert.equal(page.of('startupView').length, 3);
+  page.actions.setStartupEntry('ur-discord', false);
+  assert.equal(page.of('setStartupEntry').length, 1);
+});
+
+test('la relecture de l’attente survit à une lecture qui échoue, et ne tourne pas fenêtre cachée', async () => {
+  const page = start();
+  await page.open(PC_WAITING);
+  mock.timers.tick(STARTUP_POLL_DELAY);
+  page.of('startupView')[1]?.reject(new Error('ipc'));
+  await flush();
+  // La page garde sa dernière vue, et réessaie.
+  assert.notEqual(page.state().startup, null);
+  environment.hidden = true;
+  mock.timers.tick(STARTUP_POLL_DELAY);
+  await flush();
+  assert.equal(page.of('startupView').length, 2, 'fenêtre cachée : pas de demande');
+  environment.hidden = false;
+  mock.timers.tick(STARTUP_POLL_DELAY);
+  assert.equal(page.of('startupView').length, 3, 'visible de nouveau : la relecture reprend');
+});
+
+test('quitter la page arrête la relecture, et y revenir pendant l’attente la reprend', async () => {
+  const page = start();
+  await page.open(PC_WAITING);
+  page.actions.navigate('home');
+  mock.timers.tick(STARTUP_POLL_DELAY * 3);
+  await flush();
+  assert.equal(page.of('startupView').length, 1, 'hors de la page : aucune demande');
+  page.actions.navigate('startup');
+  assert.equal(page.of('startupView').length, 2);
+  page.of('startupView')[1]?.resolve(PC_WAITING);
+  await flush();
+  mock.timers.tick(STARTUP_POLL_DELAY);
+  assert.equal(page.of('startupView').length, 3);
+});
+
+test('une page quittée puis retrouvée pendant son propre geste voit l’attente du cœur, et la suit', async () => {
+  const page = start();
+  await page.open(PC());
+  page.actions.setStartupEntry('mr-realtek', false);
+  page.actions.navigate('home');
+  page.actions.navigate('startup');
+  // La nouvelle visite lit tout de suite : le cœur répond avec `pending`.
+  assert.equal(page.of('startupView').length, 2);
+  page.of('startupView')[1]?.resolve(PC_WAITING);
+  await flush();
+  assert.notEqual(page.state().startup?.pending, null);
+  assert.equal(page.state().startupSay, null);
+  // Le geste d'avant répond enfin : la page relit la vue du cœur.
+  page.of('setStartupEntry')[0]?.resolve(PC());
+  await flush();
+  assert.equal(page.of('startupView').length, 3);
+  page.of('startupView')[2]?.resolve(PC());
+  await flush();
+  assert.equal(page.state().startup?.pending, null);
+  mock.timers.tick(STARTUP_POLL_DELAY * 3);
+  assert.equal(page.of('startupView').length, 3);
 });

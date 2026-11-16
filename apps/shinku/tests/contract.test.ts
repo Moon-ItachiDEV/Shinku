@@ -54,6 +54,7 @@ import type {
   StartupEntry,
   StartupMark,
   StartupOrigin,
+  StartupPc,
   StartupRefusal,
   StartupScope,
   StartupState,
@@ -149,7 +150,8 @@ const enums: Record<string, readonly string[]> = {
   startupOrigin: allOf<StartupOrigin>()(['registry', 'folder']),
   startupMark: allOf<StartupMark['kind']>()(['cutByShinku', 'cameBack']),
   startupHint: allOf<NonNullable<StartupEntry['hint']>>()(['sync']),
-  startupRefusal: allOf<StartupRefusal>()(['unknownEntry', 'notAdjustable', 'busy', 'failed']),
+  startupRefusal: allOf<StartupRefusal>()(['unknownEntry', 'notAdjustable', 'busy', 'failed', 'cancelled', 'needsAdmin']),
+  startupAccess: allOf<StartupPc>()(['consent', 'password', 'direct', 'unavailable']),
   appsScope: allOf<AppScope>()(['account', 'machine']),
   appsKind: allOf<AppKind>()(['plain', 'runtime', 'driver']),
   appsRemoval: allOf<AppRemoval>()(['offered', 'refused', 'own', 'needed']),
@@ -248,7 +250,7 @@ const OPTIONS: MockOptions = {
   clean: 'rough',
   interrupted: true,
   game: { state: 'playing', agent: 'running', power: 'available', startup: 'enabled' },
-  boot: { data: 'few', fail: false, read: 'all', load: 'ok', shinku: 'on' },
+  boot: { data: 'few', fail: false, read: 'all', load: 'ok', shinku: 'on', pc: 'consent', pcflow: 'wait' },
   apps: { data: 'few', load: 'ok', flow: 'idle', fail: 'none' },
 };
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -381,6 +383,14 @@ async function samples(): Promise<Record<string, unknown>> {
   const startupView = await booting.startupView();
   assert.ok(startupView.entries.some((entry) => entry.mark?.kind === 'cutByShinku'));
   assert.ok(startupView.entries.some((entry) => entry.mark?.kind === 'cameBack'));
+  // Une vue relue pendant l'attente d'une entrée du PC : son champ `pending`.
+  const machineEntry = startupView.entries.find((entry) => entry.scope === 'machine' && entry.adjustable);
+  assert.ok(machineEntry !== undefined);
+  const changing = mockBackend(OPTIONS);
+  const waiting = changing.setStartupEntry(machineEntry.id, false);
+  const startupPending = (await changing.startupView()).pending;
+  assert.ok(startupPending !== null);
+  await waiting;
   const unreadableBoot = await mockBackend({ ...OPTIONS, boot: { ...OPTIONS.boot, read: 'user' } }).startupView();
   assert.deepEqual(unreadableBoot.unreadable, ['user']);
   const startupRefusal: unknown = await booting.setStartupEntry('ur-0000000000000000', false).then(
@@ -431,6 +441,7 @@ async function samples(): Promise<Record<string, unknown>> {
     'error.cleanNotStarted': errors.cleanNotStarted,
     'error.gameRefused': errors.gameRefused,
     startupView,
+    startupPending,
     'error.startupRefused': errors.startupRefused,
     'error.uninstallRefused': errors.uninstallRefused,
     ...(await appsSamples()),

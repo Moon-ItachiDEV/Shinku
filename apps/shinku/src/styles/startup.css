@@ -180,3 +180,17 @@
 .startup .row .t2 {
   color: var(--text-2);
 }
+
+/* La ligne qui attend la personne : un texte à lire en entier, il passe à la ligne. */
+.startup .row .t2.wait {
+  white-space: normal;
+  text-wrap: pretty;
+}
+
+/* La phrase de prudence de la carte du PC, sous la phrase d'accès. */
+.startup .pcaut {
+  margin: -6px 4px 12px;
+  max-width: 620px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}

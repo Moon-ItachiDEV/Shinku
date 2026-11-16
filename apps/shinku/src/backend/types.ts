@@ -451,7 +451,25 @@ export interface StartupEntry {
   hint: 'sync' | null;
   /** L'entrée de Shinku lui-même (mode jeu automatique). */
   own: boolean;
+  /** Pour une entrée du PC, vrai si Shinku peut la régler (`StartupView.pc` n'est pas `unavailable`, et la ligne s'y prête). */
   adjustable: boolean;
+  /**
+   * Pour une entrée du PC : le nom sous lequel elle est inscrite, déjà mis en forme par le cœur (les caractères
+   * douteux y sont montrés `⟨U+00A0⟩`, jamais retirés) ; la page l'affiche tel quel. `null` pour une entrée du compte.
+   */
+  registered: string | null;
+}
+
+/**
+ * Comment Windows laisse Shinku régler le PC : `consent` (une fenêtre d'accord), `password` (le mot de passe d'un
+ * administrateur), `direct` (Windows ne demande rien : Shinku fait confirmer), `unavailable` (aucun moyen).
+ */
+export type StartupPc = 'consent' | 'password' | 'direct' | 'unavailable';
+
+/** Le changement du PC que l'assistant attend : la page relit la vue tant qu'il est là. */
+export interface StartupPending {
+  id: string;
+  enabled: boolean;
 }
 
 export interface StartupView {
@@ -459,9 +477,11 @@ export interface StartupView {
   entries: StartupEntry[];
   /** Les portées dont une place n'a pas pu être lue. */
   unreadable: StartupScope[];
+  pc: StartupPc;
+  pending: StartupPending | null;
 }
 
-export type StartupRefusal = 'unknownEntry' | 'notAdjustable' | 'busy' | 'failed';
+export type StartupRefusal = 'unknownEntry' | 'notAdjustable' | 'busy' | 'failed' | 'cancelled' | 'needsAdmin';
 
 // ── La désinstallation ─────────────────────────────────────────────────────
 

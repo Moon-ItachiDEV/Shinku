@@ -469,6 +469,21 @@ export const fr = typeset({
     user: 'Pour ton compte',
     machine: 'Pour tous les comptes de ce PC',
     machineHint: 'Ces apps se règlent dans Windows pour l’instant : il faut l’accord d’un administrateur.',
+    // Sous le titre de la carte du PC, selon ce que Windows laisse faire (`unavailable` : `machineHint` plus haut).
+    pc: {
+      consent: 'Windows te demande ton accord à chaque changement, puis Shinku te redit quelle app il règle.',
+      password:
+        'Windows demandera le mot de passe d’un administrateur à chaque changement, puis Shinku redira quelle app il règle.',
+      direct: 'Shinku te demandera de confirmer chaque changement.',
+      // Une phrase de plus, dès qu'il y a un accès.
+      caution:
+        'Certaines servent au son, au pavé tactile ou aux alertes de sécurité. Si quelque chose te manque après, remets l’app.',
+    },
+    // Sous le nom lisible d'une ligne du PC ; `registered` est déjà mis en forme par le cœur.
+    registered: (registered: string) => `Inscrite sous «${NBSP}${registered}${NBSP}»`,
+    // Dans la ligne de l'app dont le changement attend la personne.
+    waiting: (registered: string) =>
+      `En attente de ta réponse… Une petite fenêtre «${NBSP}Shinku${NBSP}» te demandera de confirmer «${NBSP}${registered}${NBSP}». Si tu ne la vois pas, regarde dans la barre des tâches.`,
     unreadable: 'Shinku n’a pas pu lire toute cette liste.',
     note: 'Couper une app ne la désinstalle pas et ne supprime rien : elle ne se lance plus toute seule, et tu peux toujours l’ouvrir toi-même. Certaines apps se réinscrivent d’elles-mêmes : règle-le aussi dans leurs options. L’éditeur affiché est celui que le fichier déclare.',
     unknownPublisher: 'Éditeur inconnu',
@@ -509,6 +524,8 @@ export const fr = typeset({
       failed: 'Le changement n’a pas pu être fait.',
       unknownEntry: 'Cette entrée n’existe plus.',
       notAdjustable: 'Cette entrée ne se règle pas ici.',
+      cancelled: 'Rien n’a changé.',
+      needsAdmin: 'Il faut un administrateur pour régler cette app.',
     },
   },
 

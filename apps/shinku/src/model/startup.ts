@@ -13,11 +13,15 @@ import type {
 } from '../backend/types.ts';
 import { formatDay } from '../format.ts';
 import { fr } from '../i18n/fr.ts';
+import { APPS_POLL_DELAY } from './uninstall.ts';
 
 /** Combien de temps la zone de retour garde sa phrase, en millisecondes. */
 export const SAY_DELAY = 12_000;
 /** Retour de la fenêtre : une vue finie depuis moins de ce délai (ms) n'est pas redemandée. */
 export const STARTUP_RELOAD_GAP = 500;
+
+/** La relecture tant que le cœur attend la personne : celle de la Désinstallation, la même minuterie. */
+export const STARTUP_POLL_DELAY = APPS_POLL_DELAY;
 
 // ── L'en-tête ──────────────────────────────────────────────────────────────
 
@@ -86,7 +90,8 @@ export function detailParts(entry: StartupEntry): string[] {
   if (entry.target === 'hosted' && entry.host !== null) {
     parts.push(fr.startup.hostedBy(entry.host));
   }
-  if (entry.alias !== null) {
+  // Une ligne du PC dit son nom d'inscription sur sa propre ligne (`registered`) : pas deux fois.
+  if (entry.alias !== null && entry.registered === null) {
     parts.push(fr.startup.alias(entry.alias));
   }
   if (entry.origin === 'folder') {
@@ -100,7 +105,7 @@ export const MAX_TAGS = 2;
 
 /** Combien de pastilles la fin de ligne porte déjà : l'état d'une ligne du PC, « Coupée dans Windows » pour Shinku. */
 function endTags(entry: StartupEntry): number {
-  if (entry.scope === 'machine') {
+  if (rowEnd(entry) === 'machine') {
     return machineChip(entry, 0) === null ? 0 : 1;
   }
   return entry.own && entry.state === 'disabled' ? 1 : 0;
@@ -119,7 +124,8 @@ export function rowTags(entry: StartupEntry, now: number): string[] {
   if (entry.target === 'missing') {
     tags.push(fr.startup.missing);
   }
-  if (entry.scope === 'user' && !entry.own && entry.state !== 'unknown') {
+  // Une ligne à interrupteur (du compte, ou du PC quand Shinku peut la régler) dit sa coupure ici ; l'autre, en fin de ligne.
+  if ((entry.scope === 'user' || rowEnd(entry) === 'switch') && !entry.own && entry.state !== 'unknown') {
     if (entry.mark?.kind === 'cameBack') {
       tags.push(fr.startup.cameBack(formatDay(entry.mark.cut, now)));
     } else if (entry.mark?.kind === 'cutByShinku') {
@@ -145,7 +151,8 @@ export type RowEnd = 'switch' | 'own' | 'unknown' | 'unadjustable' | 'machine';
 
 export function rowEnd(entry: StartupEntry): RowEnd {
   if (entry.scope === 'machine') {
-    return 'machine';
+    // Une ligne du PC que Shinku peut régler a l'interrupteur du compte ; sinon, seulement son état.
+    return entry.adjustable && entry.state !== 'unknown' ? 'switch' : 'machine';
   }
   if (entry.own) {
     return 'own';
@@ -154,6 +161,32 @@ export function rowEnd(entry: StartupEntry): RowEnd {
     return 'unknown';
   }
   return entry.adjustable ? 'switch' : 'unadjustable';
+}
+
+// ── Le PC et l'attente ─────────────────────────────────────────────────────
+
+/** Shinku a-t-il un moyen de régler le PC ? */
+export function hasPcAccess(view: StartupView): boolean {
+  return view.pc !== 'unavailable';
+}
+
+/** Un changement du PC attend la personne (ou l'assistant) : tous les interrupteurs sont inertes. */
+export function isWaiting(view: StartupView | null): boolean {
+  return view !== null && view.pending !== null;
+}
+
+/** La ligne qui attend, et ce qu'elle dit ; `null` : rien n'attend, ou la ligne n'est plus dans la liste. */
+export function waitingText(view: StartupView | null): { id: string; text: string } | null {
+  if (view === null || view.pending === null) {
+    return null;
+  }
+  const entry = entryById(view, view.pending.id);
+  return entry === undefined ? null : { id: entry.id, text: fr.startup.waiting(entry.registered ?? entry.name) };
+}
+
+/** Faut-il relire la vue toutes les deux secondes ? Oui tant que le cœur attend, sauf si c'est ce geste-ci qui attend. */
+export function shouldPoll(view: StartupView | null, ownCall: boolean): boolean {
+  return isWaiting(view) && !ownCall;
 }
 
 /** Le texte de l'unique pastille d'état d'une ligne du PC ; `null` : Shinku ne sait pas lire l'état. */
@@ -243,6 +276,10 @@ export function sayRefused(error: unknown): Say | null {
         return { text: fr.startup.say.notAdjustable, undo: null };
       case 'failed':
         return { text: fr.startup.say.failed, undo: null };
+      case 'cancelled':
+        return { text: fr.startup.say.cancelled, undo: null };
+      case 'needsAdmin':
+        return { text: fr.startup.say.needsAdmin, undo: null };
     }
   }
   return { text: fr.startup.say.failed, undo: null };
@@ -273,6 +310,8 @@ export function labelRanks(entries: readonly StartupEntry[]): Map<string, number
 
 /** L'identifiant de la seconde ligne d'une ligne, que son interrupteur cite en description. */
 export const detailId = (id: string): string => `startup-${id}-d`;
+/** L'identifiant de la ligne « Inscrite sous… » d'une ligne du PC. */
+export const registeredId = (id: string): string => `startup-${id}-r`;
 
 // ── Le focus après un changement de liste ──────────────────────────────────
 
