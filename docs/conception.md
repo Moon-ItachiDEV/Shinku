@@ -1099,6 +1099,22 @@ ne le prouvent pas (ni droits, ni élévation, ni partage de fichiers). L'essai
 `SHINKU_ESSAI_ASSISTANT` (nom inconnu, code 4, jamais de boîte) se lance à la
 main sur l'installé.
 
+**Vu sur le vrai Windows de l'intégration continue** (Windows 11 build 26100,
+passage du 16 novembre 2026, `essai-assistant.ps1` et l'essai du lanceur, verts au
+premier passage) : le vrai lanceur démarre l'assistant installé, qui répond 4 pour un
+nom inconnu ; pendant le lancement, le fichier gardé ouvert refuse une écriture et une
+suppression (erreur 32) ; un dossier créé sous `Program Files` est accepté avec ses
+droits de départ et refusé (code 6) dès qu'« Utilisateurs » peut y écrire ; OK écrit
+les douze octets attendus (`03 00 00 00` puis la date) et rien d'autre dans `HKLM`,
+Annuler n'écrit rien (code 3), « déjà dans cet état » rend 9 sans boîte, l'échéance
+tombe à 120,0 s (code 3) ; un programme d'intégrité moyenne ne peut ni cliquer ni
+fermer la boîte (erreur 5) ; l'assistant publié porte `requireAdministrator` et
+`DependentLoadFlags = 0x0800`. La page, lancée avec un jeton filtré, lit l'accès
+`password` et montre l'interrupteur, sans clic. **Restent pour un vrai PC** : la
+fenêtre d'accord de Windows elle-même (la machine d'essai est déjà élevée, personne
+n'y répond), ce qu'elle écrit pour un assistant non signé, et l'effet du réglage à
+l'ouverture de session.
+
 ## Désinstallation
 
 Le module liste les apps installées, lance le **désinstalleur de l'éditeur**
@@ -1404,8 +1420,9 @@ sont inchangés.
 
 **Pourquoi base d'abord.** Si le marquage était coupé net (arrêt brutal), Windows
 supprimerait ce qui est déjà marqué. Une annexe (`-journal`, `-wal`) orpheline à côté d'une
-base absente est écartée par SQLite quand le navigateur recrée la base **[à vérifier
-sur le vrai Windows : preuve 8 du test]** ; une base qui reste sans son journal chaud
+base absente est écartée par SQLite quand le navigateur recrée la base **[non prouvé : sur
+le vrai Windows, le passage normal ne laisse aucune annexe (preuves 1 et 8 du test) et
+Chrome relancé recrée `History` ; la coupure elle-même n'a pas été fabriquée]** ; une base qui reste sans son journal chaud
 est ce qui l'abîme. Avec cet ordre, une coupure ne laisse que des annexes sans base.
 
 **Navigateur ouvert** : un processus du nom de l'exécutable (toutes les sessions)
@@ -1471,7 +1488,8 @@ dommage (l'index part d'abord) et sans bilan affiché.
   Sans danger pour le reste du profil.
 - `lockfile` est ouvert avec l'accès en écriture, **jamais écrit ni créé** : c'est la
   demande d'écriture qui entre en conflit de partage avec un navigateur ouvert
-  **[à vérifier sur le vrai Windows]**.
+  (vu sur le vrai Windows, preuves 2 et 8 : l'ouverture est refusée pour partage face
+  à un `lockfile` tenu comme le fait Chromium, et face au vrai Chrome ouvert).
 - Si le retrait d'une demande de suppression échoue après l'échec du marquage d'un autre fichier,
   l'erreur est avalée (`let _ =` dans `fs/windows.rs`, code partagé avec le grand vide, non
   touché ici) : le fichier déjà marqué part, et le lot est à moitié effacé. Très improbable
@@ -1489,15 +1507,28 @@ dommage (l'index part d'abord) et sans bilan affiché.
   restauration. Les copies de l'historique que Windows (VSS) ou un outil de
   récupération gardent, la synchronisation du navigateur, et la réimportation
   d'Edge depuis Chrome ne sont pas touchées.
-- **[à vérifier sur le vrai Windows]** : le mode de partage de `lockfile` ; ce que
-  fait `SHAddToRecentDocs(NULL)` des épinglés et de « Recommandé » ; si
-  `ClearHistory` exige la fenêtre au premier plan ; ce que fait l'Explorateur de
-  `TypedPaths` à la fermeture d'une fenêtre ; les liens physiques NTFS et les
-  verrous réels ; si `SHAddToRecentDocs` (COM en STA, sur un fil de travail sans boucle de
-  messages) et `ClearHistory` / `OpenClipboard` (avec la fenêtre d'un autre fil) marchent depuis
-  la commande `async` ; si l'Explorateur retire les raccourcis `.lnk` après l'appel (d'où
-  les relectures de `recent`) ; si SQLite écarte bien une annexe orpheline à côté d'une
-  base recréée (preuve 8).
+- **Vu sur le vrai Windows** (machine de GitHub, Windows 11 build 26100, passage du
+  16 novembre 2026, les huit preuves de `essai-confidentialite.ps1`, 13 scénarios) :
+  `lockfile` tenu en écriture refuse notre ouverture, avec le partage de Chromium comme
+  sans aucun partage, et avec le vrai Chrome ouvert ; un fichier tenu ouvert, un lien
+  physique NTFS (deux noms), une jonction à la place du profil et un lien de registre
+  ne laissent rien partir, ni d'un côté ni de l'autre ; un profil supprimé puis recréé
+  est reconnu comme un autre (identifiant de fichier différent) ; `SHAddToRecentDocs(NULL)`
+  marche depuis la commande `async` (fil de travail sans boucle de messages), le récent
+  posé a disparu dès la première lecture et n'est pas revenu deux secondes plus tard,
+  et **le dossier épinglé à l'Accès rapide est resté** : `recent` reste une ligne et ne
+  devient pas un bouton ; le presse-papiers est vide après l'effacement lancé depuis la
+  page ; une fenêtre de l'Explorateur fermée après l'effacement ne réécrit rien dans
+  `RunMRU`, `TypedPaths` ni `WordWheelQuery` ; le vrai Chrome, effacé puis relancé,
+  démarre et recrée `History`, et `Login Data`, `Network\Cookies`, `Web Data` et
+  `Local State` gardent la même empreinte SHA-256.
+- **Reste à vérifier** : ce que fait `SHAddToRecentDocs(NULL)` de « Recommandé » ;
+  `ClearHistory` quand l'historique du presse-papiers est activé (il était coupé sur la
+  machine d'essai : `IsHistoryEnabled()` rend `False`, et `ClearHistory()` appelé par le
+  script rend `True`, ce qui ne dit rien de l'appel fait par Shinku avec un historique
+  plein) ; l'annexe SQLite orpheline après une coupure (voir « Pourquoi base d'abord ») ;
+  un vrai profil de tous les jours, avec la synchronisation active : c'est l'essai que
+  seule la personne peut faire sur son PC.
 - Sept pages des réglages de Windows sont ouvertes par Shinku (liste fermée,
   `WindowsPage`), dont `ms-settings:privacy-activityhistory`,
   `ms-settings:search-permissions` et `ms-settings:privacy-feedback`.
@@ -1795,8 +1826,9 @@ dossiers connus et les suppressions sont ceux du reste du cœur).
   finissent de sortir : le désinstalleur ne les ferme pas, ils sortent d'eux-mêmes
   après la fenêtre) est réessayé : toute la suite des suppressions est reprise, de
   pause de 250 ms en pause, pendant **dix secondes au plus en tout**, une seule
-  horloge pour l'ensemble et non par fichier ; dix secondes peuvent ne pas suffire,
-  à vérifier sur le vrai Windows. Tout cela tient dans une **échéance totale de
+  horloge pour l'ensemble et non par fichier ; sur le vrai Windows, fenêtre de Shinku
+  ouverte au départ, elles ont suffi (rien n'est resté, rien n'est revenu cinq secondes
+  plus tard), sur une machine rapide et un cache presque vide. Tout cela tient dans une **échéance totale de
   vingt secondes** (`TOTAL_DEADLINE`), donnée par l'horloge de l'hôte et regardée
   entre deux gestes et, dans une arborescence, **entre deux entrées** : à
   l'échéance, on s'arrête, ce qui reste est compté comme restant (code 1). Un
@@ -1855,8 +1887,8 @@ conception fixe, dans `NSIS_HOOK_PREUNINSTALL`, dans cet ordre :
    `shinku.exe` sous lui, puis affiche le message. Si le processus tourne encore
    au bout du délai, il est **arrêté** par ce même Gestionnaire. Portée : le
    Gestionnaire arrête **tout processus qui utilise ce fichier**, ce qui peut
-   inclure le Shinku ouvert par un autre compte du PC s'il le voit (à vérifier sur
-   le vrai Windows) ; de même il peut répondre « en marche » pour un tel Shinku
+   inclure le Shinku ouvert par un autre compte du PC s'il le voit (non essayé : il
+   faut deux comptes) ; de même il peut répondre « en marche » pour un tel Shinku
    sans que `--oublier` ait tourné. C'est la même portée que la fermeture de la
    fenêtre par le modèle de Tauri, juste avant. S'il n'a jamais été vu, ou s'il a
    dû être arrêté :
@@ -1953,7 +1985,7 @@ repris.
   impriment « SAUTÉ » sur la sortie d'erreur, mais **comptent « ok » dans le
   bilan de cargo** : un bilan vert ne les distingue pas des réussis. Les mêmes
   tournent sous Linux avec des liens symboliques.
-- Vrai Windows : voir « À vérifier sur le vrai Windows ».
+- Vrai Windows : voir « Sur le vrai Windows », plus bas.
 
 **Limites, écrites ici telles quelles.**
 
@@ -1995,33 +2027,48 @@ repris.
   ReFS ; sans identifiant, rien n'est supprimé, voir plus haut). Le processus
   n'est pas élevé : il n'a de toute façon que les droits de la personne.
 
-**À vérifier sur le vrai Windows** (rien de cela n'a été prouvé ici) :
+**Sur le vrai Windows** (machine de GitHub, Windows 11 build 26100, passage du
+16 novembre 2026, les trois étapes de `essai-installeur.ps1`, toutes vertes au premier
+passage). Ce qui est vu :
 
-- `RunAsUser` transmet-il l'argument `--oublier` (le modèle l'utilise ainsi pour
-  `/ARGS`) ? Preuve : `essai-installeur.ps1`, étape `desinstaller`, qui coche
-  la case dans la vraie page et compte les fichiers qui disparaissent.
-- Le Gestionnaire de redémarrage voit-il `shinku.exe` en marche pendant que le
-  processus tourne (dix secondes), puis fini ? Preuve : la même étape (et le
-  message d'échec, qui ne doit pas s'afficher) ; l'étape `oublier` mesure en plus
-  la durée de vie du processus (au moins une seconde).
-- Dix secondes de réessai suffisent-elles à WebView2 pour sortir et libérer son
-  cache quand la fenêtre était ouverte ? Preuve : l'étape `desinstaller` lancée
-  fenêtre ouverte au départ (aucun fichier ne doit revenir).
-- Une vraie jonction NTFS à la place d'un des deux dossiers `fr.shinku.app` :
-  témoin derrière intact, jonction laissée. Preuve : l'étape
-  `desinstaller-jonction`. Sous Wine, c'est sauté.
-- Le code 2 quand `--oublier` est élevé face à un bureau qui ne l'est pas, et le
-  code 0 quand tout le PC tourne avec tous les droits. Preuve : l'étape `oublier`,
-  si le runner le permet ; sinon c'est noté. La lecture réelle de l'élévation (et
-  le cas « inconnu » qui refuse) ne s'essaie pas ailleurs que sur Windows.
-- Que fait `RunAsUser` quand le bureau est à un autre compte que le
-  désinstalleur, sur le runner de GitHub (contrôle de compte coupé, pas
-  forcément d'Explorateur), et avec la protection administrateur de Windows 11 ?
-  Les deux cas à deux comptes ne s'essaient pas en intégration continue : ils
-  restent une limite dite.
-- Un fichier occupé réel, tenu par un vrai WebView2 (Wine a essayé un verrou sans
-  partage, pas un vrai moteur web), et la durée réelle d'une passe sur un vrai
-  cache, sous Defender.
+- `RunAsUser` transmet l'argument : pendant la désinstallation, le script a vu
+  `"C:\Program Files\Shinku\shinku.exe" --oublier`, et les fichiers sont partis.
+- Le Gestionnaire de redémarrage voit ce processus en marche puis fini : le message
+  d'échec ne s'est pas affiché, et la désinstallation n'a pas attendu son délai.
+- `--oublier` lancé à la main avec un jeton filtré (les droits ordinaires) : code 0,
+  1,01 s de vie, les 11 témoins partis, les deux dossiers `fr.shinku.app` partis.
+- Fenêtre de Shinku ouverte au départ, case cochée dans la vraie page : la question
+  « Shinku est ouvert » est posée une seule fois ; `%APPDATA%\Shinku`,
+  `%LOCALAPPDATA%\Shinku` et les deux `fr.shinku.app` ont disparu avec les 9 fichiers
+  de réglages et de journaux ; rien n'est revenu cinq secondes plus tard ; le dossier
+  d'installation et le raccourci du menu Démarrer ont disparu. Le réessai de dix
+  secondes a donc suffi à un vrai WebView2 qui sort.
+- Une vraie jonction NTFS à la place de `%LOCALAPPDATA%\fr.shinku.app` : les six
+  éléments derrière elle sont intacts, la jonction est laissée en place, et le reste
+  (réglages, `%APPDATA%\fr.shinku.app`) est parti.
+- Sur un vrai NTFS, les essais de liens de `forget_fs` (21 essais) et `forget_run` (6)
+  passent ; un bilan vert de cargo cache leur sortie, donc une éventuelle ligne
+  « SAUTÉ » ne s'y verrait pas.
+
+Ce qui **n'est pas** vu, et pourquoi :
+
+- **Le lancement « avec les droits ordinaires » par `RunAsUser` n'est pas prouvé.** Sur
+  la machine de GitHub tout est élevé, l'Explorateur de la session aussi : `RunAsUser`
+  y a donc lancé `--oublier` avec un jeton élevé, face à un bureau élevé, ce que
+  `--oublier` accepte (tout le PC tourne avec tous les droits) ; c'est déduit du jeton
+  de l'Explorateur, que le script imprime, pas lu sur le processus lui-même. Ce que
+  l'essai prouve est le passage de l'argument, l'attente et le résultat, pas la baisse
+  des droits. Elle ne se verra que sur le PC de quelqu'un : désinstaller avec la case,
+  sans message d'échec et sans reste.
+- **Le code 2** (`--oublier` élevé face à un bureau qui ne l'est pas) : même raison,
+  l'étape l'écrit en `NOTE`. La décision elle-même est tenue par les essais du cœur,
+  avec une élévation fabriquée.
+- Le `RMDir /r` de NSIS suit-il une jonction ? Non mesuré, et plus nécessaire : le
+  désinstalleur ne le joue plus dans un profil (tenu par `installer.test.ts`).
+- Les deux cas à deux comptes (compte ordinaire et mot de passe d'un administrateur ;
+  protection administrateur de Windows 11) : jamais essayables en intégration continue,
+  ils restent une limite dite.
+- La durée réelle d'une passe sur un gros cache, sous Defender, sur un disque lent.
 - Un volume FAT ou exFAT (sans identifiant), des dossiers redirigés sur un
   partage réseau, un fichier « en ligne uniquement », un profil déplacé.
 - « Rien d'écrit sur le disque » : un arrêt brutal (panique) peut faire écrire un
@@ -2227,11 +2274,13 @@ d'environnement que dans un programme sans droits d'administrateur.
   en place et retire la valeur de démarrage du compte élevé, pas de la personne
   devant le bureau. La solution est le même lancement par `RunAsUser` que pour
   `--oublier` ; elle change un passage prouvé sur le vrai Windows, utilisé aussi
-  à l'installation, et attend que `--oublier` y ait été prouvé.
-- **Preuve de `--oublier` sur le vrai Windows.** Le lot est construit et essayé
-  sous Linux et Wine ; il n'est fini qu'après l'essai de l'installeur sur un vrai
-  Windows (voir « À vérifier sur le vrai Windows », dans « Effacer les réglages à
-  la désinstallation »).
+  à l'installation. `--oublier` y est passé le 16 novembre 2026 : c'est le
+  chantier suivant.
+- **`--oublier` sur le PC de quelqu'un.** Les trois étapes de l'installeur sont
+  vertes sur le vrai Windows de l'intégration continue, mais tout y est élevé : la
+  baisse des droits par `RunAsUser` et le refus (code 2) ne s'y voient pas (voir
+  « Sur le vrai Windows », dans « Effacer les réglages à la désinstallation »).
+  Reste l'essai à la main : désinstaller avec la case sur un PC ordinaire.
 - **Variables et stratégies de WebView2 : risque accepté.** `shinku.exe` laisse
   WebView2 lire sept variables `WEBVIEW2_*` (dont
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`) et les stratégies de
@@ -2257,9 +2306,13 @@ d'environnement que dans un programme sans droits d'administrateur.
   qu'il n'est pas signé, détourner une de ses bibliothèques n'apporte rien à un
   attaquant (il peut présenter son propre programme sous le même nom), et
   `/DEPENDENTLOADFLAG:0x800` tient déjà les imports statiques à `System32`. Le
-  gain réel sur le binaire publié (MSVC, release, LTO) n'est pas mesuré : quand
-  la CI rouvrira, relever la table d'imports de `shinku-helper.exe` que
-  `essai-assistant.ps1` imprime déjà « pour information », et la noter ici. Les
+  gain réel sur le binaire publié (MSVC, release, LTO) est faible, d'après la
+  table d'imports de `shinku-helper.exe` relevée sur le vrai Windows le
+  16 novembre 2026 (374 784 octets) : `kernel32`, `advapi32`, `shell32`, `combase`,
+  `oleaut32`, `user32`, `ntdll`, `api-ms-win-core-synch-l1-2-0` et six
+  `api-ms-win-crt-*`. Ni `powrprof`, ni `wtsapi32`, ni `dwmapi` : l'éditeur de
+  liens a déjà écarté le code du mode jeu et de l'agent. Un crate dédié retirerait
+  surtout du code source à relire, pas des bibliothèques chargées. Les
   quatre faits gardés pour ce jour-là : (1) `State`, `Scope` et `Origin` dérivent
   `Serialize` et partent avec `Place` : il faut `#[serde(remote)]` dans le cœur
   (la règle de l'orphelin interdit le reste), pas de fonctionnalité `serde`
@@ -2278,9 +2331,11 @@ d'environnement que dans un programme sans droits d'administrateur.
   avant de fabriquer l'installeur. Un agent non signé, qui change la
   priorité d'autres programmes, est exactement ce qu'un antivirus regarde de
   près.
-- **Helper et agent.** Leur bibliothèque d'exécution C++ est liée statiquement
-  (`build.rs`), comme celle de `shinku.exe` ; à vérifier sur un PC sans
-  Visual C++ installé.
+- **Helper et agent.** Leur bibliothèque d'exécution Visual C++ est liée
+  statiquement (`build.rs`), comme celle de `shinku.exe`. Vu dans la table d'imports
+  de l'assistant publié : aucun `VCRUNTIME140.dll`, seulement les `api-ms-win-crt-*`
+  de la bibliothèque C universelle, qui fait partie de Windows 10 et 11. L'essai
+  sur un PC sans Visual C++ installé reste à faire pour le dire prouvé.
 - **ARM64.** Le code ne dépend pas de l'architecture, mais seul l'installeur
   x64 est fabriqué et testé.
 - **Intégration continue.** Désigner les actions GitHub par l'empreinte de
