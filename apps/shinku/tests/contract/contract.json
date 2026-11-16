@@ -106,6 +106,12 @@
       "notGame",
       "forgotten"
     ],
+    "historyKind": [
+      "clean",
+      "startupCut",
+      "game",
+      "uninstall"
+    ],
     "junkCategory": [
       "appCaches",
       "tempFiles",
@@ -120,6 +126,11 @@
       "folder",
       "data",
       "shortcut"
+    ],
+    "licencesOpened": [
+      "opened",
+      "missing",
+      "failed"
     ],
     "loadIssue": [
       "partial",
@@ -680,6 +691,29 @@
       },
       "startupDisabled": "boolean"
     },
+    "historyView": {
+      "lines": [
+        {
+          "appsRestored": "number",
+          "atMs": "number",
+          "backMs": "number",
+          "complete": "boolean",
+          "endedMs": "number",
+          "finishedMs": "number",
+          "freedBytes": "number",
+          "kind": "string",
+          "leftoverBytes": "number",
+          "leftovers": "number",
+          "name": "string",
+          "powerRestored": "boolean",
+          "recoverableBytes": "number",
+          "skippedFiles": "number",
+          "startedMs": "number",
+          "state": "string"
+        }
+      ],
+      "more": "boolean"
+    },
     "junk": {
       "bytes": "number",
       "categories": [
@@ -729,6 +763,7 @@
       "offset": "number",
       "threshold": "number"
     },
+    "licencesOpened": "string",
     "loadIssue.partial": {
       "fields": [
         "string"

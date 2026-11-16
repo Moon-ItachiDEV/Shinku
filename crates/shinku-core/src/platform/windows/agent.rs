@@ -15,6 +15,7 @@ use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use windows::Win32::Foundation::{
@@ -583,25 +584,40 @@ pub(in crate::platform) fn open_windows_settings(page: WindowsPage) -> io::Resul
     // Un fil à part, dont l'appartement COM n'appartient qu'à cet appel :
     // `ShellExecuteW` demande que COM soit initialisé, et le fil qui appelle
     // (une tâche asynchrone de Tauri) n'en a pas la garde.
-    let uri = page.uri();
-    std::thread::spawn(move || shell_open(uri))
+    let uri = page.uri().to_owned();
+    std::thread::spawn(move || shell_open(&uri))
         .join()
         .map_err(|_| io::Error::other("l'ouverture des réglages a échoué"))?
 }
 
-/// Ouvre une adresse fixe `ms-settings:` avec le shell, dans un appartement COM
-/// initialisé pour la durée de l'appel.
-fn shell_open(uri: &'static str) -> io::Result<()> {
+/// Ouvre un fichier avec le programme que le compte y associe : même appel que
+/// pour les réglages, sur un fil à part, avec le chemin sans `\\?\`.
+pub(in crate::platform) fn open_file(path: &Path) -> io::Result<()> {
+    let target = path
+        .to_str()
+        .map(crate::licences::without_verbatim)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "chemin illisible"))?;
+    std::thread::spawn(move || shell_open(&target))
+        .join()
+        .map_err(|_| io::Error::other("l'ouverture du fichier a échoué"))?
+}
+
+/// Ouvre une cible avec le shell (verbe `open`), dans un appartement COM
+/// initialisé pour la durée de l'appel. La cible est l'une des sept adresses
+/// fixes `ms-settings:` de `WindowsPage`, ou le fichier des licences dont le
+/// chemin vient du cœur.
+fn shell_open(target: &str) -> io::Result<()> {
     // SAFETY: appel sans pointeur, sur un fil qui n'a encore rien initialisé ;
     // l'appartement est libéré plus bas, une fois, si l'initialisation a réussi.
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     // SAFETY: les trois chaînes sont terminées par zéro et valides pendant
-    // l'appel ; l'adresse est l'une des sept constantes de `WindowsPage`.
+    // l'appel ; la cible est une adresse de `WindowsPage` ou le chemin calculé par
+    // le cœur (jamais reçu de la page).
     let result = unsafe {
         ShellExecuteW(
             None,
             &HSTRING::from("open"),
-            &HSTRING::from(uri),
+            &HSTRING::from(target),
             PCWSTR::null(),
             PCWSTR::null(),
             SW_SHOWNORMAL,

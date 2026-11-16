@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use shinku_core::apps::fake::{DESKTOP, FakeAppsHost, FakeRecycle, ROAMING};
 use shinku_core::apps::host::RawRegistration;
 use shinku_core::apps::leftovers::{LeftoverKind, RemoveOutcome, RemoveReason};
+use shinku_core::apps::notes::UninstallStore;
 use shinku_core::apps::view::{FollowView, Outcome, UninstallRefusal};
 use shinku_core::apps::{Kind, Place as AppsPlace, Removal, Scope as AppsScope};
 use shinku_core::backend::{Backend, BackendError, FolderRefusal};
@@ -39,6 +40,8 @@ use shinku_core::game::host::{FakeHost, PowerPlan};
 use shinku_core::game::store::{GameFile, GameRef, GameStore, Last, PowerRecord, Quieted, Session};
 use shinku_core::game::view::{GameOption, GameRefusal, GameStatus, PowerSupport};
 use shinku_core::hash::MemoryCache;
+use shinku_core::history::HistoryLine;
+use shinku_core::licences::LicencesOpened;
 use shinku_core::model::{Lot, ModuleId, RiskLevel, Timestamp, Trigger};
 use shinku_core::platform::agent::{AgentState, OpenProgram, WindowsPage};
 use shinku_core::platform::{Environment, KnownFolder, RecycleBin, StaticEnvironment, Volume};
@@ -330,6 +333,9 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         },
     );
 
+    let notes_store =
+        UninstallStore::for_machine(&environment).expect("un emplacement pour uninstalls.json");
+
     let mut options = ScanOptions::new(Trigger::Button);
     options.duplicate_min_size = 4096;
     options.large_threshold = 32 * 1024;
@@ -346,7 +352,7 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             Some(StartupStore::at(startup_store.path())),
             Some(own_command.to_owned()),
         )
-        .with_apps_parts(apps_host.clone())
+        .with_apps_parts(apps_host.clone(), Some(notes_store))
         .with_privacy_parts(privacy_host.clone());
 
     let mut samples: BTreeMap<&str, Value> = BTreeMap::new();
@@ -564,6 +570,53 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         std::thread::sleep(Duration::from_millis(5));
     };
     samples.insert("sessionView.cleaned", to_json(&cleaned));
+
+    // Le Journal : un grand vide coupé, un grand vide mené à son terme, ce que
+    // Shinku a coupé au Démarrage (et qui s'est remis seul), la dernière partie, et
+    // la désinstallation vue plus haut avec son reste mis à la corbeille.
+    let history = backend.history_view();
+    assert!(!history.more);
+    let kind_of = |line: &HistoryLine| match line {
+        HistoryLine::Clean { .. } => "clean",
+        HistoryLine::StartupCut { .. } => "startupCut",
+        HistoryLine::Game { .. } => "game",
+        HistoryLine::Uninstall { .. } => "uninstall",
+    };
+    let kinds: Vec<&str> = history.lines.iter().map(kind_of).collect();
+    for kind in ["clean", "startupCut", "game", "uninstall"] {
+        assert!(kinds.contains(&kind), "le Journal n'a pas de ligne {kind} : {kinds:?}");
+    }
+    let sent = to_json(&history);
+    let uninstall = history
+        .lines
+        .iter()
+        .find_map(|line| match line {
+            HistoryLine::Uninstall { name, leftovers, .. } => Some((name.as_str(), *leftovers)),
+            _ => None,
+        })
+        .expect("la désinstallation de Hades");
+    assert_eq!(uninstall, ("Hades", 1), "un seul reste est parti à la corbeille");
+    // Aucun chemin ni identifiant ne sort du Journal, par ses clés.
+    fn no_path_key(value: &Value) {
+        match value {
+            Value::Object(fields) => {
+                for (key, inner) in fields {
+                    assert!(key != "id" && !key.to_lowercase().contains("path"), "clé {key}");
+                    no_path_key(inner);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(no_path_key),
+            _ => {}
+        }
+    }
+    no_path_key(&sent);
+    samples.insert("historyView", sent);
+    // Oublier les désinstallations ne touche qu'à elles.
+    let after = backend.forget_uninstalls();
+    assert!(after.lines.iter().all(|line| kind_of(line) != "uninstall"));
+    assert_eq!(after.lines.len(), history.lines.len() - 1);
+    assert_eq!(backend.open_licences(), LicencesOpened::Missing, "la démo n'a pas de fichier");
+    samples.insert("licencesOpened", to_json(&backend.open_licences()));
     // L'arrêt de sécurité de l'étape « Doublons », absent d'un grand vide
     // qui se passe bien.
     samples.insert(
@@ -657,6 +710,29 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     enums.insert("cleanOutcome", variants!(CleanOutcome: Completed, Cancelled));
     enums.insert("stepState", variants!(StepState: NotRequested, Done, Stopped, Failed));
     enums.insert("stopReason", variants!(StopReason: NotInRecycleBin, KeptCopyChanged));
+    enums.insert("licencesOpened", variants!(LicencesOpened: Opened, Missing, Failed));
+    // Les lignes du Journal portent des champs : la liste vient de l'échantillon, et
+    // le `match` veille à ce qu'il n'en manque pas.
+    fn every_history_line_has_a_sample(line: HistoryLine) {
+        match line {
+            HistoryLine::Clean { .. }
+            | HistoryLine::StartupCut { .. }
+            | HistoryLine::Game { .. }
+            | HistoryLine::Uninstall { .. } => {}
+        }
+    }
+    let _ = every_history_line_has_a_sample;
+    let history_kinds: Vec<Value> = ["clean", "startupCut", "game", "uninstall"]
+        .into_iter()
+        .map(|kind| {
+            let seen = samples["historyView"]["lines"]
+                .as_array()
+                .is_some_and(|lines| lines.iter().any(|line| line["kind"] == kind));
+            assert!(seen, "aucune ligne d'échantillon pour {kind}");
+            json!(kind)
+        })
+        .collect();
+    enums.insert("historyKind", Value::Array(history_kinds));
     enums.insert("runState", variants!(RunState: Running, Completed, Cancelled, Interrupted));
     enums.insert("agentState", variants!(AgentState: Running, Stopped, Missing));
     enums.insert(

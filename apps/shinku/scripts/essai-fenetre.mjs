@@ -53,6 +53,7 @@ import { parseArgs } from 'node:util';
 import { DOM, EXPECTED } from './essai-desinstallation-dom.mjs';
 import { DOM as STARTUP_DOM, EXPECTED as STARTUP_EXPECTED } from './essai-demarrage-dom.mjs';
 import { DOM as PRIVACY_DOM, EXPECTED as PRIVACY_EXPECTED, readPrivacy } from './essai-confidentialite-dom.mjs';
+import { DOM as JOURNAL_DOM, EXPECTED as JOURNAL_EXPECTED, readAbout, readJournal, readMenu } from './essai-journal-dom.mjs';
 
 const { values: options } = parseArgs({
   options: {
@@ -1936,6 +1937,116 @@ async function checkSettings(window) {
   await window.click(initial, '.pal', initial);
   await until(`le mode ${initial} est revenu`, 15_000, async () => (await pressed()) === initial);
   await window.healthy(`après le retour au mode ${initial}`);
+
+  // « À propos » : le bouton des licences est seulement cherché. Il lance un autre programme (le Bloc-notes, ou
+  // l'éditeur de texte de la machine) : sur la machine de l'intégration continue, où tout tourne en administrateur,
+  // ce programme serait lancé élevé. L'essai ne clique jamais dessus.
+  const about = await window.session.run(readAbout, JOURNAL_DOM);
+  if (about.licences === null) {
+    fail(`les Paramètres n’ont pas leur bouton « ${JOURNAL_EXPECTED.licences} »`);
+  }
+  if (!shows(about.licences, JOURNAL_EXPECTED.licences) || !about.visible) {
+    fail(`le bouton des licences ne dit pas « ${JOURNAL_EXPECTED.licences} » ou n’est pas visible : ${JSON.stringify(about)}`);
+  }
+  done(`« À propos » : le bouton « ${JOURNAL_EXPECTED.licences} » est là (cherché, jamais cliqué)`);
+  await checkMenuFits(window);
+}
+
+/**
+ * Le menu, avec l'entrée « Journal », tient dans la fenêtre à sa taille minimale (960 × 600) sans défiler : la
+ * dernière entrée finit avant le bas de la fenêtre. La taille est simulée par le port de débogage, puis rendue.
+ */
+async function checkMenuFits(window) {
+  const MINIMUM = { width: 960, height: 600 };
+  await window.session.send('Emulation.setDeviceMetricsOverride', { ...MINIMUM, deviceScaleFactor: 0, mobile: false });
+  try {
+    const menu = await until('le menu est lu à la taille minimale', 15_000, async () => {
+      const now = await window.session.run(readMenu, JOURNAL_DOM);
+      return now.height === MINIMUM.height && now.scroll !== null ? now : null;
+    });
+    if (!shows(await window.session.run(() => document.querySelector('.side')?.innerText ?? ''), 'Journal')) {
+      fail('le menu n’a pas d’entrée « Journal »');
+    }
+    if (menu.scroll > menu.client || menu.lastBottom > menu.height) {
+      fail(`à ${MINIMUM.width} × ${MINIMUM.height}, le menu déborde : ${JSON.stringify(menu)}`);
+    }
+    done(`à ${MINIMUM.width} × ${MINIMUM.height}, le menu (${menu.entries} entrées) tient sans défiler (dernière entrée à ${menu.lastBottom} px)`);
+  } finally {
+    await window.session.send('Emulation.clearDeviceMetricsOverride');
+  }
+}
+
+// ── Le Journal ─────────────────────────────────────────────────────────────
+
+/**
+ * La page Journal, en lecture seule. Après les essais qui ont fait quelque chose, elle doit le dire : le grand vide
+ * (avec --grand-vide), l'App désinstallée avec ses trois restes mis à la corbeille, la Jumelle 1.0 désinstallée sans
+ * reste. Le bouton « Oublier les désinstallations » est cherché, jamais cliqué : l'essai de l'installeur et le
+ * passage suivant ne doivent pas perdre ces lignes.
+ */
+async function checkJournal(window) {
+  await window.open(JOURNAL_EXPECTED.title);
+  const screen = await until('la page « Journal » est chargée', 60_000, async () => {
+    const now = await window.session.run(readJournal, JOURNAL_DOM);
+    return now.title === JOURNAL_EXPECTED.title && now.ready && !now.loading ? now : null;
+  }, 300);
+  for (const row of screen.rows) {
+    say(`  ${row.sentence} [${row.date}]${row.link === '' ? '' : ` (${row.link})`}`);
+  }
+  const lineOf = (start) => screen.rows.find((row) => shows(row.sentence, start));
+  if (options.adresse !== undefined) {
+    // La démo a ses propres lignes : on vérifie seulement que la page se dessine et se lit.
+    if (screen.rows.length === 0) {
+      fail('la page Journal de la démo n’a aucune ligne');
+    }
+    done(`écran « ${JOURNAL_EXPECTED.title} » (démo) : ${screen.rows.length} ligne(s)`);
+    await window.capture('journal');
+    return;
+  }
+  const seen = [];
+  if (options['grand-vide']) {
+    const cleaned = lineOf(JOURNAL_EXPECTED.cleaned);
+    if (cleaned === undefined) {
+      fail(`le Journal n’a pas de ligne « ${JOURNAL_EXPECTED.cleaned} » après le grand vide`);
+    }
+    if (shows(cleaned.sentence, 'en cours') || shows(cleaned.sentence, 'coupé avant la fin')) {
+      fail(`le grand vide est fini, mais le Journal dit « ${cleaned.sentence} »`);
+    }
+    if (cleaned.date === '') {
+      fail('la ligne du grand vide n’a pas de date');
+    }
+    seen.push('le grand vide, avec ses totaux');
+  }
+  if (process.env.LOCALAPPDATA !== undefined && process.env.APPDATA !== undefined) {
+    // Le passage de la Désinstallation a eu lieu : l'App (trois restes mis à la corbeille) et la Jumelle 1.0 (aucun reste).
+    const app = lineOf(`${JOURNAL_EXPECTED.uninstalled} Essai Shinku App`);
+    if (app === undefined) {
+      fail(`le Journal n’a pas de ligne « ${JOURNAL_EXPECTED.uninstalled} Essai Shinku App »`);
+    }
+    if (!shows(app.sentence, JOURNAL_EXPECTED.leftovers)) {
+      fail(`la ligne de l’App ne dit pas « ${JOURNAL_EXPECTED.leftovers} » : « ${app.sentence} »`);
+    }
+    if (app.date === '' || shows(app.date, 'date inconnue')) {
+      fail(`la ligne de l’App n’a pas de date : « ${app.date} »`);
+    }
+    const twin = lineOf(`${JOURNAL_EXPECTED.uninstalled} Essai Shinku Jumelle 1.0`);
+    if (twin === undefined) {
+      fail(`le Journal n’a pas de ligne « ${JOURNAL_EXPECTED.uninstalled} Essai Shinku Jumelle 1.0 »`);
+    }
+    if (shows(twin.sentence, 'corbeille') || shows(twin.sentence, 'reste')) {
+      fail(`la Jumelle 1.0 n’avait aucun reste, mais le Journal dit « ${twin.sentence} »`);
+    }
+    if (screen.forget === '' || !shows(screen.forget, JOURNAL_EXPECTED.forget)) {
+      fail(`le Journal a des désinstallations mais pas son bouton « ${JOURNAL_EXPECTED.forget} »`);
+    }
+    seen.push('l’App avec ses trois restes', 'la Jumelle 1.0 sans reste', `le bouton « ${JOURNAL_EXPECTED.forget} » (cherché, jamais cliqué)`);
+  }
+  if (seen.length === 0) {
+    note('essai du Journal réduit : ni --grand-vide, ni LOCALAPPDATA et APPDATA');
+  }
+  done(`écran « ${JOURNAL_EXPECTED.title} » : ${screen.rows.length} ligne(s)${seen.length === 0 ? '' : `, dont ${seen.join(', ')}`}`);
+  await window.healthy('après la lecture du Journal');
+  await window.capture('journal');
 }
 
 /** Un second lancement ne doit pas ouvrir une seconde fenêtre. */
@@ -2016,6 +2127,7 @@ async function main() {
     if (options['grand-vide']) {
       await checkClean(window, planted);
     }
+    await checkJournal(window);
     if (onWindows) {
       await checkSingleWindow(port, asUser);
     }

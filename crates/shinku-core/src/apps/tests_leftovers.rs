@@ -360,7 +360,7 @@ fn through_the_desk_the_removed_phase_lists_and_shrinks() {
             ..reg("Hades", "Hades", r#""D:\Jeux\Hades\unins000.exe""#)
         },
     );
-    let desk = AppsDesk::new(host.clone());
+    let desk = AppsDesk::bare(host.clone());
     // Hors de la phase « removed », tout est refusé.
     let early = desk.remove(&[0, 0, 1], &|| false).expect("rendu");
     assert_eq!(early.results.len(), 2);
@@ -408,7 +408,7 @@ fn a_failure_stays_in_the_list_and_only_what_left_goes_out() {
                 ..reg("Hades", "Hades", r#""D:\Jeux\Hades\unins000.exe""#)
             },
         );
-        let desk = AppsDesk::new(host.clone());
+        let desk = AppsDesk::bare(host.clone());
         desk.start("m6:Hades").expect("lancé");
         host.remove_registration(Place::Machine64, "Hades");
         let _ = desk.view();
@@ -603,7 +603,7 @@ fn more_than_sixty_four_keys_are_all_refused() {
             ..reg("Hades", "Hades", r#""D:\Jeux\Hades\unins000.exe""#)
         },
     );
-    let desk = AppsDesk::new(host.clone());
+    let desk = AppsDesk::bare(host.clone());
     desk.start("m6:Hades").expect("lancé");
     host.remove_registration(Place::Machine64, "Hades");
     for _ in 0..3 {

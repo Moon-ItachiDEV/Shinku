@@ -1,13 +1,16 @@
 // Les Paramètres. Seuls les réglages qui ont un effet aujourd'hui sont
 // montrés : le mode d'affichage et les dossiers jamais touchés.
 
-import { html, type TemplateResult } from 'lit-html';
+import { html, nothing, type TemplateResult } from 'lit-html';
 
 import type { Theme } from '../backend/types.ts';
 import { fr } from '../i18n/fr.ts';
 import type { Actions, AppState } from '../state.ts';
 import { crossIcon, folderIcon } from './art.ts';
 import { stage } from './parts.ts';
+
+/** Le repère de focus du bouton des licences (essai de la fenêtre). */
+export const settingsFocus = { licences: 'settings-licences' };
 
 const THEMES: ReadonlyArray<{ theme: Theme; label: string }> = [
   { theme: 'light', label: fr.settings.light },
@@ -96,9 +99,34 @@ export function settingsView(state: AppState, actions: Actions): TemplateResult 
               </div>
             </div>
           </section>
+          <section class="psec">
+            <h2 class="sub flat">${fr.settings.about}</h2>
+            <div class="card">
+              <div class="sblock">
+                <div class="lab">
+                  <span class="l">${fr.settings.version(state.overview?.version ?? '')}</span>
+                  <span class="d">${fr.settings.aboutFree}</span>
+                </div>
+                <p class="d">${fr.settings.aboutParts}</p>
+                <button
+                  type="button"
+                  class="ghost small add"
+                  data-fk=${settingsFocus.licences}
+                  aria-disabled=${state.licencesBusy ? 'true' : nothing}
+                  @click=${actions.openLicences}
+                >
+                  ${fr.settings.licences}
+                </button>
+                ${state.licencesAnswer === null
+                  ? nothing
+                  : html`<p class="d fnote" role="status">
+                      ${state.licencesAnswer === 'missing' ? fr.settings.licencesMissing : fr.settings.licencesFailed}
+                    </p>`}
+              </div>
+            </div>
+          </section>
         </div>
         <p class="plater">${fr.settings.later}</p>
-        <p class="pver">${fr.settings.version(state.overview?.version ?? '')}</p>
       </div>
     </div>`,
   });

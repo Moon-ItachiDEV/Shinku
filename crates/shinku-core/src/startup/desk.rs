@@ -22,7 +22,7 @@ use crate::platform::agent::run_command;
 use crate::startup::access::PcAccess;
 use crate::startup::host::StartupHost;
 use crate::startup::launcher::{ElevatedHelper, HelperRun, InertHelper};
-use crate::startup::store::StartupStore;
+use crate::startup::store::{CutLine, StartupStore};
 use crate::startup::view::{StartupPending, StartupRefusal, StartupView};
 use crate::startup::{self, EntryId, MachineRules, Probe, Scope, State, ToggleError};
 
@@ -86,6 +86,14 @@ impl StartupDesk {
     pub fn with_helper(mut self, helper: Arc<dyn ElevatedHelper>) -> Self {
         self.helper = helper;
         self
+    }
+
+    /// Ce que Shinku a coupé, tel que `startup.json` le dit. **Lecture seule** :
+    /// aucune lecture du registre, aucune réconciliation, aucune écriture. Le
+    /// fichier peut donc garder une entrée que la personne a remise ailleurs,
+    /// jusqu'à la prochaine lecture de la page Démarrage.
+    pub fn cuts(&self) -> Vec<CutLine> {
+        self.store.as_ref().map(|store| store.load().cut).unwrap_or_default()
     }
 
     /// De quoi compter les apps inscrites à la fin d'une analyse.

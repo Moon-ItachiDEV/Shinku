@@ -15,7 +15,7 @@ use crate::game::apps::{self, BUILT_IN};
 use crate::game::control::AgentControl;
 use crate::game::detect::{self, Source, key};
 use crate::game::host::{GameHost, PowerPlan, stem};
-use crate::game::store::{GameFile, GameStore};
+use crate::game::store::{GameFile, GameStore, Last};
 use crate::game::unsuited_processor;
 use crate::game::view::{
     GameRefusal, GameSession, GameStatus, GameView, KnownGame, LastGame, NotGame, OpenApp,
@@ -94,6 +94,13 @@ impl GameDesk {
     /// Le journal du mode jeu, tel que l'agent l'a écrit.
     pub fn file(&self) -> GameFile {
         self.store.as_ref().map(GameStore::load).unwrap_or_default()
+    }
+
+    /// Le bilan de la dernière partie, tel que `game.json` le dit. **Lecture
+    /// seule** : ni l'agent, ni les processus, ni l'alimentation ne sont
+    /// regardés. Sans chemin.
+    pub fn last(&self) -> Option<LastGame> {
+        self.file().last.as_ref().map(last_game)
     }
 
     /// Le nom à montrer pour un exécutable : demandé une fois à la machine.
@@ -240,14 +247,7 @@ impl GameDesk {
                     restore_pending: session.restore_pending,
                 }
             }),
-            last: file.last.as_ref().map(|last| LastGame {
-                name: last.name.clone(),
-                started: last.started,
-                ended: last.ended,
-                power_restored: last.power_restored,
-                apps_restored: last.apps_restored,
-                complete: last.complete,
-            }),
+            last: file.last.as_ref().map(last_game),
             power_support: self.power_support(),
             on_battery: self.host.on_battery(),
             apps: quiet_apps,
@@ -383,6 +383,18 @@ impl GameDesk {
 
 fn contains(list: &[String], exe: &str) -> bool {
     list.iter().any(|name| name.eq_ignore_ascii_case(exe))
+}
+
+/// Le bilan de la dernière partie, sans le chemin de l'exécutable.
+fn last_game(last: &Last) -> LastGame {
+    LastGame {
+        name: last.name.clone(),
+        started: last.started,
+        ended: last.ended,
+        power_restored: last.power_restored,
+        apps_restored: last.apps_restored,
+        complete: last.complete,
+    }
 }
 
 /// Allume ou éteint une app. `exe` doit déjà être connu (intégrée ou ajoutée)

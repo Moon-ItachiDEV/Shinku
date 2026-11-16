@@ -1,0 +1,74 @@
+/* ── Le Journal ─────────────────────────────────────────────────────────── */
+
+.journal .pintro {
+  margin: 0 4px 12px;
+  max-width: 640px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+/* Le titre reçoit le focus quand la page change sous la main : sans contour, ce n'est pas un contrôle. */
+.journal h1[tabindex='-1']:focus {
+  outline: none;
+}
+
+/* Les lignes sont de la phrase : elles passent à la ligne, et le nom d'une app, lui, se coupe. */
+.journal .jrow {
+  min-height: 52px;
+}
+
+.journal .jsentence {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.journal .jname {
+  display: inline-block;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.journal .row .t2 {
+  color: var(--text-2);
+}
+
+.journal .jlink {
+  flex-shrink: 0;
+}
+
+.journal .jmore,
+.journal .jnote,
+.journal .jwait,
+.journal .jempty {
+  margin: 12px 4px 0;
+  max-width: 640px;
+  font-size: 12px;
+  font-weight: 300;
+  line-height: 1.55;
+  letter-spacing: 0.025em;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.journal .jempty,
+.journal .jwait {
+  font-size: 14px;
+}
+
+.journal .jempty {
+  margin: 0;
+  padding: 18px;
+}
+
+.journal .jretry {
+  margin: 0;
+  padding: 0 18px 14px;
+}
+
+.journal .jforget {
+  margin: 14px 4px 0;
+}

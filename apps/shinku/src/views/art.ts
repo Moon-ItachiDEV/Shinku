@@ -38,6 +38,7 @@ const ICON_PATHS = {
   gameMode: svg`<path d="M7 9h10a4 4 0 0 1 3.9 4.9l-1 4.2a2.4 2.4 0 0 1-4.2.9L14 17h-4l-1.7 2a2.4 2.4 0 0 1-4.2-.9l-1-4.2A4 4 0 0 1 7 9z"></path><path d="M8 12v3M6.5 13.5h3"></path><path d="M15.5 12.5h.01M17.5 14.5h.01"></path>`,
   uninstall: svg`<rect x="4" y="4" width="7" height="7" rx="2"></rect><rect x="13" y="4" width="7" height="7" rx="2"></rect><rect x="4" y="13" width="7" height="7" rx="2"></rect><rect x="13" y="13" width="7" height="7" rx="2" stroke-dasharray="2 2.4"></rect>`,
   privacy: svg`<path d="M12 3l7 3v5.5c0 4.2-3 7.8-7 9.5-4-1.7-7-5.3-7-9.5V6z"></path><path d="M9 12l2.2 2.2L15.5 10"></path>`,
+  journal: svg`<rect x="5" y="3.5" width="14" height="17" rx="2"></rect><path d="M9 8h6M9 12h6M9 16h3"></path>`,
   settings: svg`<path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><path d="M14 5v4M8 15v4"></path>`,
   folder: svg`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>`,
   cross: svg`<path d="M6 6l12 12M18 6L6 18"></path>`,

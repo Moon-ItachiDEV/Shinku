@@ -49,6 +49,8 @@ import type {
   PowerSupport,
   PrivacyGroup,
   PrivacyRefusal,
+  HistoryLine,
+  LicencesOpened,
   RemoveOutcome,
   RemoveReason,
   RunState,
@@ -183,6 +185,9 @@ const enums: Record<string, readonly string[]> = {
   browserApp: allOf<BrowserApp>()(['chrome', 'edge', 'brave', 'vivaldi']),
   privacyGroupKind: allOf<PrivacyGroup['kind']>()(['browser', 'windows']),
   privacyRefusal: allOf<PrivacyRefusal>()(['busy', 'tooMany']),
+  // Le Journal et les licences.
+  historyKind: allOf<HistoryLine['kind']>()(['clean', 'startupCut', 'game', 'uninstall']),
+  licencesOpened: allOf<LicencesOpened>()(['opened', 'missing', 'failed']),
 };
 
 test('les énumérations de l’interface sont celles du cœur', () => {
@@ -427,6 +432,10 @@ async function samples(): Promise<Record<string, unknown>> {
   const traceIds = privacyView.groups.flatMap((group) => group.items.filter((item) => item.state === 'present').map((item) => item.id));
   const erased = await mockBackend({ ...OPTIONS, privacy: { ...OPTIONS.privacy, flow: 'partial' } }).eraseTraces(traceIds);
 
+  // Le Journal : une ligne de chaque forme, dates absentes comprises.
+  const historyView = await mockBackend(OPTIONS).historyView();
+  const licencesOpened = await mockBackend(OPTIONS).openLicences();
+
   const unreadable = (await mockBackend({ ...OPTIONS, issue: 'unreadable' }).overview()).settingsIssue;
   const partial = (await mockBackend({ ...OPTIONS, issue: 'partial' }).overview()).settingsIssue;
 
@@ -475,6 +484,8 @@ async function samples(): Promise<Record<string, unknown>> {
     'error.startupRefused': errors.startupRefused,
     'error.uninstallRefused': errors.uninstallRefused,
     privacyView,
+    historyView,
+    licencesOpened,
     eraseTraces: erased,
     'error.privacyRefused': errors.privacyRefused,
     ...(await appsSamples()),

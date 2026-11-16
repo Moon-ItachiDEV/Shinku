@@ -26,6 +26,7 @@ import type {
   WindowsPage,
 } from './backend/types.ts';
 import { fr } from './i18n/fr.ts';
+import { journalFocus } from './model/journal.ts';
 import {
   announceLines,
   askFor as askForPrivacy,
@@ -187,6 +188,11 @@ const NO_ACTIONS: Actions = {
   confirmErase: () => {},
   dismissErase: () => {},
   retryPrivacy: () => {},
+  retryJournal: () => {},
+  askForgetUninstalls: () => {},
+  confirmForgetUninstalls: () => {},
+  dismissForgetUninstalls: () => {},
+  openLicences: () => {},
   openWindowsSettings: () => {},
   minimize: () => {},
   toggleMaximize: () => {},
@@ -264,6 +270,11 @@ export class App {
   private startupLoadedAt = 0;
   /** La page Confidentialité est affichée : sa vue se charge à l'arrivée et au retour du focus, jamais en boucle. */
   private privacyWatching = false;
+  /** Journal : visite et demande en cours ; une réponse d'une visite ou d'une demande dépassée est jetée. */
+  private journalWatching = false;
+  private journalVisit = 0;
+  private journalAsked = 0;
+  private journalRetried = false;
   private privacyVisit = 0;
   /** L'annonce d'un effacement terminé hors de la page, gardée pour le retour. */
   private privacyPendingAnnounce = '';
@@ -449,6 +460,10 @@ export class App {
       (session.state === 'cleaned' && previous.state !== 'cleaned');
     if (scanEnded || cleanEnded) {
       void this.refreshAfterWork();
+    }
+    if (cleanEnded && this.journalWatching) {
+      // Un grand vide qui se termine pendant que le Journal est ouvert : sa ligne change de forme.
+      void this.refreshJournal();
     }
     this.ensureData();
   }
@@ -2126,6 +2141,93 @@ export class App {
     }
   }
 
+  // ── Journal ──────────────────────────────────────────────────────────────
+
+  /** À l'arrivée sur la page, le Journal est demandé une fois ; hors de la page, rien n'est gardé. Pas de minuterie. */
+  private watchJournal(): void {
+    if (this.state.route !== 'journal') {
+      if (this.journalWatching) {
+        this.journalWatching = false;
+        this.journalVisit += 1;
+        this.journalRetried = false;
+        this.set({ history: null, historyFailed: false, historyAsk: false });
+      }
+      return;
+    }
+    if (this.journalWatching) {
+      return;
+    }
+    this.journalWatching = true;
+    this.journalVisit += 1;
+    this.journalRetried = false;
+    this.set({ history: null, historyFailed: false, historyAsk: false });
+    void this.refreshJournal();
+  }
+
+  private retryJournal(): void {
+    this.set({ historyFailed: false });
+    this.journalRetried = true;
+    void this.refreshJournal();
+  }
+
+  private async refreshJournal(): Promise<void> {
+    this.journalAsked += 1;
+    const ask = this.journalAsked;
+    const visit = this.journalVisit;
+    const current = (): boolean => ask === this.journalAsked && visit === this.journalVisit && this.journalWatching;
+    try {
+      const view = await this.backend.historyView();
+      if (current()) {
+        this.set({ history: view, historyFailed: false });
+      }
+    } catch {
+      // La page garde sa dernière vue ; sans vue, elle le dit et propose « Réessayer ».
+      if (current() && this.state.history === null) {
+        this.set({ historyFailed: true });
+        if (this.journalRetried) {
+          this.focusKey(journalFocus.retry);
+        }
+      }
+    }
+  }
+
+  /** « Oublier les désinstallations » confirmé : la vue rendue par le cœur remplace celle de la page. */
+  private async confirmForgetUninstalls(): Promise<void> {
+    if (this.state.historyBusy) {
+      return;
+    }
+    this.set({ historyAsk: false, historyBusy: true });
+    const visit = this.journalVisit;
+    try {
+      const view = await this.backend.forgetUninstalls();
+      if (visit === this.journalVisit && this.journalWatching) {
+        this.journalAsked += 1;
+        this.set({ history: view, historyFailed: false });
+      }
+    } catch (error) {
+      this.toast(errorMessage(error));
+    } finally {
+      this.set({ historyBusy: false });
+    }
+    this.focusKey(journalFocus.title);
+  }
+
+  /** « Voir leurs licences » : le cœur ouvre le fichier ; la page ne dit quelque chose que s'il ne s'est pas ouvert. */
+  private async openLicences(): Promise<void> {
+    if (this.state.licencesBusy) {
+      return;
+    }
+    this.set({ licencesBusy: true });
+    try {
+      const answer = await this.backend.openLicences();
+      this.set({ licencesAnswer: answer === 'opened' ? null : answer });
+    } catch {
+      this.set({ licencesAnswer: 'failed' });
+    } finally {
+      this.set({ licencesBusy: false });
+    }
+  }
+
   // ── Gestes ───────────────────────────────────────────────────────────────
 
   private navigate(route: Route): void {
@@ -2134,6 +2236,10 @@ export class App {
     this.watchStartup();
     this.watchApps();
     this.watchPrivacy();
+    this.watchJournal();
+    if (route !== 'settings' && this.state.licencesAnswer !== null) {
+      this.set({ licencesAnswer: null });
+    }
     this.ensureData();
     if (route === 'bin') {
       void this.refreshOverview(2000);
@@ -2190,6 +2296,11 @@ export class App {
     confirmErase: () => void this.confirmErase(),
     dismissErase: () => this.dismissErase(),
     retryPrivacy: () => this.retryPrivacy(),
+    retryJournal: () => this.retryJournal(),
+    askForgetUninstalls: () => this.set({ historyAsk: true }),
+    confirmForgetUninstalls: () => void this.confirmForgetUninstalls(),
+    dismissForgetUninstalls: () => this.set({ historyAsk: false }),
+    openLicences: () => void this.openLicences(),
     openWindowsSettings: (page) => void this.openWindowsSettings(page),
     minimize: () => void this.backend.minimizeWindow(),
     toggleMaximize: () => void this.backend.toggleMaximizeWindow(),

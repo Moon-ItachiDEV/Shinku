@@ -11,6 +11,7 @@ import { closeIcon, hole, type IconName, mark, maximizeIcon, minimizeIcon, navIc
 import { confirmDialog } from './clean.ts';
 import { gameView, pickerDialog } from './game.ts';
 import { homeView, shownPane } from './home.ts';
+import { journalDialog, journalView } from './journal.ts';
 import { binView, duplicatesView, junkView, largeView } from './modules.ts';
 import { privacyDialog, privacyView } from './privacy.ts';
 import { settingsView } from './settings.ts';
@@ -109,7 +110,8 @@ function sidebar(state: AppState, actions: Actions): TemplateResult {
         ${group.items.map((item) => navButton(state, actions, item))}`,
     )}
     <div class="spring"></div>
-    ${diskGauge(state)} ${navButton(state, actions, { route: 'settings', icon: 'settings', label: fr.nav.settings })}
+    ${diskGauge(state)} ${navButton(state, actions, { route: 'journal', icon: 'journal', label: fr.nav.journal })}
+    ${navButton(state, actions, { route: 'settings', icon: 'settings', label: fr.nav.settings })}
   </nav>`;
 }
 
@@ -133,6 +135,8 @@ function page(state: AppState, actions: Actions): TemplateResult {
       return uninstallView(state, actions);
     case 'privacy':
       return privacyView(state, actions);
+    case 'journal':
+      return journalView(state, actions);
     case 'settings':
       return settingsView(state, actions);
   }
@@ -161,9 +165,9 @@ export function appView(state: AppState, actions: Actions): TemplateResult {
     ${windowButtons(actions)}
     ${ready
       ? html`${sidebar(state, actions)}
-          <main class="main">${keyed(`${state.route}:${shownPane(state)}`, page(state, actions))}</main>
+          <main class="main">${keyed(state.route === 'journal' ? 'journal' : `${state.route}:${shownPane(state)}`, page(state, actions))}</main>
           ${confirmDialog(state, actions)} ${pickerDialog(state, actions)} ${uninstallDialog(state, actions)}
-          ${privacyDialog(state, actions)}`
+          ${privacyDialog(state, actions)} ${journalDialog(state, actions)}`
       : bootScreen(state)}
     <div class="toast ${state.toastShown ? 'show' : ''}" role="status">${state.toast}</div>
   </div>`;

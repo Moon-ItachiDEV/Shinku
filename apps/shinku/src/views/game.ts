@@ -10,7 +10,7 @@ import { ref } from 'lit-html/directives/ref.js';
 import { repeat } from 'lit-html/directives/repeat.js';
 
 import type { GameOption, GameSession, GameView, KnownGame, OpenApp, QuietApp } from '../backend/types.ts';
-import { formatAgo, formatDuration, formatSince, listOf } from '../format.ts';
+import { formatAgo, formatSince, formatSpan, listOf } from '../format.ts';
 import { fr } from '../i18n/fr.ts';
 import {
   canRelease,
@@ -101,7 +101,8 @@ function lastGame(view: GameView): Content {
   if (last === null || view.session !== null) {
     return nothing;
   }
-  const duration = formatDuration(last.ended - last.started);
+  // Une fin avant le début n'a pas de durée : la phrase se tait là-dessus au lieu d'écrire « 1 min ».
+  const duration = formatSpan(last.started, last.ended);
   return html`<p class="d glast">
     ${last.complete ? fr.game.lastOk(last.name, duration) : fr.game.lastIncomplete(last.name, duration)}
   </p>`;

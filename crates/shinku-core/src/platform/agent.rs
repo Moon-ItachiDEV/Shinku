@@ -6,7 +6,7 @@
 //! d'agent.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -237,6 +237,12 @@ pub fn open_apps() -> Vec<OpenProgram> {
 /// Ouvre une page des réglages de Windows.
 pub fn open_windows_settings(page: WindowsPage) -> io::Result<()> {
     imp::agent::open_windows_settings(page)
+}
+
+/// Ouvre ce fichier avec le programme que le compte y associe (le verbe `open`
+/// du shell). Le chemin est calculé par le cœur, jamais reçu de la page.
+pub fn open_file(path: &Path) -> io::Result<()> {
+    imp::agent::open_file(path)
 }
 
 #[cfg(test)]

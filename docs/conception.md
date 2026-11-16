@@ -93,7 +93,7 @@ la rend par un code de sortie (2), sans boîte de message.
 
 ## Entre la page et le cœur : le guichet
 
-La page ne parle qu'à `shinku_core::backend::Backend`, au travers de trente-trois
+La page ne parle qu'à `shinku_core::backend::Backend`, au travers de trente-six
 commandes Tauri (`apps/shinku/src-tauri/src/commands.rs`). Chaque commande est
 une demande précise et bornée : lancer une analyse, lire une page de résultats,
 changer un réglage, faire le vide.
@@ -120,10 +120,12 @@ changer un réglage, faire le vide.
 ### Ce que la page a le droit de faire
 
 - **Permissions Tauri au plus juste.** `capabilities/default.json` donne à la
-  fenêtre ses trente-trois commandes et les cinq gestes de sa barre de titre. Rien
+  fenêtre ses trente-six commandes et les cinq gestes de sa barre de titre. Rien
   d'autre : ni fichiers, ni réseau, ni événements, et aucun programme que la page
-  nomme : seuls sont lancés l'agent, sept pages des réglages de Windows, et,
-  après confirmation, le désinstalleur d'une app que le cœur relit dans le
+  nomme : seuls sont lancés l'agent, sept pages des réglages de Windows, le
+  fichier des licences (`LICENCES-TIERS.txt`, à côté de `shinku.exe`, ouvert avec
+  le programme que Windows associe aux fichiers texte : voir « Le Journal »),
+  et, après confirmation, le désinstalleur d'une app que le cœur relit dans le
   registre.
   Les commandes de l'application passent elles aussi par les permissions
   (`AppManifest::commands` dans `build.rs`) : une commande absente de la liste
@@ -202,6 +204,7 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | `%APPDATA%\Shinku\journal.json` | Les grands vides : dates et totaux, aucun chemin. |
 | `%LOCALAPPDATA%\Shinku\game.json` | Le journal du mode jeu : la partie en cours, le bilan de la dernière, les jeux reconnus. Écrit par l'agent seulement. |
 | `%LOCALAPPDATA%\Shinku\startup.json` | Ce que le module Démarrage a coupé (au plus 200 lignes : identifiant, nom, dates, `FILETIME` écrit). Écrit par la fenêtre seulement. |
+| `%LOCALAPPDATA%\Shinku\uninstalls.json` | Les désinstallations que la page Désinstallation a menées (au plus 100 notes : date, nom de l'app, nombre et poids des restes mis à la corbeille ; aucun chemin). Écrit par la fenêtre seulement. Voir « Le Journal ». |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, valeur `Shinku` | Lance l'agent avec Windows. La seule écriture que Shinku fasse dans une clé `Run`. Présente seulement quand le mode jeu automatique est allumé. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | Une valeur de douze octets par entrée de démarrage du compte que la personne coupe ou remet (voir « Démarrage »). Le même réglage que le Gestionnaire des tâches. Écrite par `shinku.exe`. |
 | `HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | La même valeur de douze octets pour une entrée du PC. Écrite **seulement par `shinku-helper.exe`**, élevé, après l'accord de Windows, quand il en demande un, et un « OK » dans la boîte de l'assistant (vue 64 bits). |
@@ -1117,6 +1120,72 @@ fenêtre d'accord de Windows elle-même (la machine d'essai est déjà élevée,
 n'y répond), ce qu'elle écrit pour un assistant non signé, et l'effet du réglage à
 l'ouverture de session.
 
+## Le Journal
+
+Une page, « Journal », qui rassemble ce que Shinku a fait, la ligne la plus
+récente en haut. Elle ne fait rien : elle se lit. Code : `crates/shinku-core/src/history/`
+(`assemble`, pure, essayée sous Linux), `Backend::history_view`, et la page
+`views/journal.ts` avec `model/journal.ts`.
+
+**Quatre sources, aucune écriture de plus pour trois d'entre elles.**
+
+- Les grands vides : `journal.json`, tel quel (`clean/journal.rs` n'a pas changé).
+- Les coupures du Démarrage : `startup.json`, lu **sans** le relire dans le
+  registre (`StartupDesk::cuts`) : ouvrir le Journal ne touche pas au registre.
+  Une ligne dit, quand l'entrée s'est rallumée, « S'est remise toute seule depuis… »,
+  avec la formule de la page Démarrage.
+- La dernière partie du mode jeu : `game.json`, par `GameDesk::last`. Le mode
+  jeu ne garde que la dernière partie : la page le dit. Elle écrit la durée
+  seulement si la fin est après le début (une fonction commune, `formatSpan`,
+  qui sert aussi la page Mode jeu : l'ancien « 1 min » d'une fin avant le début
+  est parti).
+- Les désinstallations : `uninstalls.json`, **nouveau**, écrit par `AppsDesk`
+  (`apps/notes.rs`). Il n'y avait nulle part où lire ce qu'une désinstallation
+  avait donné : c'est la seule écriture que le Journal ajoute.
+
+**Quand une désinstallation est notée.** Au passage du suivi de `Settling` à
+`Searching` : l'app a disparu du registre (la vérité, voir « Désinstallation »)
+et le désinstalleur a fini. Le suivi lève alors un drapeau (`take_gone`, sur le
+modèle de `take_kept`) ; `AppsDesk` écrit la note **hors du verrou du suivi**,
+avec l'horloge de la machine. Pas de note si la personne annule, si le
+désinstalleur échoue, si 30 minutes passent sans que l'app disparaisse, ni pour
+une mise à jour MSI qui garde l'app. Pas de seconde note quand la liste des
+restes est recalculée. Les restes mis à la corbeille s'ajoutent à la même note
+(seul `Removed` compte, pas `AlreadyGone`). Une écriture qui échoue ne change
+rien et n'emprunte pas la clé de la note précédente.
+
+**Ce que la page montre, et ne montre pas.** Une phrase par ligne, une date, et
+quand le geste a un retour (la corbeille, la page Démarrage, la page Mode jeu)
+un bouton qui y mène. Aucun chemin, aucun identifiant : un nom d'app est du
+texte, coupé à l'affichage s'il est long, entier dans `title`. Les dates hors de
+1970 et de demain deviennent « date inconnue » (le cœur les assainit, la page
+aussi). 200 lignes au plus, `more` le dit. Un grand vide qui se termine pendant
+que la page est ouverte la recharge une fois ; sinon elle se demande à l'arrivée
+et rien d'autre (ni minuterie, ni retour du focus).
+
+**« Oublier les désinstallations ».** Un bouton, après confirmation, vide
+`uninstalls.json` (`Backend::forget_uninstalls`) et rend la vue relue. Il
+n'existe que s'il y a une ligne de désinstallation. Les autres sources ont leur
+propre page pour s'effacer ou s'oublier.
+
+**« À propos », dans les Paramètres.** La version, la phrase « Shinku
+n'envoie rien : ni compte, ni télémétrie, ni publicité », et « Voir leurs
+licences ». Le bouton appelle `open_licences` : le cœur cherche
+`LICENCES-TIERS.txt` à côté de `shinku.exe`, **décide** (fichier ordinaire, pas
+un point d'analyse, plus de 0 et moins de 4 Mio ; `licences::decide`, pure) puis
+le fait ouvrir par `ShellExecuteW` (`platform::open_file`, qui généralise
+`shell_open`). La page ne donne ni chemin ni nom. Réponses : `opened` (la page
+ne dit rien), `missing`, `failed` (une phrase).
+
+**Limites connues.** Un désinstalleur qui rend la main avant d'avoir fini peut
+faire noter la désinstallation un peu tôt, ou jamais (30 minutes) : le registre
+décide. Une désinstallation faite hors de Shinku n'est pas notée. L'ouverture
+du fichier des licences dépend de l'association des fichiers `.txt` de la
+machine ; elle n'est essayée que par la forme de la page sur la machine
+d'intégration (où tout est élevé : l'essai cherche le bouton, il ne le clique
+jamais). Le menu a maintenant onze entrées : à 960 × 600 il tient grâce à un
+cran de plus (`.nav` à 31 px sous 660 px de haut).
+
 ## Désinstallation
 
 Le module liste les apps installées, lance le **désinstalleur de l'éditeur**
@@ -1782,12 +1851,12 @@ dossiers connus et les suppressions sont ceux du reste du cœur).
   `%LOCALAPPDATA%\fr.shinku.app`, par une suppression récursive.
 - **La liste fermée** (`forget/list.rs`) est faite des constantes de nom des
   modules qui écrivent : `settings.json`, `settings.illisible.json` et
-  `journal.json` dans `%APPDATA%\Shinku` ; `game.json` et `startup.json` dans
-  `%LOCALAPPDATA%\Shinku` ; et le voisin `.tmp` de chaque fichier écrit par
+  `journal.json` dans `%APPDATA%\Shinku` ; `game.json`, `startup.json` et
+  `uninstalls.json` dans `%LOCALAPPDATA%\Shinku` ; et le voisin `.tmp` de chaque fichier écrit par
   `write_replacing` (le nom du suffixe vient de la même fonction que l'écriture).
   Le fichier « illisible » est mis de côté par un `rename` : il n'a pas de
-  `.tmp`. C'est exactement ce que l'ancienne macro effaçait, neuf noms, et rien
-  de plus : un fichier qui n'est pas dans la liste reste, et son dossier avec lui.
+  `.tmp`. C'est ce que l'ancienne macro effaçait, plus `uninstalls.json` et son `.tmp` (onze noms),
+  et rien de plus : un fichier qui n'est pas dans la liste reste, et son dossier avec lui.
 - **Chaque fichier** passe par `fs::Removal` : fichier ordinaire (ni lien, ni
   dossier, ni point d'analyse inconnu), un seul nom, pas « en ligne
   uniquement », avec un identifiant de fichier, aucun point d'analyse dans la
@@ -1918,8 +1987,9 @@ avait coupé au démarrage : les entrées restent coupées, et se rallument depu
 Gestionnaire des tâches de Windows. Effacer `game.json` efface le journal du mode
 jeu : si l'agent n'a pas pu tout remettre en place en sortant (le mode
 d'alimentation, par exemple), la trace de l'état d'avant part avec lui, et une
-réinstallation ne le reprendra pas. Case décochée, ces fichiers restent et sont
-repris.
+réinstallation ne le reprendra pas. Effacer `uninstalls.json` efface les
+désinstallations notées du Journal, rien d'autre. Case décochée, ces fichiers
+restent et sont repris.
 
 **Ce qui le tient.**
 
@@ -2531,5 +2601,8 @@ retiré avec le dossier.
   changer après une publication laisserait l'ancien dossier derrière lui, et
   `--oublier` ne viserait plus que le nouveau (un essai du cœur lit
   `tauri.conf.json` et échoue si `forget::TAURI_IDENTIFIER` diffère).
-- **Journal local** et **mise à jour** : prévus par l'architecture, pas encore
-  écrits.
+- **Journal local : fait** (voir « Le Journal »). Il rassemble les grands vides,
+  les coupures du Démarrage, la dernière partie du mode jeu et les
+  désinstallations ; il n'a pas été essayé sur un PC ordinaire (l'ouverture du
+  fichier des licences, les dates d'un vrai désinstalleur).
+- **Mise à jour** : prévue par l'architecture, pas encore écrite.
