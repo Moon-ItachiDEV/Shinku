@@ -9,6 +9,21 @@
 /** Ce qui avait le focus à l'ouverture de la boîte en cours. */
 let opener: HTMLElement | null = null;
 
+/** Quand la boîte en cours s'est ouverte (`Date.now()`) ; 0 si aucune ne s'est ouverte. */
+let openedAt = 0;
+
+/** Un clic sur le voile n'est pas le second clic du geste qui a ouvert la boîte : ce délai le sépare d'un double clic. */
+export const VEIL_GRACE = 400;
+
+/**
+ * Un clic qui doit refermer la boîte : il tombe sur le voile (donc sur le dialogue lui-même), et pas dans les
+ * 400 ms qui suivent l'ouverture. Sans ce délai, le second clic d'un double clic sur le bouton qui ouvre la boîte
+ * tomberait sur le voile, et la refermerait aussitôt.
+ */
+export function closesOnVeil(event: Event): boolean {
+  return event.target === event.currentTarget && Date.now() - openedAt > VEIL_GRACE;
+}
+
 /** Rend le focus à ce qui avait ouvert la boîte, si c'est encore dans la page et que personne d'autre ne l'a pris. */
 function giveFocusBack(): void {
   const target = opener;
@@ -45,6 +60,7 @@ export function openModal(element: Element | undefined): void {
   queueMicrotask(() => {
     if (element.isConnected && !element.open) {
       opener = active instanceof HTMLElement && active !== document.body ? active : null;
+      openedAt = Date.now();
       element.showModal();
     }
   });

@@ -26,6 +26,10 @@ export function htmlOf(value: unknown): string {
   if (typeof value === 'object' && '_$litDirective$' in value && 'values' in value) {
     const { values } = value as { values: unknown[] };
     const last = values.at(-1);
+    if (values.length === 1 && typeof last === 'function') {
+      // `ref(fonction)` : ni texte ni attribut.
+      return '';
+    }
     if (typeof last === 'function') {
       // `repeat(éléments, [clé,] gabarit)` : le gabarit s'écrit pour chaque élément.
       const items = [...(values[0] as Iterable<unknown>)];

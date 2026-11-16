@@ -48,6 +48,7 @@ import type {
 } from './types.ts';
 
 import { keepIn } from '../model/duplicates.ts';
+import { type AppsDemo, appsBackend, appsDemoOptions } from './mock-apps.ts';
 
 const GB = 1024 ** 3;
 const MB = 1024 ** 2;
@@ -97,6 +98,8 @@ export interface MockOptions {
   game: GameDemo;
   /** Ce que la démo montre du démarrage. */
   boot: BootDemo;
+  /** Ce que la démo montre de la désinstallation (voir mock-apps.ts). */
+  apps: AppsDemo;
 }
 
 /**
@@ -105,6 +108,8 @@ export interface MockOptions {
  * Le mode jeu : `?game=off|idle|playing|released|pending`, `?agent=missing|stopped`,
  * `?power=unavailable|unsuited|battery`, `?startup=disabled`.
  * Le démarrage : `?boot=few|many|empty`, `?bootfail=1`, `?bootread=user|machine`, `?bootload=fail`, `?bootshinku=off`.
+ * La désinstallation : `?apps=few|many|empty|partial`, `?appsload=fail`,
+ * `?appsflow=launching|waiting|stuck|leftovers|none|family|unsure`, `?appsfail=broken|cancelled|bin|kept`.
  */
 export function demoOptions(search: string): MockOptions {
   const query = new URLSearchParams(search);
@@ -138,6 +143,7 @@ export function demoOptions(search: string): MockOptions {
       load: query.get('bootload') === 'fail' ? 'fail' : 'ok',
       shinku: query.get('bootshinku') === 'off' ? 'off' : 'on',
     },
+    apps: appsDemoOptions(query),
   };
 }
 
@@ -1371,6 +1377,7 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
       }
       return bootView();
     },
+    ...appsBackend(options.apps),
     openWindowsSettings: async () => {},
     minimizeWindow: async () => {},
     toggleMaximizeWindow: async () => {},

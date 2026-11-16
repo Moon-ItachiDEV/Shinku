@@ -1134,7 +1134,7 @@ async function checkModules(window) {
     ['Corbeille', 'la corbeille se vide avec le grand vide', 'Rien à vider'],
     ['Démarrage', 'inscrite'],
     ['Mode jeu', 'Pendant que tu joues'],
-    ['Désinstallation', 'Ce module arrive dans une prochaine version'],
+    ['Désinstallation', 'Les apps du Microsoft Store ne sont pas ici', 'Aucune app classique installée'],
     ['Confidentialité', 'Ce module arrive dans une prochaine version'],
   ];
   for (const [label, ...expected] of modules) {
@@ -1298,6 +1298,268 @@ async function checkStartup(window) {
     await window.healthy(`après avoir remis « ${entry.name} »`);
     await window.capture(`demarrage-${slug(entry.name)}-remise`);
   }
+}
+
+// ── La Désinstallation ─────────────────────────────────────────────────────
+
+/** Ce que la page Désinstallation montre : le titre, les lignes de la liste, l'écran, les restes et le pied. */
+function readUninstall() {
+  const text = (element) => (element?.innerText ?? '').replace(/[   ]+/g, ' ').trim();
+  return {
+    title: text(document.querySelector('.main h1')),
+    lead: text(document.querySelector('.page.uninstall .phead .ptext')),
+    loading: document.querySelector('.page.uninstall .note[role="status"]') !== null,
+    rows: [...document.querySelectorAll('.page.uninstall .plist > li.row')].map((row) => ({
+      name: text(row.querySelector('.t1')),
+      detail: text(row.querySelector('.t2')),
+      button: row.querySelector('button[data-fk^="uninstall:"]')?.getAttribute('aria-label') ?? null,
+      end: text(row.querySelector('.uend')),
+    })),
+    leftovers: [...document.querySelectorAll('.page.uninstall li:has(input[type=checkbox])')].map((item) => ({
+      path: item.querySelector('.mid')?.getAttribute('title') ?? text(item.querySelector('.t1')),
+      text: text(item.querySelector('.t2')),
+      checked: item.querySelector('input[type=checkbox]')?.checked === true,
+    })),
+    orbInactive: document.querySelector('.orb[data-fk="uninstall-orb"]')?.getAttribute('aria-disabled') === 'true',
+  };
+}
+
+/** Écrit dans la recherche, comme le ferait une frappe. */
+function typeInSearch(value) {
+  const input = document.querySelector('input[data-fk="uninstall-search"]');
+  if (input === null) {
+    return false;
+  }
+  input.focus();
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}
+
+/** Coche la case du reste qui porte ce chemin. */
+function checkLeftover(wanted) {
+  const item = [...document.querySelectorAll('.page.uninstall li:has(input[type=checkbox])')].find(
+    (candidate) => (candidate.querySelector('.mid')?.getAttribute('title') ?? '') === wanted,
+  );
+  const box = item?.querySelector('input[type=checkbox]');
+  if (box === null || box === undefined) {
+    return false;
+  }
+  if (!box.checked) {
+    box.click();
+  }
+  return true;
+}
+
+async function checkUninstall(window) {
+  if (options.adresse !== undefined) {
+    note('essai de la Désinstallation sauté : la démo n’a pas les inscriptions de la machine d’essai');
+    return;
+  }
+  const local = process.env.LOCALAPPDATA;
+  const roaming = process.env.APPDATA;
+  if (local === undefined || roaming === undefined) {
+    note('essai de la Désinstallation sauté : LOCALAPPDATA et APPDATA ne sont pas définis');
+    return;
+  }
+  const programs = path.join(local, 'Programs');
+  const startMenu = path.join(roaming, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  // Les trois restes de l'App, et rien d'autre : chemin exact (sans tenir compte de la casse) et sorte.
+  const expectedLeftovers = [
+    { path: path.join(programs, 'Essai Shinku App'), text: 'Dossier de l’app' },
+    { path: path.join(roaming, 'Essai Shinku App'), text: 'Réglages et données de l’app' },
+    { path: path.join(startMenu, 'Essai Shinku App.lnk'), text: 'Raccourci qui ne mène plus nulle part' },
+  ];
+  const mustStay = untouchedPaths(local, roaming);
+  const read = () => window.session.run(readUninstall);
+
+  await window.open('Désinstallation');
+  await until('la liste de la Désinstallation est affichée', 30_000, async () => {
+    const now = await read();
+    return !now.loading && now.rows.length > 0 ? now : null;
+  });
+  await window.session.run(typeInSearch, 'Essai Shinku');
+  const found = await until('la recherche « Essai Shinku » garde les deux apps d’essai', 15_000, async () => {
+    const now = await read();
+    return now.rows.some((row) => shows(row.name, 'Essai Shinku App')) && now.rows.some((row) => shows(row.name, 'Essai Shinku Voisine')) ? now : null;
+  });
+  for (const row of found.rows) {
+    say(`  ${row.name} (${row.detail}) [${row.button ?? row.end}]`);
+  }
+  const mine = found.rows.find((row) => shows(row.name, 'Essai Shinku App'));
+  if (mine.button === null || !shows(mine.button, 'Désinstaller')) {
+    fail(`la ligne « Essai Shinku App » n’a pas de bouton « Désinstaller » : ${JSON.stringify(mine)}`);
+  }
+  done('la liste montre « Essai Shinku App » et « Essai Shinku Voisine », avec un bouton « Désinstaller »');
+  await window.capture('desinstallation-liste');
+
+  // Le bouton de l'App, puis la confirmation.
+  await window.session.run(() => {
+    const button = [...document.querySelectorAll('.page.uninstall .row button')].find((one) => (one.getAttribute('aria-label') ?? '').includes('Essai Shinku App'));
+    button?.click();
+    return button !== undefined;
+  });
+  await until('la confirmation est affichée', 15_000, async () => {
+    const asked = await window.session.run(() => document.querySelector('dialog.ask[open]')?.textContent ?? null);
+    return asked !== null && asked.includes('Essai Shinku App') ? asked : null;
+  });
+  await window.capture('desinstallation-confirmation');
+  await window.click('Désinstaller (confirmation)', 'dialog.ask[open] button', 'Désinstaller');
+
+  // Le désinstalleur retire l'inscription ; la page attend, puis montre les restes.
+  // Le bilan arrive : il porte des restes, ou la phrase qui dit pourquoi il n'en a pas. Dans ce cas, l'échec la cite tout de suite.
+  const left = await until('le bilan de l’App est affiché (60 s au plus)', 60_000, async () => {
+    const now = await read();
+    return shows(now.title, 'est désinstallée') ? now : null;
+  });
+  if (left.leftovers.length === 0) {
+    fail(`le bilan de l’App ne propose aucun reste. Phrase affichée : « ${left.lead} »`);
+  }
+  for (const one of left.leftovers) {
+    say(`  reste : ${one.path} (${one.text})`);
+  }
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  const read3 = left.leftovers.map((one) => `${one.path} (${one.text})`).join('\n');
+  const missing = expectedLeftovers.filter((want) => !left.leftovers.some((one) => same(one.path, want.path) && shows(one.text, want.text)));
+  if (left.leftovers.length !== 3 || missing.length > 0) {
+    fail(`les restes proposés ne sont pas ceux de l’App.\nAttendus :\n${expectedLeftovers.map((one) => `${one.path} (${one.text})`).join('\n')}\nLus :\n${read3}`);
+  }
+  if (!shows(left.lead, 'Rien n’est coché')) {
+    fail(`le bilan ne dit pas « Rien n’est coché » : « ${left.lead} »`);
+  }
+  if (left.leftovers.some((one) => one.checked)) {
+    fail(`aucun reste ne doit être coché d’avance : ${JSON.stringify(left.leftovers)}`);
+  }
+  done('exactement les trois restes de l’App (dossier, réglages, raccourci du menu Démarrer), aucun coché');
+  await window.capture('desinstallation-restes');
+
+  for (const one of left.leftovers) {
+    if (!(await window.session.run(checkLeftover, one.path))) {
+      fail(`la case du reste « ${one.path} » ne se trouve pas`);
+    }
+  }
+  await until('les trois cases sont cochées, l’orbe est actif', 10_000, async () => {
+    const now = await read();
+    return now.leftovers.length === 3 && now.leftovers.every((one) => one.checked) && !now.orbInactive ? now : null;
+  });
+  await window.capture('desinstallation-cochees');
+  await window.click('l’orbe « Mettre à la corbeille »', '.orb[data-fk="uninstall-orb"]', 'Mettre à la corbeille');
+
+  // Le toast dit ce qui est parti ; il reste quelques secondes, et `healthy` refuse un toast affiché.
+  const trashed = await until('le message de la corbeille est affiché', 20_000, async () => {
+    const now = await window.screen();
+    return shows(now.toast, 'à la corbeille') ? now.toast : null;
+  });
+  if (!shows(trashed, '3 éléments')) {
+    fail(`le message de la corbeille ne compte pas trois éléments : « ${trashed} »`);
+  }
+  await until('les trois restes sont partis du disque', 30_000, async () => (expectedLeftovers.every((one) => !existsSync(one.path)) ? true : null));
+  assertUntouched(mustStay);
+  done(`les trois restes sont partis (« ${trashed} ») ; la Voisine, la Sans Dossier, les Jumelles et le leurre sont intacts`);
+  await window.capture('desinstallation-bilan');
+
+  await window.click('Terminé', '.dock button', 'Terminé');
+  await until('la liste est revenue', 20_000, async () => {
+    const now = await read();
+    return now.rows.length > 0 ? now : null;
+  });
+  await window.session.run(typeInSearch, 'Essai Shinku');
+  const final = await until('la liste garde la Voisine', 15_000, async () => {
+    const now = await read();
+    return now.rows.some((row) => shows(row.name, 'Essai Shinku Voisine')) ? now : null;
+  });
+  if (final.rows.some((row) => shows(row.name, 'Essai Shinku App'))) {
+    fail('« Essai Shinku App » est encore dans la liste après sa désinstallation');
+  }
+  await quiet(window, 'le message de la corbeille se retire');
+  await window.healthy('après la désinstallation');
+  await window.capture('desinstallation-fin');
+  done('la Voisine est toujours dans la liste, l’App n’y est plus');
+  await checkTwin(window, read, typeInSearch, local, roaming, mustStay);
+}
+
+/** Attend qu'aucun message ne soit affiché : un toast reste quelques secondes, puis part. */
+async function quiet(window, what) {
+  await until(what, 15_000, async () => ((await window.screen()).toast === '' ? true : null));
+}
+
+/**
+ * Tout ce que `essai-desinstallation.ps1 -Preparer` plante et que Shinku ne doit jamais toucher :
+ * la Voisine (dossier, réglages, raccourci), la Sans Dossier, les deux Jumelles et leurs réglages communs, le leurre.
+ */
+function untouchedPaths(local, roaming) {
+  const programs = path.join(local, 'Programs');
+  const startMenu = path.join(roaming, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  return [
+    path.join(programs, 'Essai Shinku Voisine'),
+    path.join(roaming, 'Essai Shinku Voisine'),
+    path.join(startMenu, 'Essai Shinku Voisine.lnk'),
+    path.join(local, 'Essai Shinku Sans Dossier'),
+    path.join(programs, 'Essai Shinku Jumelle 2.0'),
+    path.join(roaming, 'Essai Shinku Jumelle'),
+    path.join(roaming, 'Essai Shinku'),
+  ];
+}
+
+function assertUntouched(paths) {
+  for (const keep of paths) {
+    if (!existsSync(keep)) {
+      fail(`${keep} a disparu : Shinku n’y devait pas toucher`);
+    }
+  }
+}
+
+/** Second passage : la famille. Désinstaller la 1.0 alors que la 2.0 reste installée ne propose aucun reste. */
+async function checkTwin(window, read, typeInSearch, local, roaming, mustStay) {
+  await window.session.run(typeInSearch, 'Essai Shinku Jumelle');
+  await until('la recherche garde les deux Jumelles', 15_000, async () => {
+    const now = await read();
+    return now.rows.some((row) => shows(row.name, 'Jumelle 1.0')) && now.rows.some((row) => shows(row.name, 'Jumelle 2.0')) ? now : null;
+  });
+  await window.capture('desinstallation-jumelles-liste');
+  if (!(await window.session.run(clickRowButton, 'Jumelle 1.0'))) {
+    fail('la ligne « Essai Shinku Jumelle 1.0 » n’a pas de bouton « Désinstaller »');
+  }
+  await until('la confirmation de la Jumelle 1.0 est affichée', 15_000, async () => {
+    const asked = await window.session.run(() => document.querySelector('dialog.ask[open]')?.textContent ?? null);
+    return asked !== null && asked.includes('Jumelle 1.0') ? asked : null;
+  });
+  await window.capture('desinstallation-jumelles-confirmation');
+  await window.click('Désinstaller (confirmation)', 'dialog.ask[open] button', 'Désinstaller');
+  const twin = await until('le bilan de la Jumelle 1.0 est affiché (60 s au plus)', 60_000, async () => {
+    const now = await read();
+    return shows(now.title, 'est désinstallée') ? now : null;
+  });
+  if (!shows(twin.lead, 'Une app du même nom est encore installée')) {
+    fail(`le bilan de la Jumelle 1.0 ne dit pas « Une app du même nom est encore installée » : « ${twin.lead} »`);
+  }
+  if (twin.leftovers.length !== 0) {
+    fail(`le bilan de la Jumelle 1.0 ne doit proposer aucun reste : ${JSON.stringify(twin.leftovers)}`);
+  }
+  await window.capture('desinstallation-jumelles-bilan');
+  assertUntouched(mustStay);
+  done('le bilan dit « Une app du même nom est encore installée » et ne propose rien ; les réglages communs et le dossier de la 2.0 sont intacts');
+  await window.click('Terminé', '.dock button', 'Terminé');
+  await until('la liste est revenue', 20_000, async () => ((await read()).rows.length > 0 ? true : null));
+  await window.session.run(typeInSearch, 'Essai Shinku Jumelle');
+  const twins = await until('la liste garde la Jumelle 2.0', 15_000, async () => {
+    const now = await read();
+    return now.rows.some((row) => shows(row.name, 'Jumelle 2.0')) ? now : null;
+  });
+  if (twins.rows.some((row) => shows(row.name, 'Jumelle 1.0'))) {
+    fail('« Essai Shinku Jumelle 1.0 » est encore dans la liste après sa désinstallation');
+  }
+  await quiet(window, 'aucun message n’est affiché');
+  await window.healthy('après le passage de la famille');
+  await window.capture('desinstallation-jumelles-fin');
+  done('la Jumelle 2.0 est toujours dans la liste, la 1.0 n’y est plus');
+}
+
+/** Clique le bouton « Désinstaller » de la ligne dont le nom contient `name` ; faux s'il n'y en a pas. */
+function clickRowButton(name) {
+  const button = [...document.querySelectorAll('.page.uninstall .row button')].find((one) => (one.getAttribute('aria-label') ?? '').includes(name));
+  button?.click();
+  return button !== undefined;
 }
 
 /** Le nombre de processus shinku-agent.exe qui tournent ; `null` hors de Windows. */
@@ -1554,6 +1816,7 @@ async function main() {
     await checkScan(window);
     await checkModules(window);
     await checkStartup(window);
+    await checkUninstall(window);
     await checkGameMode(window);
     await checkSettings(window);
     if (options['grand-vide']) {

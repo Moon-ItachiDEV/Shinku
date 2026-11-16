@@ -338,7 +338,7 @@ export const fr = typeset({
   soon: {
     cap: 'Ce module arrive dans une prochaine version.',
     uninstall:
-      'Supprime une app avec ce qu’elle laisse derrière elle : dossiers, raccourcis et entrées du registre.',
+      'Retire une app avec le désinstalleur de son éditeur, puis regarde ce qu’elle a laissé dans ton compte.',
     privacy:
       'Historique, cookies de suivi, fichiers récents et presse-papiers : les traces de ton activité sur ce PC.',
   },
@@ -509,6 +509,110 @@ export const fr = typeset({
       failed: 'Le changement n’a pas pu être fait.',
       unknownEntry: 'Cette entrée n’existe plus.',
       notAdjustable: 'Cette entrée ne se règle pas ici.',
+    },
+  },
+
+  uninstall: {
+    eyebrow: 'Désinstallation',
+    // Toutes les apps de la liste, filtrées ou non.
+    title: (count: number) => (count === 0 ? 'Aucune app classique installée' : countOf(count, 'app installée', 'apps installées')),
+    intro: 'Shinku ouvre le désinstalleur de l’app, puis te montre ce qu’elle a laissé derrière elle.',
+    store: 'Les apps du Microsoft Store ne sont pas ici : elles se retirent dans Windows.',
+    openWindows: 'Apps installées de Windows',
+    searchLabel: 'Chercher une app',
+    clearSearch: 'Effacer la recherche',
+    sortLabel: 'Trier par',
+    sortName: 'Nom',
+    sortSize: 'Taille',
+    sortDate: 'Date',
+    noMatch: (query: string) => `Aucune app ne correspond à «${NBSP}${query}${NBSP}».`,
+    incomplete: 'Shinku n’a pas pu lire toute la liste des apps.',
+    retry: 'Réessayer',
+    note: 'Shinku ne supprime jamais une app lui-même et ne touche pas au registre : c’est le désinstalleur de l’éditeur qui travaille. La taille est celle que l’app déclare.',
+    unknownPublisher: 'Éditeur inconnu',
+    version: (version: string) => `version ${version}`,
+    // `day` : « le 15 nov. » (voir formatDay). Affichée quand la liste est triée par date.
+    installedOn: (day: string) => `installée ${day}`,
+    separator: ' · ',
+    // L'initiale d'un nom qui ne commence pas par une lettre.
+    initialFallback: '#',
+    runtimeChip: 'Souvent utile à d’autres apps',
+    driverChip: 'Ressemble à un pilote',
+    uninstall: 'Désinstaller',
+    // Le nom accessible du bouton d'une ligne : il cite l'app, et contient le texte visible.
+    uninstallLabel: (name: string) => `Désinstaller ${name}`,
+    refused: 'Protégée par Windows',
+    refusedTitle: 'Windows ne permet pas de la retirer',
+    own: 'C’est Shinku',
+    needed: 'Shinku en a besoin',
+    neededTitle: 'Shinku en a besoin pour s’afficher',
+    confirm: {
+      title: (name: string) => `Désinstaller ${name} ?`,
+      text: (name: string) =>
+        `Shinku ouvre le désinstalleur de ${name}. C’est lui qui retire l’app, et il peut te poser des questions. Ensuite, Shinku te montre ce qui reste.`,
+      runtime: 'D’autres apps peuvent en avoir besoin pour fonctionner.',
+      driver: 'Ça ressemble à un pilote : un appareil de ton PC peut cesser de marcher.',
+      machine: 'Windows va te demander ton accord.',
+      cancel: 'Annuler',
+      confirm: 'Désinstaller',
+    },
+    toast: {
+      broken: (name: string) => `Le désinstalleur de ${name} est introuvable. Essaie depuis Windows.`,
+      vanished: (name: string) => `${name} n’est plus installée.`,
+      failed: 'La désinstallation n’a pas pu démarrer.',
+      kept: (name: string) => `${name} est toujours installée.`,
+      keptUnknown: 'Cette app est toujours installée.',
+      removed: (count: number, bytes: number) =>
+        `${countOf(count, 'élément mis', 'éléments mis')} à la corbeille${bytes > 0 ? `, ${formatBytes(bytes)}` : ''}.`,
+      nothingMoved: 'Rien n’a pu être mis à la corbeille.',
+    },
+    scene: {
+      title: (name: string) => `Désinstallation de ${name}`,
+      launching: 'Windows te demande peut-être ton accord.',
+      waiting:
+        'Si une fenêtre s’ouvre, suis ses étapes. Certaines apps se retirent sans rien afficher. Shinku attend.',
+      waitingLate:
+        'Rien ne se passe ? Regarde dans la barre des tâches : la fenêtre est peut-être derrière. Sinon, reviens à la liste.',
+      settling: 'Presque fini…',
+      back: 'Revenir à la liste',
+    },
+    leftovers: {
+      title: (name: string) => `${name} est désinstallée`,
+      family:
+        'Une app du même nom est encore installée. Shinku ne propose rien, pour ne pas toucher à ce qui lui sert.',
+      unsure: 'Shinku n’a pas pu vérifier à qui sont les dossiers : il ne propose rien.',
+      none: 'Shinku n’a rien trouvé à te proposer. Dans ton compte, il ne cherche que les dossiers qui portent exactement le nom de l’app, et les raccourcis qui menaient vers elle.',
+      allGone: 'Il ne reste plus rien à te proposer.',
+      found: (count: number) =>
+        `Shinku a trouvé ${countOf(count, 'élément qui semble', 'éléments qui semblent')} venir d’elle. Rien n’est coché : regarde avant de choisir.`,
+      folder: 'Dossier de l’app',
+      data: 'Réglages et données de l’app. Peut contenir ce que tu as fait avec elle : sauvegardes de jeu, messages, projets.',
+      shortcut: 'Raccourci qui ne mène plus nulle part',
+      // La taille et le nombre de fichiers d'un reste ; l'un ou l'autre peut manquer.
+      files: (files: number) => countOf(files, 'fichier', 'fichiers'),
+      size: (bytes: number, files: number) => `${formatBytes(bytes)} · ${countOf(files, 'fichier', 'fichiers')}`,
+      trash: 'Mettre à la corbeille',
+      rescan: 'Chercher à nouveau',
+      done: 'Terminé',
+      // `atLeast` : la taille d'un des éléments cochés n'est pas connue, le total est un minimum.
+      caption: (count: number, bytes: number, atLeast: boolean) =>
+        `${countOf(count, 'élément', 'éléments')}${bytes > 0 ? `, ${atLeast ? 'au moins ' : ''}${formatBytes(bytes)}` : ''}.`,
+      captionNothing: 'Rien n’est coché',
+      binNote: 'Ta corbeille peut abandonner d’anciens éléments pour faire de la place.',
+      inUse: 'Encore utilisé : ferme ce qui l’utilise, puis réessaie.',
+      refused: 'La corbeille ne peut pas le recevoir.',
+      partial: 'Une partie est restée.',
+      other: 'N’a pas pu partir.',
+    },
+    announce: {
+      list: 'Retour à la liste des apps.',
+      launching: (name: string) => `Désinstallation de ${name}. Windows te demande peut-être ton accord.`,
+      waiting: (name: string) => `Désinstallation de ${name}. Shinku attend la fin du désinstalleur.`,
+      settling: (name: string) => `Désinstallation de ${name}. Presque fini.`,
+      removed: (name: string, count: number) =>
+        count === 0
+          ? `${name} est désinstallée. Shinku n’a rien à te proposer.`
+          : `${name} est désinstallée. ${countOf(count, 'reste à regarder', 'restes à regarder')}.`,
     },
   },
 

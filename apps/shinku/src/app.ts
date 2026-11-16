@@ -8,6 +8,7 @@
 import { render } from 'lit-html';
 
 import type {
+  AppsView,
   Backend,
   BackendError,
   DuplicateGroup,
@@ -58,6 +59,28 @@ import {
   withEntry,
   withEntryEnabled,
 } from './model/startup.ts';
+import {
+  announcement,
+  APPS_POLL_DELAY,
+  APPS_RELOAD_GAP,
+  appById,
+  askFor,
+  type AppsSort,
+  checkedRows,
+  focusAfterRemoval,
+  focusTarget as appsFocusTarget,
+  followedName,
+  isPolling,
+  mergedFailures,
+  noneBecause,
+  proposed,
+  refusalOf,
+  removalOf,
+  removalToast,
+  screenOf,
+  listedApps,
+  uninstallFocus,
+} from './model/uninstall.ts';
 import { type Actions, type AppState, initialState, type Route } from './state.ts';
 import { applyTheme } from './theme.ts';
 import { appView } from './views/shell.ts';
@@ -131,6 +154,16 @@ const NO_ACTIONS: Actions = {
   undoStartup: () => {},
   holdStartupSay: () => {},
   retryStartup: () => {},
+  setAppsQuery: () => {},
+  setAppsSort: () => {},
+  retryApps: () => {},
+  askUninstall: () => {},
+  confirmUninstall: () => {},
+  dismissUninstall: () => {},
+  stopUninstall: () => {},
+  rescanLeftovers: () => {},
+  toggleLeftover: () => {},
+  removeLeftovers: () => {},
   openWindowsSettings: () => {},
   minimize: () => {},
   toggleMaximize: () => {},
@@ -202,6 +235,21 @@ export class App {
   /** Une vue est demandée, ou vient d'arriver : le retour de la fenêtre n'en relance pas une deuxième. */
   private startupLoading = false;
   private startupLoadedAt = 0;
+  /** La page Désinstallation est affichée : sa vue se charge à l'arrivée et au retour du focus. */
+  private appsWatching = false;
+  private appsVisit = 0;
+  /** Change au départ et à la réponse de chaque geste : une vue demandée avant lui et arrivée après est ignorée. */
+  private appsAction = 0;
+  /** Le numéro de la dernière demande de vue : seule sa réponse compte. */
+  private appsAsk = 0;
+  private appsLoading = false;
+  private appsLoadedAt = 0;
+  /** La minuterie d'interrogation : une seule, jamais deux. */
+  private appsTimer: number | undefined;
+  /** « Réessayer » vient d'être pressé : le focus suivra la vue qui arrive. */
+  private appsRetried = false;
+  /** Le nom de la dernière app suivie : `outcome: 'kept'` ne le porte pas. */
+  private appsLastName: string | null = null;
 
   constructor(backend: Backend, root: HTMLElement, draw: Draw = render) {
     this.backend = backend;
@@ -252,11 +300,13 @@ export class App {
       void this.refreshOverview(5000);
       void this.refreshGame();
       void this.refreshStartup();
+      void this.refreshApps('focus');
     });
     // Une fenêtre réduite ou cachée ne demande rien ; elle relit la vue dès qu'on la regarde de nouveau.
     document.addEventListener('visibilitychange', () => {
       void this.refreshGame();
       void this.refreshStartup();
+      void this.refreshApps('focus');
     });
   }
 
@@ -1285,6 +1335,449 @@ export class App {
     }
   }
 
+  // ── Désinstallation ──────────────────────────────────────────────────────
+
+  /**
+   * À l'arrivée sur la page Désinstallation, la vue est demandée une fois ; elle l'est de nouveau quand la
+   * fenêtre retrouve le focus. Tant qu'une désinstallation est en cours (`launching`, `waiting`, `settling`),
+   * elle l'est toutes les deux secondes, même si la personne est ailleurs : voir `syncAppsPoll`. Hors de la
+   * page, rien n'est gardé, sauf cette attente : la vue d'une visite ne sert pas à la suivante.
+   */
+  private watchApps(): void {
+    if (this.state.route !== 'uninstall') {
+      this.stopWatchingApps();
+      return;
+    }
+    if (this.appsWatching) {
+      // Déjà sur la page : on relit seulement la vue.
+      void this.refreshApps('force');
+      return;
+    }
+    this.appsWatching = true;
+    this.appsVisit += 1;
+    this.appsLoading = false;
+    this.appsLoadedAt = 0;
+    this.appsRetried = false;
+    if (isPolling(this.state.apps?.follow)) {
+      // Une désinstallation est en cours : la page retrouve sa scène, et la relit tout de suite.
+      this.set({ appsFailed: false });
+    } else {
+      this.dropApps();
+    }
+    void this.refreshApps('force');
+  }
+
+  private stopWatchingApps(): void {
+    if (!this.appsWatching) {
+      return;
+    }
+    this.appsWatching = false;
+    this.appsVisit += 1;
+    this.appsRetried = false;
+    if (!isPolling(this.state.apps?.follow)) {
+      this.dropApps();
+    }
+  }
+
+  /** Oublie la vue et tout ce que la page en avait tiré : texte cherché, tri, cases, phrases. */
+  private dropApps(): void {
+    window.clearTimeout(this.appsTimer);
+    this.appsTimer = undefined;
+    this.set({
+      apps: null,
+      appsFailed: false,
+      appsQuery: '',
+      appsSort: 'name',
+      appsConfirm: null,
+      appsChecked: [],
+      appsFailures: {},
+      appsEmptied: false,
+      appsAnnounce: '',
+    });
+  }
+
+  /**
+   * Arme la minuterie d'interrogation tant que la phase est `launching`, `waiting` ou `settling`, et
+   * l'arrête dans toute autre. Elle n'est jamais armée deux fois : une demande à la fois, la suivante
+   * part deux secondes après la réponse.
+   */
+  private syncAppsPoll(): void {
+    if (!isPolling(this.state.apps?.follow)) {
+      window.clearTimeout(this.appsTimer);
+      this.appsTimer = undefined;
+      return;
+    }
+    if (this.appsTimer !== undefined) {
+      return;
+    }
+    this.appsTimer = window.setTimeout(() => {
+      this.appsTimer = undefined;
+      void this.refreshApps('poll');
+    }, APPS_POLL_DELAY);
+  }
+
+  /**
+   * Demande la vue. `poll` : le sondage de l'attente, jamais empilé. `focus` : le retour de la fenêtre, sans
+   * demande si une est en vol, finie depuis moins d'une demi-seconde, ou inutile (l'attente interroge déjà).
+   * `force` : une visite, « Réessayer », un geste refusé.
+   */
+  private async refreshApps(mode: 'poll' | 'focus' | 'force'): Promise<void> {
+    if (mode !== 'force' && this.appsLoading) {
+      return;
+    }
+    if (mode === 'focus') {
+      const state = this.state;
+      if (
+        !this.appsWatching ||
+        state.route !== 'uninstall' ||
+        document.hidden ||
+        state.appsBusy !== null ||
+        isPolling(state.apps?.follow) ||
+        Date.now() - this.appsLoadedAt < APPS_RELOAD_GAP
+      ) {
+        return;
+      }
+    }
+    if (mode === 'poll' && !isPolling(this.state.apps?.follow)) {
+      return;
+    }
+    this.appsAsk += 1;
+    const ask = this.appsAsk;
+    const action = this.appsAction;
+    this.appsLoading = true;
+    const current = (): boolean => ask === this.appsAsk && action === this.appsAction;
+    const finish = (): void => {
+      if (ask === this.appsAsk) {
+        this.appsLoading = false;
+        this.appsLoadedAt = Date.now();
+      }
+    };
+    try {
+      const view = await this.backend.appsView();
+      finish();
+      // Pendant « Désinstaller », le cœur peut encore répondre « rien en cours » : la page attend déjà.
+      if (current() && !(this.state.appsBusy === 'start' && view.follow.phase === 'idle')) {
+        this.adoptApps(view);
+      } else {
+        // Jetée parce qu'une autre demande est partie : son « kept » ne se redira pas.
+        this.sayKept(view);
+      }
+    } catch {
+      finish();
+      // La page garde sa dernière vue ; sans vue, elle le dit et propose « Réessayer ».
+      if (current() && this.state.apps === null) {
+        this.set({ appsFailed: true });
+        if (this.appsRetried) {
+          this.focusKey(uninstallFocus.retry);
+        }
+      }
+    } finally {
+      this.syncAppsPoll();
+    }
+  }
+
+  /**
+   * Adopte une vue. Un changement de phase est annoncé une fois ; un changement d'écran (la liste, l'attente,
+   * les restes) donne le focus au titre ; sur la liste, ce qui avait le focus est suivi.
+   */
+  private adoptApps(view: AppsView): void {
+    const before = this.state.apps;
+    const name = followedName(view.follow);
+    if (name !== null) {
+      this.appsLastName = name;
+    }
+    this.sayKept(view);
+    if (!this.appsWatching && !isPolling(view.follow)) {
+      // Hors de la page, la vue ne sert qu'à suivre l'attente : le reste se relit à la prochaine visite.
+      if (before !== null) {
+        this.dropApps();
+      }
+      return;
+    }
+    const wasPhase = before?.follow.phase ?? 'idle';
+    const wasScreen = screenOf(before?.follow);
+    const screen = screenOf(view.follow);
+    const patch: Partial<AppState> = { apps: view, appsFailed: false, now: Date.now() };
+    if (view.follow.phase !== wasPhase) {
+      patch.appsAnnounce = announcement(view.follow);
+    }
+    if (view.follow.phase === 'removed' && wasPhase !== 'removed') {
+      // Des restes tout neufs : rien n'est coché, aucun échec à montrer.
+      patch.appsChecked = [];
+      patch.appsFailures = {};
+      patch.appsEmptied = false;
+    }
+    const key = this.activeKey();
+    const state = this.state;
+    const shownBefore = before === null ? [] : listedApps(before, state.appsQuery, state.appsSort);
+    const retried = this.appsRetried;
+    this.appsRetried = false;
+    this.set(patch);
+    this.syncAppsPoll();
+    if (retried) {
+      // « Réessayer » a disparu avec son message : le focus va au titre (s'il est encore au bouton, il n'y bouge pas).
+      this.focusKey(uninstallFocus.title);
+    }
+    if (!this.appsWatching || state.route !== 'uninstall') {
+      return;
+    }
+    if (before !== null && screen !== wasScreen) {
+      this.focusTitle();
+    } else if (screen === 'list' && key !== null && before !== null) {
+      const target = appsFocusTarget(shownBefore, listedApps(view, state.appsQuery, state.appsSort), key);
+      if (target !== null) {
+        this.focusKey(target);
+      }
+    }
+  }
+
+  /** Le cœur ne dit `outcome: 'kept'` qu'une fois : la réponse qui le porte le dit, même si la page ne la garde pas. */
+  private sayKept(view: AppsView): void {
+    if (view.outcome === 'kept') {
+      this.toast(this.appsLastName === null ? fr.uninstall.toast.keptUnknown : fr.uninstall.toast.kept(this.appsLastName));
+    }
+  }
+
+  /** La clé de focus (`data-fk`) de ce qui a le focus, ou `null`. */
+  private activeKey(): string | null {
+    const active = document.activeElement as { dataset?: Record<string, string | undefined> } | null;
+    return active?.dataset?.['fk'] ?? null;
+  }
+
+  /**
+   * Le titre prend le focus quand l'écran change (la liste, l'attente, les restes) : ce qui l'avait a disparu,
+   * ou le focus est ailleurs dans la page. Il ne quitte pas le menu ni une boîte ouverte.
+   */
+  private focusTitle(): void {
+    queueMicrotask(() => {
+      const active = document.activeElement;
+      const main = this.root.querySelector('.main');
+      const inPage = active !== null && active !== document.body && main?.contains(active) === true;
+      if (active !== null && active !== document.body && !inPage) {
+        return;
+      }
+      for (const element of this.root.querySelectorAll<HTMLElement>('[data-fk]')) {
+        if (element.dataset['fk'] === uninstallFocus.title) {
+          element.focus();
+          return;
+        }
+      }
+    });
+  }
+
+  /** Le focus va au premier de ces contrôles qui existe, si personne ne l'a pris. */
+  private focusAny(keys: readonly string[]): void {
+    queueMicrotask(() => {
+      const active = document.activeElement;
+      if (active !== null && active !== document.body) {
+        return;
+      }
+      for (const key of keys) {
+        for (const element of this.root.querySelectorAll<HTMLElement>('[data-fk]')) {
+          if (element.dataset['fk'] === key) {
+            element.focus();
+            return;
+          }
+        }
+      }
+    });
+  }
+
+  /** « Réessayer » : la liste des apps n'est pas venue, ou pas en entier. */
+  private retryApps(): void {
+    this.set({ appsFailed: false });
+    // Le bouton disparaît le temps du chargement : le focus ira au titre, ou reviendra au bouton si la panne dure.
+    this.appsRetried = true;
+    void this.refreshApps('force');
+  }
+
+  private askUninstall(id: string): void {
+    const view = this.state.apps;
+    const app = appById(view, id);
+    if (app === undefined || app.removal !== 'offered' || this.state.appsBusy !== null || view?.follow.phase !== 'idle') {
+      return;
+    }
+    this.set({ appsConfirm: askFor(app) });
+  }
+
+  private dismissUninstall(): void {
+    // Une fois la demande partie, la confirmation est déjà fermée : cette fonction ne l'arrête pas.
+    if (this.state.appsConfirm !== null) {
+      this.set({ appsConfirm: null });
+    }
+  }
+
+  /**
+   * La personne a confirmé : la page montre tout de suite `launching` (le cœur n'y passe qu'avant de
+   * lancer, et `start_uninstall` ne rend la main qu'après la réponse à la fenêtre de Windows). Un second
+   * geste est refusé tant que la réponse n'est pas là.
+   */
+  private async confirmUninstall(): Promise<void> {
+    const ask = this.state.appsConfirm;
+    const before = this.state.apps;
+    if (ask === null || this.state.appsBusy !== null) {
+      return;
+    }
+    if (before === null || before.follow.phase !== 'idle') {
+      this.set({ appsConfirm: null });
+      return;
+    }
+    // Une vue en vol est périmée par ce geste.
+    this.appsAction += 1;
+    this.appsLoading = false;
+    this.appsLastName = ask.name;
+    const follow = { phase: 'launching', id: ask.id, name: ask.name } as const;
+    this.set({
+      appsConfirm: null,
+      appsBusy: 'start',
+      apps: { ...before, follow },
+      appsAnnounce: announcement(follow),
+    });
+    this.syncAppsPoll();
+    this.focusTitle();
+    try {
+      const answer = await this.backend.startUninstall(ask.id);
+      this.appsAction += 1;
+      this.set({ appsBusy: null });
+      this.adoptApps(answer);
+    } catch (error) {
+      this.appsAction += 1;
+      const refusal = refusalOf(error, ask.name);
+      const current = this.state.apps;
+      // La région vivante revient à la liste : une seconde tentative sur la même app s'annonce de nouveau.
+      this.set({
+        appsBusy: null,
+        apps: current === null ? null : { ...current, follow: before.follow },
+        appsAnnounce: announcement(before.follow),
+      });
+      this.syncAppsPoll();
+      if (refusal.toast !== null) {
+        this.toast(refusal.toast);
+      }
+      if (refusal.reload) {
+        await this.refreshApps('force');
+      }
+      // La liste est revenue : le focus retrouve le bouton de l'app, ou le titre si elle n'y est plus.
+      this.focusAny([uninstallFocus.row(ask.id), uninstallFocus.title]);
+    }
+  }
+
+  /** « Revenir à la liste » et « Terminé » : rien n'est tué ni touché, le cœur oublie seulement la désinstallation. */
+  private async stopUninstall(): Promise<void> {
+    if (this.state.appsBusy !== null || screenOf(this.state.apps?.follow) === 'list') {
+      return;
+    }
+    this.appsAction += 1;
+    this.appsLoading = false;
+    this.set({ appsBusy: 'stop' });
+    try {
+      const answer = await this.backend.stopUninstall();
+      this.appsAction += 1;
+      this.set({ appsBusy: null });
+      this.adoptApps(answer);
+    } catch (error) {
+      this.appsAction += 1;
+      this.set({ appsBusy: null });
+      this.toast(errorMessage(error));
+      await this.refreshApps('force');
+    }
+  }
+
+  /** « Chercher à nouveau » : les restes sont cherchés de nouveau, les cases repartent vides. */
+  private async rescanLeftovers(): Promise<void> {
+    if (this.state.appsBusy !== null || this.state.apps?.follow.phase !== 'removed') {
+      return;
+    }
+    this.appsAction += 1;
+    this.appsLoading = false;
+    this.set({ appsBusy: 'rescan' });
+    try {
+      const answer = await this.backend.rescanLeftovers();
+      this.appsAction += 1;
+      this.set({ appsBusy: null, appsChecked: [], appsFailures: {}, appsEmptied: false });
+      this.adoptApps(answer);
+    } catch (error) {
+      this.appsAction += 1;
+      this.set({ appsBusy: null });
+      this.toast(errorMessage(error));
+      await this.refreshApps('force');
+    }
+  }
+
+  private toggleLeftover(path: string): void {
+    const view = this.state.apps;
+    if (this.state.appsBusy !== null || view === null || !proposed(view.follow).some((row) => row.path === path)) {
+      return;
+    }
+    const checked = this.state.appsChecked;
+    this.set({ appsChecked: checked.includes(path) ? checked.filter((one) => one !== path) : [...checked, path] });
+  }
+
+  /** L'orbe : seules les clés des restes cochés partent, jamais un chemin. Ce qui ne part pas reste dans la liste. */
+  private async removeLeftovers(): Promise<void> {
+    const view = this.state.apps;
+    if (this.state.appsBusy !== null || view === null || view.follow.phase !== 'removed') {
+      return;
+    }
+    const rows = proposed(view.follow);
+    const picked = checkedRows(rows, this.state.appsChecked);
+    if (picked.length === 0) {
+      return;
+    }
+    this.appsAction += 1;
+    this.appsLoading = false;
+    this.set({ appsBusy: 'remove' });
+    try {
+      const answer = await this.backend.removeLeftovers(picked.map((row) => row.key));
+      this.appsAction += 1;
+      const removal = removalOf(rows, answer);
+      const after = proposed(answer.view.follow);
+      this.set({
+        appsBusy: null,
+        appsChecked: [],
+        appsFailures: mergedFailures(this.state.appsFailures, removal, after),
+        appsEmptied: noneBecause(answer.view.follow) === 'none',
+      });
+      this.adoptApps(answer.view);
+      const said = removalToast(removal);
+      if (said !== null) {
+        this.toast(said);
+      }
+      if (this.appsWatching && this.state.route === 'uninstall' && screenOf(answer.view.follow) === 'leftovers') {
+        // L'orbe est inactif : le focus va au premier reste qui est encore là (avec sa raison), sinon à « Terminé ».
+        this.focusAny([focusAfterRemoval(after)]);
+        this.forceFocus(focusAfterRemoval(after));
+      }
+    } catch (error) {
+      this.appsAction += 1;
+      this.set({ appsBusy: null });
+      this.toast(errorMessage(error));
+      await this.refreshApps('force');
+    }
+  }
+
+  /** Donne le focus à ce contrôle même si l'orbe, devenu inactif, l'a encore. */
+  private forceFocus(key: string): void {
+    queueMicrotask(() => {
+      const active = document.activeElement as { dataset?: Record<string, string | undefined> } | null;
+      if (active?.dataset?.['fk'] !== uninstallFocus.orb) {
+        return;
+      }
+      for (const element of this.root.querySelectorAll<HTMLElement>('[data-fk]')) {
+        if (element.dataset['fk'] === key) {
+          element.focus();
+          return;
+        }
+      }
+    });
+  }
+
+  private setAppsSort(sort: AppsSort): void {
+    if (sort !== this.state.appsSort) {
+      this.set({ appsSort: sort });
+    }
+  }
+
   private async openWindowsSettings(page: WindowsPage): Promise<void> {
     try {
       await this.backend.openWindowsSettings(page);
@@ -1299,6 +1792,7 @@ export class App {
     this.set({ route });
     this.watchGame();
     this.watchStartup();
+    this.watchApps();
     this.ensureData();
     if (route === 'bin') {
       void this.refreshOverview(2000);
@@ -1340,6 +1834,16 @@ export class App {
     undoStartup: () => this.undoStartup(),
     holdStartupSay: (by, on) => this.holdStartupSay(by, on),
     retryStartup: () => this.retryStartup(),
+    setAppsQuery: (query) => this.set({ appsQuery: query }),
+    setAppsSort: (sort) => this.setAppsSort(sort),
+    retryApps: () => this.retryApps(),
+    askUninstall: (id) => this.askUninstall(id),
+    confirmUninstall: () => void this.confirmUninstall(),
+    dismissUninstall: () => this.dismissUninstall(),
+    stopUninstall: () => void this.stopUninstall(),
+    rescanLeftovers: () => void this.rescanLeftovers(),
+    toggleLeftover: (path) => this.toggleLeftover(path),
+    removeLeftovers: () => void this.removeLeftovers(),
     openWindowsSettings: (page) => void this.openWindowsSettings(page),
     minimize: () => void this.backend.minimizeWindow(),
     toggleMaximize: () => void this.backend.toggleMaximizeWindow(),

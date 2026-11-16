@@ -1,0 +1,317 @@
+/*
+ * La page Désinstallation. Elle reprend le squelette de page.css, les cartes et
+ * les lignes du Démarrage (startup.css) ; ce fichier n'ajoute que ce qui lui
+ * est propre : la barre d'outils, le tri, la fin des lignes, les restes.
+ * Aucune couleur nouvelle : tout vient de tokens.css, clair et sombre.
+ */
+
+/* ── Barre d'outils : la recherche et le tri ────────────────────────────── */
+
+.utool {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 18px;
+  margin: 20px 0 12px;
+}
+
+.usearch {
+  position: relative;
+  flex: 1 1 240px;
+  max-width: 380px;
+}
+
+.uinput {
+  display: block;
+  width: 100%;
+  height: 38px;
+  margin: 0;
+  padding: 0 38px 0 16px;
+  box-sizing: border-box;
+  border: 1px solid var(--box-border);
+  border-radius: 999px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 300;
+  letter-spacing: 0.03em;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.uinput::placeholder {
+  color: var(--text-3);
+  opacity: 1;
+}
+
+/* Le bouton de la barre de recherche est le nôtre : celui du moteur web ferait double emploi. */
+.uinput::-webkit-search-cancel-button,
+.uinput::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.uinput:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.uclear {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 30px;
+  height: 30px;
+  color: var(--text-2);
+}
+
+.usort {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.usortl {
+  font-size: 12px;
+  font-weight: 300;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+
+/* Les boutons radio du tri : le même dessin que les groupes de choix des Paramètres. */
+.segc button[aria-checked='true'] {
+  /* Un fond plein, pas un voile : en sombre, le voile laissait le texte à 3,6:1. L'anneau le détache du fond. */
+  background: var(--surface-solid);
+  box-shadow: inset 0 0 0 1px var(--box-border);
+  color: var(--text);
+}
+
+/* ── Les lignes de la liste ─────────────────────────────────────────────── */
+
+/* La taille tient une colonne : les chiffres s'alignent d'une ligne à l'autre. */
+.uninstall .row .usize {
+  flex-shrink: 0;
+  min-width: 64px;
+  align-items: flex-end;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* La fin de la ligne : le bouton, ou la raison de son absence. */
+.uend {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  min-width: 112px;
+  text-align: right;
+}
+
+.d.uend {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+/* Une ligne sans bouton : une phrase courte sur une seule ligne, la longue est dans `title`. */
+.uno {
+  white-space: nowrap;
+}
+
+.uninstall .row .ghost.small {
+  flex-shrink: 0;
+}
+
+/* L'avertissement de liste incomplète porte son bouton. */
+.ucard > .pwarn {
+  align-items: center;
+}
+
+.ucard > .pwarn > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.ucard > .pwarn > i {
+  margin-top: 0;
+}
+
+.ucard > .pwarn + .plist,
+.ucard > .pwarn + .unone {
+  border-top: 1px solid rgb(var(--ov) / calc(0.05 * var(--ov-k)));
+}
+
+.unone {
+  padding: 16px 18px;
+  overflow-wrap: anywhere;
+}
+
+/* ── L'attente ──────────────────────────────────────────────────────────── */
+
+/* Le titre reçoit le focus quand l'écran change : ce n'est pas un contrôle. */
+.uscene h1:focus {
+  outline: none;
+}
+
+/* Pendant `launching`, le cercle n'est pas un bouton : il tourne, c'est tout. */
+.core.inert {
+  cursor: default;
+}
+
+/* Le cercle de retour : une phrase courte, centrée. */
+.core[data-fk] {
+  padding: 0 14px;
+  text-align: center;
+  text-wrap: balance;
+  line-height: 1.3;
+}
+
+.core[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ── Les restes ─────────────────────────────────────────────────────────── */
+
+/* Un chemin coupé au milieu : le début s'abrège, le dernier nom reste lisible. */
+.umid {
+  display: flex;
+  min-width: 0;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.umidh {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.umidt {
+  flex: 0 0 auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uleft {
+  align-items: flex-start;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.uleft .box {
+  margin-top: 1px;
+}
+
+.uleft .t2 {
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.uleft .usize {
+  padding-top: 1px;
+}
+
+/* Une raison d'échec : un fait, pas un détail. Plus précis que `.startup .row .t2`, qui la remettrait en gris. */
+.uninstall .row .ufail {
+  color: var(--badge-text);
+}
+
+.udock {
+  height: auto;
+  min-height: 168px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/*
+ * L'orbe est au centre exact du pied, quel que soit le nombre de boutons : trois colonnes, les boutons collés
+ * à l'orbe dans la colonne de gauche ou de droite, jamais dans son flux.
+ */
+.udock .row2 {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  column-gap: 16px;
+  width: 100%;
+  max-width: 560px;
+}
+
+.udock .row2 .orb {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.udock .row2 .uleftb {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.udock .row2 .urightb {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: start;
+}
+
+.udock .cap {
+  min-height: 18px;
+}
+
+/* Deux phrases, chacune sur sa ligne. */
+.ucap {
+  display: block;
+}
+
+.uorb {
+  font-size: 13px;
+}
+
+/* L'orbe inactif reste focalisable (aria-disabled) : il se voit éteint, sans halo ni rotation. */
+.orb[aria-disabled='true'] {
+  opacity: 0.32;
+  cursor: default;
+  box-shadow: none;
+}
+
+.orb[aria-disabled='true']::before {
+  animation: none;
+}
+
+.orb[aria-disabled='true']:active {
+  transform: none;
+}
+
+/* ── Fenêtre basse : tout se resserre ───────────────────────────────────── */
+
+@media (max-height: 760px) {
+  .udock {
+    min-height: 156px;
+  }
+
+  .utool {
+    margin-top: 14px;
+  }
+}
+
+@media (max-height: 640px) {
+  .udock {
+    min-height: 0;
+    gap: 6px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .uorb[aria-disabled='true']:hover {
+    box-shadow: none;
+  }
+}

@@ -4,6 +4,7 @@
 // pour eux. Tout changement passe par l'application (src/app.ts).
 
 import type {
+  AppsView,
   CleanPreview,
   CleanRequest,
   DuplicatesPage,
@@ -23,6 +24,7 @@ import type {
 import type { Leaving } from './model/game.ts';
 import { type CleanRowId, type Selection, UNTOUCHED } from './model/scan.ts';
 import type { Say } from './model/startup.ts';
+import type { AppsSort, Failure, UninstallAsk } from './model/uninstall.ts';
 
 /** Les entrées du menu latéral. */
 export type Route =
@@ -106,6 +108,25 @@ export interface AppState {
   startupBusy: string | null;
   /** La zone de retour : ce que le dernier geste a donné, ou `null`. */
   startupSay: Say | null;
+  /** La dernière vue de la page Désinstallation ; `null` tant que le cœur n'a pas répondu. */
+  apps: AppsView | null;
+  /** La vue des apps n'a pas pu être lue : la page le dit au lieu de « Chargement… ». */
+  appsFailed: boolean;
+  /** Le texte cherché et le tri choisi : ils vivent ici, pas dans les réglages. */
+  appsQuery: string;
+  appsSort: AppsSort;
+  /** Le geste en vol : tous les boutons de la page attendent sa réponse, `null` si aucun. */
+  appsBusy: 'start' | 'stop' | 'rescan' | 'remove' | null;
+  /** La confirmation de « Désinstaller », tant qu'elle est ouverte. */
+  appsConfirm: UninstallAsk | null;
+  /** Les chemins des restes cochés : jamais cochés d'avance. */
+  appsChecked: readonly string[];
+  /** Les restes que la corbeille n'a pas pris, par chemin, avec leur raison. */
+  appsFailures: Readonly<Record<string, Failure>>;
+  /** Tout ce qui était proposé est parti : la page ne dit plus « rien trouvé ». */
+  appsEmptied: boolean;
+  /** La phrase de la région vivante : un changement de phase, annoncé une fois. */
+  appsAnnounce: string;
   /** L'heure qu'il est, rafraîchie de temps en temps : pour « il y a 8 mois ». */
   now: number;
 }
@@ -149,6 +170,16 @@ export function initialState(now: number): AppState {
     startupFailed: false,
     startupBusy: null,
     startupSay: null,
+    apps: null,
+    appsFailed: false,
+    appsQuery: '',
+    appsSort: 'name',
+    appsBusy: null,
+    appsConfirm: null,
+    appsChecked: [],
+    appsFailures: {},
+    appsEmptied: false,
+    appsAnnounce: '',
     now,
   };
 }
@@ -194,6 +225,24 @@ export interface Actions {
   holdStartupSay(by: 'focus' | 'hover', on: boolean): void;
   /** « Réessayer » : la première vue du démarrage n'est pas venue. */
   retryStartup(): void;
+  /** Le texte cherché dans la liste des apps. */
+  setAppsQuery(query: string): void;
+  setAppsSort(sort: AppsSort): void;
+  /** « Réessayer » : la liste des apps n'est pas venue, ou pas en entier. */
+  retryApps(): void;
+  /** « Désinstaller » sur une ligne : ouvre la confirmation. Rien ne part encore. */
+  askUninstall(id: string): void;
+  /** La personne confirme : le cœur ouvre le désinstalleur de l'app. */
+  confirmUninstall(): void;
+  /** La personne referme la confirmation : rien ne part. */
+  dismissUninstall(): void;
+  /** « Revenir à la liste » et « Terminé ». */
+  stopUninstall(): void;
+  rescanLeftovers(): void;
+  /** Coche ou décoche un reste (par son chemin). */
+  toggleLeftover(path: string): void;
+  /** L'orbe : met à la corbeille les restes cochés. */
+  removeLeftovers(): void;
   openWindowsSettings(page: WindowsPage): void;
   minimize(): void;
   toggleMaximize(): void;

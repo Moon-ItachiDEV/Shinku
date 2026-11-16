@@ -335,7 +335,7 @@ export type PowerOutcome =
   | 'off';
 export type PowerSupport = 'available' | 'unavailable' | 'unsuited';
 export type GameSource = 'added' | 'library';
-export type WindowsPage = 'gameMode' | 'power' | 'startupApps';
+export type WindowsPage = 'gameMode' | 'power' | 'startupApps' | 'apps';
 export type GameStatus = 'notGame' | 'forgotten';
 
 /** La partie en cours, telle que l'agent l'a notée. */
@@ -414,7 +414,8 @@ export type BackendError =
   | { kind: 'cleanRefused'; reason: CleanRefusal }
   | { kind: 'cleanNotStarted'; reason: string }
   | { kind: 'gameRefused'; reason: GameRefusal }
-  | { kind: 'startupRefused'; reason: StartupRefusal };
+  | { kind: 'startupRefused'; reason: StartupRefusal }
+  | { kind: 'uninstallRefused'; reason: UninstallRefusal };
 
 // ── Le démarrage ───────────────────────────────────────────────────────────
 
@@ -462,6 +463,87 @@ export interface StartupView {
 
 export type StartupRefusal = 'unknownEntry' | 'notAdjustable' | 'busy' | 'failed';
 
+// ── La désinstallation ─────────────────────────────────────────────────────
+
+/** Le compte, ou tout le PC (Windows demandera alors son accord). */
+export type AppScope = 'account' | 'machine';
+/** Un indice par le nom, pas une certitude : `runtime` et `driver` sont des ressemblances. */
+export type AppKind = 'plain' | 'runtime' | 'driver';
+/**
+ * Ce que Shinku propose pour cette app : `offered` (le bouton « Désinstaller »), `refused` (Windows
+ * cache lui-même son bouton), `own` (c'est Shinku), `needed` (Shinku s'affiche grâce à elle).
+ */
+export type AppRemoval = 'offered' | 'refused' | 'own' | 'needed';
+
+export interface AppRow {
+  /** L'identifiant que le cœur a donné : c'est tout ce que la page lui renvoie. */
+  id: string;
+  name: string;
+  version?: string;
+  publisher?: string;
+  /** La taille que l'app déclare ; absente si elle ne la déclare pas. */
+  bytes?: number;
+  /** « AAAA-MM-JJ ». */
+  installed?: string;
+  scope: AppScope;
+  kind: AppKind;
+  removal: AppRemoval;
+}
+
+export type LeftoverKind = 'folder' | 'data' | 'shortcut';
+
+export interface LeftoverRow {
+  /** Opaque : son rang dans la liste que le cœur garde. C'est tout ce que la page lui renvoie. */
+  key: number;
+  kind: LeftoverKind;
+  /** À montrer, jamais à renvoyer. */
+  path: string;
+  bytes?: number;
+  files?: number;
+}
+
+export type FollowView =
+  | { phase: 'idle' }
+  | { phase: 'launching'; id: string; name: string }
+  | { phase: 'waiting'; id: string; name: string; seconds: number }
+  | { phase: 'settling'; id: string; name: string }
+  | { phase: 'removed'; id: string; name: string; leftovers: LeftoverRow[]; family: boolean; complete: boolean };
+
+export interface AppsView {
+  /** Triées par nom, sans casse ni accents. */
+  apps: AppRow[];
+  /** Faux si une source n'a pas pu être lue en entier. */
+  complete: boolean;
+  follow: FollowView;
+  /** Dit une seule fois : l'installeur de Windows est sorti, et l'app est restée. */
+  outcome?: 'kept';
+}
+
+export type UninstallRefusal =
+  | 'busy'
+  | 'vanished'
+  | 'unreadable'
+  | 'notOffered'
+  | 'broken'
+  | 'cancelled'
+  | 'failed';
+
+export type RemoveOutcome = 'removed' | 'alreadyGone' | 'refused' | 'failed';
+export type RemoveReason = 'inUse' | 'refused' | 'partial';
+
+export interface RemoveResult {
+  key: number;
+  outcome: RemoveOutcome;
+  reason?: RemoveReason;
+}
+
+/** Ce que rend `remove_leftovers` : la vue, ce qui est arrivé à chaque reste demandé, et la taille mise à la corbeille. */
+export interface RemoveLeftovers {
+  view: AppsView;
+  results: RemoveResult[];
+  bytes: number;
+}
+
 /** Ce que l'interface peut demander. Deux réalisations : Tauri, et la démo. */
 export interface Backend {
   overview(): Promise<Overview>;
@@ -501,6 +583,16 @@ export interface Backend {
   startupView(): Promise<StartupView>;
   /** `id` n'est que comparé aux entrées que le cœur connaît ; il rend la vue entière. */
   setStartupEntry(id: string, enabled: boolean): Promise<StartupView>;
+  /** Les apps installées, et où en est la désinstallation en cours ; relit aussi son avancement. */
+  appsView(): Promise<AppsView>;
+  /** `id` n'est que comparé aux apps que le cœur connaît : il relit lui-même la commande dans le registre. */
+  startUninstall(id: string): Promise<AppsView>;
+  /** Revient à la liste. Ne tue rien, ne touche à rien. */
+  stopUninstall(): Promise<AppsView>;
+  /** Cherche de nouveau les restes : les cases repartent vides. */
+  rescanLeftovers(): Promise<AppsView>;
+  /** Met des restes à la corbeille, jamais plus loin. `keys` : les clés que le cœur a données. */
+  removeLeftovers(keys: number[]): Promise<RemoveLeftovers>;
   openWindowsSettings(page: WindowsPage): Promise<void>;
   minimizeWindow(): Promise<void>;
   toggleMaximizeWindow(): Promise<void>;
