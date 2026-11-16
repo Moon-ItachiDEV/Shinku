@@ -2296,9 +2296,10 @@ dépendance). Il fabrique le fichier, par défaut dans
   garde vérifiait sous Linux (une dépendance de construction propre à Windows, sans
   texte, aurait passé la garde sous Linux et cassé l'installeur). Avec
   `normal,no-proc-macro` et la cible Windows, la liste se calcule pour cette cible
-  et ne devrait plus dépendre de la machine qui la calcule : **à constater** en
-  comparant, dans les journaux de la CI, l'empreinte écrite par la garde sous Linux
-  et celle de la fabrication sous Windows (voir plus bas). Les paquets du dépôt
+  et ne dépend plus de la machine qui la calcule. **Vu le 16 novembre 2026** dans
+  les journaux de la CI (commit `1e7f43d`) : la garde sous Linux et la fabrication
+  sous Windows écrivent la même empreinte, pour 138 paquets Rust (voir plus bas).
+  Les paquets du dépôt
   (sans `source`) sont écartés ; le dossier, l'expression de licence et l'adresse
   du dépôt de chacun viennent de `cargo metadata --format-version 1 --locked`.
   `--hors-ligne` (ou `SHINKU_CARGO_HORS_LIGNE=1`) ajoute `--offline` aux appels de
@@ -2329,8 +2330,9 @@ dépendance). Il fabrique le fichier, par défaut dans
   `--verifier`. L'étape « Licences des dépendances » du travail « Cœur et
   interface » de la CI lance `--verifier` (après `npm ci`, qui apporte
   `node_modules`) pour écrire cette ligne dans le journal ; `beforeBuildCommand`
-  l'écrit dans celui du travail Windows. Comparer les deux est le constat qui reste à
-  faire.
+  l'écrit dans celui du travail Windows. Les deux lignes doivent être égales :
+  elles l'étaient le 16 novembre 2026. Rien ne les compare tout seul : c'est à relire
+  dans les journaux quand le script ou la fabrication change.
 
 **La garde** : `node scripts/licences-tiers.mjs --verifier` n'écrit rien et sort
 en erreur, en nommant chaque paquet fautif, si une expression de licence n'est pas
@@ -2521,9 +2523,8 @@ retiré avec le dossier.
   `LICENCES-TIERS.txt`.
 - **Licences.** La liste des licences des dépendances est fabriquée et vérifiée
   (voir « Licences des dépendances »). Reste : choisir la licence de Shinku
-  (à la personne), comparer les deux empreintes de la liste dans les journaux de la
-  CI (voir « Licences des dépendances ») et décider de ce que disent les licences
-  de Microsoft de la section fixe.
+  (à la personne) et décider de ce que disent les licences de Microsoft de la
+  section fixe.
 - **Icône.** L'icône actuelle reprend le signe de l'interface
   (`scripts/icone.mjs`). Le logo définitif reste à choisir dans le canevas.
 - **Identifiant.** `fr.shinku.app` nomme le dossier du cache de WebView2 : le
