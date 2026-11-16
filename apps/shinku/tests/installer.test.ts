@@ -44,8 +44,8 @@ test("la configuration de l'installeur pointe sur des fichiers qui existent", ()
   assert.equal(nsis.headerImage, 'installeur/images/signe-100.bmp');
 });
 
-test("habillage.nsh et agent.nsh sont en ASCII : les textes n'y dépendent pas de l'option -INPUTCHARSET que Tauri passe à makensis", () => {
-  for (const name of ['habillage.nsh', 'agent.nsh']) {
+test("habillage.nsh, agent.nsh et helper.nsh sont en ASCII : les textes n'y dépendent pas de l'option -INPUTCHARSET que Tauri passe à makensis", () => {
+  for (const name of ['habillage.nsh', 'agent.nsh', 'helper.nsh']) {
     const bytes = readFileSync(new URL(name, folder));
     const outside = bytes.findIndex((byte) => byte > 0x7f);
     assert.equal(outside, -1, `${name} : octet non ASCII à la position ${outside} (les textes vont dans textes.nsh)`);
@@ -99,6 +99,31 @@ test("les quatre hooks appellent aussi ceux de l'assistant élevé, juste après
   assert.match(helper, /^\s*File "\$\{SHINKU_HELPER_SOURCE\}"$/m);
   assert.equal(helper.match(/^\s*Delete "\$INSTDIR\\shinku-helper\.exe"$/gm)?.length, 2);
   assert.doesNotMatch(helper, /\/REBOOTOK/i);
+});
+
+/** Les lignes de code (sans commentaire ni blanc) d'une macro de helper.nsh. */
+function helperLines(name: string): string[] {
+  const body = new RegExp(`^!macro ${name}\\n([\\s\\S]*?)^!macroend`, 'm').exec(read('helper.nsh'))?.[1];
+  assert.ok(body !== undefined, `helper.nsh ne définit pas ${name}`);
+  return body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith(';'));
+}
+
+test("helper.nsh inclut LogicLib lui-même : il utilise \${If} sans dépendre de l'ordre d'inclusion", () => {
+  assert.match(read('helper.nsh'), /^!include LogicLib\.nsh$/m);
+});
+
+test("l'assistant élevé est arrêté avant d'être copié ou supprimé, et le dossier ne part pas en mise à jour", () => {
+  const stop = '!insertmacro ShinkuHelperStop';
+  const remove = 'Delete "$INSTDIR\\shinku-helper.exe"';
+  assert.deepEqual(helperLines('ShinkuHelperPreInstall'), [stop]);
+  // Le fichier de l'assistant en marche est verrouillé : l'arrêt vient avant la copie et avant chaque suppression.
+  assert.deepEqual(helperLines('ShinkuHelperPostInstall'), [stop, 'SetOutPath "$INSTDIR"', 'File "${SHINKU_HELPER_SOURCE}"']);
+  assert.deepEqual(helperLines('ShinkuHelperPreUninstall'), [stop, remove]);
+  // Le dossier n'est retiré (hors mise à jour) qu'une fois l'assistant arrêté et son fichier supprimé.
+  assert.deepEqual(helperLines('ShinkuHelperPostUninstall'), [stop, remove, '${If} $UpdateMode <> 1', 'RMDir "$INSTDIR"', '${EndIf}']);
 });
 
 /** Un fichier .nsh sans ses commentaires (lignes qui commencent par « ; »). */

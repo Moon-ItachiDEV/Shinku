@@ -38,6 +38,9 @@
 ; La variable $UpdateMode est celle du modele NSIS de Tauri : 1 quand le
 ; desinstalleur est lance avec /UPDATE (mise a jour).
 
+; ${If} vient de LogicLib : ce fichier ne depend pas de l'ordre d'inclusion.
+!include LogicLib.nsh
+
 !ifndef SHINKU_HELPER_SOURCE
   !define SHINKU_HELPER_SOURCE "${__FILEDIR__}\..\..\..\..\target\release\shinku-helper.exe"
 !endif

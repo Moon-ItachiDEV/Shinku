@@ -9,12 +9,14 @@
 #
 #   - la machine et l'exécutable : droits (EnableLUA, ConsentPromptBehavior*,
 #     icacls), manifeste `requireAdministrator`, sous-système graphique ;
-#   - le drapeau de chargement des bibliothèques du binaire installé
-#     (DependentLoadFlags = 0x0800, lu dans le fichier PE) ;
+#   - le champ DependentLoadFlags du binaire installé : 0x0800
+#     (LOAD_LIBRARY_SEARCH_SYSTEM32), lu dans sa table Load Config. Le script lit
+#     ce champ du fichier PE ; il ne charge aucune bibliothèque pour le montrer ;
 #   - demandes refusées (code 2, aucune fenêtre), nom inconnu ou autre vue
 #     (code 4), copie hors de Program Files (code 6) ;
 #   - un refus d'emplacement causé par une entrée de droits : une copie dans un
-#     dossier créé sous Program Files est acceptée (code 4), refusée dès que
+#     dossier créé sous Program Files, propriétaire posé et relu (Administrateurs,
+#     S-1-5-32-544), est acceptée (code 4), refusée dès que
 #     Utilisateurs peut écrire dans ce dossier (code 6), acceptée de nouveau
 #     quand l'entrée est retirée (code 4) ;
 #   - la boîte, trouvée par le numéro du processus (classe #32770), son texte
@@ -720,7 +722,7 @@ function Assert-LoadFlags([byte[]]$Bytes, [int]$PeAt) {
     if ($structureSize -lt 0x50) { Fail ("la table Load Config de l'assistant fait {0} octets : elle n'atteint pas DependentLoadFlags (décalage 0x4E)" -f $structureSize) }
     $flags = [BitConverter]::ToUInt16($Bytes, $loadAt + 0x4E)
     if ($flags -ne 0x0800) { Fail ("DependentLoadFlags de l'assistant vaut 0x{0:X4} au lieu de 0x0800" -f $flags) }
-    Proof "l'assistant installé porte DependentLoadFlags = 0x0800 : ses bibliothèques liées ne se chargent que depuis System32"
+    Proof "l'assistant installé porte DependentLoadFlags = 0x0800 dans sa table Load Config (drapeau LOAD_LIBRARY_SEARCH_SYSTEM32 pour ses bibliothèques liées)"
 
     # Pour information, pas une preuve : les bibliothèques de sa table d'importation.
     try {
@@ -849,6 +851,15 @@ try {
     New-Item -ItemType Directory -Path $RightsDir | Out-Null
     $rightsCopy = Join-Path $RightsDir 'shinku-helper.exe'
     Copy-Item -LiteralPath $Assistant -Destination $rightsCopy -Force
+    # Le propriétaire est posé, puis relu par son SID (pas par son nom traduit) :
+    # l'essai ne dépend plus du réglage « propriétaire par défaut » de la machine.
+    & icacls.exe $RightsDir /setowner '*S-1-5-32-544' /T | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "icacls /setowner sur $RightsDir rend le code $LASTEXITCODE" }
+    foreach ($path in @($RightsDir, $rightsCopy)) {
+        $ownerSid = (Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        if ($ownerSid -ne 'S-1-5-32-544') { Fail "le propriétaire de $path est $ownerSid au lieu de S-1-5-32-544 (Administrateurs) : l'essai des droits ne prouverait rien" }
+    }
+    Proof "le dossier d'essai $RightsDir et la copie de l'assistant ont pour propriétaire S-1-5-32-544 (Administrateurs)"
     $rightsBefore = @(Get-AclLines $RightsDir)
     Say "  dossier : $(Get-RightsText $RightsDir)"
     Say "  fichier : $(Get-RightsText $rightsCopy)"
