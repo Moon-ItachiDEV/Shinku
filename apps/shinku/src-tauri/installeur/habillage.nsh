@@ -128,11 +128,15 @@
 ; jeu (shinku-agent.exe, que Tauri n'embarque pas tout seul) est dans
 ; agent.nsh, sous forme de macros ShinkuAgent* ; ce qui concerne l'assistant
 ; eleve du Demarrage (shinku-helper.exe) est dans helper.nsh, sous forme de
-; macros ShinkuHelper* ; chaque hook les appelle, puis fait ce qui est propre a
-; l'habillage. L'agent passe toujours en premier : il lit encore ses fichiers,
+; macros ShinkuHelper* ; ce qui concerne "Supprimer aussi mes reglages"
+; (shinku.exe --oublier, lance avec les droits ordinaires) est dans oublier.nsh,
+; sous forme de macros ShinkuOublier* ; chaque hook les appelle, puis fait ce qui
+; est propre a l'habillage. L'agent passe toujours en premier (sauf devant la
+; fermeture de la fenetre, a la desinstallation) : il lit encore ses fichiers,
 ; que la suite peut supprimer.
 !include "${SHINKU_INSTALLEUR}\agent.nsh"
 !include "${SHINKU_INSTALLEUR}\helper.nsh"
+!include "${SHINKU_INSTALLEUR}\oublier.nsh"
 
 ; Avant toute copie : l'ancien agent, s'il tourne, verrouille son fichier.
 !macro NSIS_HOOK_PREINSTALL
@@ -154,70 +158,34 @@
   SetAutoClose true
 !macroend
 
-; Avant de retirer quoi que ce soit : l'agent remet tout en place et son
-; fichier part.
+; Avant de retirer quoi que ce soit, dans cet ordre :
+;   1. la fenetre de Shinku est fermee, par la macro du modele de Tauri
+;      (CheckIfAppIsRunning : la meme question "Shinku est ouvert" que la
+;      personne aurait vue un instant plus tard, et que le modele rejoue ensuite
+;      sans plus rien trouver). Cela ferme aussi le trou d'une fenetre qui
+;      relancerait l'agent entre les deux crochets, et fait que `--oublier` ne
+;      se heurte pas a une fenetre qui reecrit ses reglages ;
+;   2. l'agent remet tout en place et son fichier part (il lit encore ses
+;      fichiers) ;
+;   3. l'assistant eleve est arrete et son fichier part ;
+;   4. si la case "Supprimer aussi mes reglages" est cochee (hors mise a jour) :
+;      `shinku.exe --oublier` est lance avec les droits ordinaires de la
+;      personne, et le desinstalleur attend qu'il ait fini (oublier.nsh).
+; Le desinstalleur n'efface plus aucun fichier dans un profil : ni ici, ni dans
+; le bloc "Delete app data" du modele (ses deux "RmDir /r" sont rendus sans
+; effet, la variable de Tauri etant remise a 0 par oublier.nsh).
 !macro NSIS_HOOK_PREUNINSTALL
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   !insertmacro ShinkuAgentPreUninstall
   !insertmacro ShinkuHelperPreUninstall
+  !insertmacro ShinkuOublierPreUninstall
 !macroend
 
-; Shinku range ses reglages dans %APPDATA%\Shinku (crates/shinku-core/src/settings.rs,
-; APP_DIR) et les journaux du mode jeu et du Demarrage dans
-; %LOCALAPPDATA%\Shinku (game/store.rs, startup/store.rs), pas sous
-; l'identifiant du paquet : la case "Supprimer aussi mes reglages" de Tauri ne
-; les supprime donc pas. Ce hook, place par le modele a la fin de la section
-; Uninstall, le fait a sa place : seulement si la case est cochee et hors mise
-; a jour. $APPDATA et $LOCALAPPDATA sont ceux de l'utilisateur
-; (SetShellVarContext current, comme le fait Tauri pour ses propres dossiers)
-; et non ceux de "tous les utilisateurs", que l'installation pour toute la
-; machine selectionne par defaut. L'agent passe avant ce bloc : il lit encore
-; ses fichiers pour tout remettre en place.
-;
-; Pas de "RMDir /r" : il suit les jonctions, et le desinstalleur tourne avec
-; les droits d'administrateur sur des dossiers que n'importe quel programme de
-; l'utilisateur peut modifier. On ne touche pas a un dossier s'il est un point
-; d'analyse (jonction ou lien), on supprime un par un les fichiers que Shinku
-; y ecrit, puis "RMDir" sans /r, qui ne retire le dossier que s'il est vide.
-; Tout nouveau fichier ecrit par Shinku dans ces dossiers doit etre ajoute a
-; ces listes (aujourd'hui : settings.rs, clean/journal.rs, game/store.rs et
-; startup/store.rs, avec leurs fichiers temporaires ".tmp" de write_replacing).
-!macro ShinkuDeleteSettings
-  SetShellVarContext current
-  ${If} $APPDATA != ""
-    ; -1 : le dossier n'existe pas. Bit 0x400 : point d'analyse.
-    System::Call 'kernel32::GetFileAttributesW(w "$APPDATA\Shinku") i .r0'
-    ${If} $0 <> -1
-      IntOp $0 $0 & 0x400
-      ${If} $0 = 0
-        Delete "$APPDATA\Shinku\settings.json"
-        Delete "$APPDATA\Shinku\settings.illisible.json"
-        Delete "$APPDATA\Shinku\journal.json"
-        Delete "$APPDATA\Shinku\settings.json.tmp"
-        Delete "$APPDATA\Shinku\journal.json.tmp"
-        RMDir "$APPDATA\Shinku"
-      ${EndIf}
-    ${EndIf}
-  ${EndIf}
-  ${If} $LOCALAPPDATA != ""
-    System::Call 'kernel32::GetFileAttributesW(w "$LOCALAPPDATA\Shinku") i .r0'
-    ${If} $0 <> -1
-      IntOp $0 $0 & 0x400
-      ${If} $0 = 0
-        Delete "$LOCALAPPDATA\Shinku\game.json"
-        Delete "$LOCALAPPDATA\Shinku\game.json.tmp"
-        Delete "$LOCALAPPDATA\Shinku\startup.json"
-        Delete "$LOCALAPPDATA\Shinku\startup.json.tmp"
-        RMDir "$LOCALAPPDATA\Shinku"
-      ${EndIf}
-    ${EndIf}
-  ${EndIf}
-!macroend
-
+; Apres le bloc "Delete app data" du modele, devenu sans effet : le menage du
+; registre que ce bloc faisait, refait par oublier.nsh quand la case etait
+; cochee (hors mise a jour).
 !macro NSIS_HOOK_POSTUNINSTALL
   !insertmacro ShinkuAgentPostUninstall
   !insertmacro ShinkuHelperPostUninstall
-  ${If} $DeleteAppDataCheckboxState = 1
-  ${AndIf} $UpdateMode <> 1
-    !insertmacro ShinkuDeleteSettings
-  ${EndIf}
+  !insertmacro ShinkuOublierPostUninstall
 !macroend
