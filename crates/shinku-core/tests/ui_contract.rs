@@ -42,6 +42,10 @@ use shinku_core::hash::MemoryCache;
 use shinku_core::model::{Lot, ModuleId, RiskLevel, Timestamp, Trigger};
 use shinku_core::platform::agent::{AgentState, OpenProgram, WindowsPage};
 use shinku_core::platform::{Environment, KnownFolder, RecycleBin, StaticEnvironment, Volume};
+use shinku_core::privacy::fake::FakePrivacyHost;
+use shinku_core::privacy::host::{ClipboardClear, CurrentClear, HistoryClear};
+use shinku_core::privacy::rules::{Browser, TypedKey};
+use shinku_core::privacy::view::{GroupKind, PrivacyRefusal, TraceKind, TraceOutcome, TraceState};
 use shinku_core::rules::JunkCategory;
 use shinku_core::scan::report::{CategoryState, DuplicatesState, KeepChoice};
 use shinku_core::scan::{Phase, ScanOptions};
@@ -159,6 +163,43 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     fs::write(profile.join("Documents").join("photo.jpg"), [3u8; 8000]).expect("photo");
     fs::write(profile.join("Pictures").join("photo.jpg"), [3u8; 8000]).expect("photo");
     fs::write(profile.join("Videos").join("film.mkv"), [9u8; 70_000]).expect("vidéo");
+    // La confidentialité : Chrome (deux profils, dont un nommé par `Local State`) et
+    // Edge, avec des historiques à effacer et ce qui ne doit jamais l'être.
+    let chrome_data = local.join("Google").join("Chrome").join("User Data");
+    let edge_data = local.join("Microsoft").join("Edge").join("User Data");
+    for folder in [chrome_data.join("Profile 2"), edge_data.join("Default")] {
+        fs::create_dir_all(folder).expect("profil du faux navigateur");
+    }
+    fs::write(
+        chrome_data.join("Local State"),
+        r#"{"profile":{"info_cache":{"Default":{"name":"Léa"},"Profile 2":{"name":"Travail"}}}}"#,
+    )
+    .expect("Local State");
+    for (folder, file, size) in [
+        (chrome_data.join("Default"), "History", 40_000usize),
+        (chrome_data.join("Default"), "History-wal", 3_000),
+        (chrome_data.join("Default"), "Favicons", 12_000),
+        (chrome_data.join("Default"), "Bookmarks", 500),
+        (chrome_data.join("Profile 2"), "History", 8_000),
+        (edge_data.join("Default"), "History", 20_000),
+    ] {
+        fs::write(folder.join(file), vec![1u8; size]).expect("fichier du faux profil");
+    }
+
+    let privacy_host = Arc::new(FakePrivacyHost::new(Some(local.clone())));
+    privacy_host.set_firefox(true);
+    privacy_host.set_recent(12, shinku_core::privacy::fake::RecentClear::All);
+    privacy_host.set_values(TypedKey::RunMru, &["a", "b", "MRUList"]);
+    privacy_host.set_values(TypedKey::TypedPaths, &["url1"]);
+    privacy_host.set_clipboard(
+        true,
+        ClipboardClear { history: HistoryClear::Cleared, current: CurrentClear::Emptied },
+    );
+    // Brave aussi, mais ouvert : sa ligne est inerte (`running`).
+    let brave_data = local.join("BraveSoftware").join("Brave-Browser").join("User Data");
+    fs::create_dir_all(brave_data.join("Default")).expect("profil de Brave");
+    fs::write(brave_data.join("Default").join("History"), [1u8; 100]).expect("historique de Brave");
+    privacy_host.set_processes(Some(&["brave.exe"]));
 
     let month = Duration::from_secs(30 * 24 * 3600);
     let environment = StaticEnvironment::new()
@@ -305,7 +346,8 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             Some(StartupStore::at(startup_store.path())),
             Some(own_command.to_owned()),
         )
-        .with_apps_parts(apps_host.clone());
+        .with_apps_parts(apps_host.clone())
+        .with_privacy_parts(privacy_host.clone());
 
     let mut samples: BTreeMap<&str, Value> = BTreeMap::new();
     samples.insert("sessionView.idle", to_json(&backend.view()));
@@ -366,6 +408,46 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     apps_host.end_process();
     let _ = backend.apps_view();
     samples.insert("appsView.kept", to_json(&backend.apps_view()));
+
+    // La confidentialité : la vue (un profil nommé, un profil sans nom, un navigateur
+    // ouvert, Windows), puis l'effacement de l'historique d'un profil, des récents et
+    // de ce qui a été tapé. Les noms et les poids viennent des faux fichiers.
+    let privacy = backend.privacy_view();
+    assert!(privacy.firefox && privacy.edge_imports_chrome);
+    let kinds: Vec<(Option<Browser>, Option<u32>, bool)> =
+        privacy.groups.iter().map(|group| (group.app, group.slot, group.running)).collect();
+    assert_eq!(
+        kinds,
+        [
+            (Some(Browser::Chrome), Some(0), false),
+            (Some(Browser::Chrome), Some(2), false),
+            (Some(Browser::Edge), Some(0), false),
+            (Some(Browser::Brave), Some(0), true),
+            (None, None, false),
+        ]
+    );
+    assert_eq!(privacy.groups[0].profile.as_deref(), Some("Léa"));
+    assert_eq!(privacy.groups[2].profile, None);
+    assert!(privacy.groups.iter().all(|group| {
+        group.items.iter().all(|item| (item.kind == TraceKind::History) == (item.bytes.is_some()))
+    }));
+    assert_eq!(privacy.groups[0].items[0].bytes, Some(55_000));
+    assert_eq!(privacy.groups[4].items.len(), 3);
+    assert!(privacy.groups[4].items.iter().all(|item| item.state == TraceState::Present));
+    samples.insert("privacyView", to_json(&privacy));
+    let ids: Vec<String> = [&privacy.groups[0], &privacy.groups[4]]
+        .iter()
+        .flat_map(|group| group.items.iter().map(|item| item.id.to_string()))
+        .collect();
+    let erased = backend.erase_traces(&ids, 0).expect("traces effacées");
+    let outcomes: Vec<TraceOutcome> = erased.results.iter().map(|result| result.outcome).collect();
+    assert_eq!(outcomes, [TraceOutcome::Erased; 4]);
+    assert_eq!(erased.view.groups[0].items[0].state, TraceState::Empty);
+    samples.insert("eraseTraces", to_json(&erased));
+    samples.insert(
+        "error.privacyRefused",
+        to_json(&BackendError::PrivacyRefused { reason: PrivacyRefusal::Busy }),
+    );
 
     // Le mode jeu : des listes pleines, pour que ni les réglages ni la page
     // n'aient de liste vide dans leurs échantillons.
@@ -570,7 +652,22 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
     );
     enums.insert("powerSupport", variants!(PowerSupport: Available, Unavailable, Unsuited));
     enums.insert("gameSource", variants!(Source: Added, Library));
-    enums.insert("windowsPage", variants!(WindowsPage: GameMode, Power, StartupApps, Apps));
+    enums.insert(
+        "windowsPage",
+        variants!(
+            WindowsPage: GameMode, Power, StartupApps, Apps, ActivityHistory, SearchPermissions,
+            Diagnostics
+        ),
+    );
+    enums.insert("traceKind", variants!(TraceKind: History, Recent, Typed, Clipboard));
+    enums.insert(
+        "traceOutcome",
+        variants!(TraceOutcome: Erased, Nothing, InUse, Changed, Partial, Failed),
+    );
+    enums.insert("traceState", variants!(TraceState: Present, Empty, Unreadable));
+    enums.insert("browserApp", variants!(Browser: Chrome, Edge, Brave, Vivaldi));
+    enums.insert("privacyGroupKind", variants!(GroupKind: Browser, Windows));
+    enums.insert("privacyRefusal", variants!(PrivacyRefusal: Busy, TooMany));
     enums.insert("appsScope", variants!(AppsScope: Account, Machine));
     enums.insert("appsKind", variants!(Kind: Plain, Runtime, Driver));
     enums.insert("appsRemoval", variants!(Removal: Offered, Refused, Own, Needed));
@@ -650,7 +747,8 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
             | BackendError::CleanNotStarted { .. }
             | BackendError::GameRefused { .. }
             | BackendError::StartupRefused { .. }
-            | BackendError::UninstallRefused { .. } => {}
+            | BackendError::UninstallRefused { .. }
+            | BackendError::PrivacyRefused { .. } => {}
         }
     }
     fn every_issue_has_a_sample(issue: LoadIssue) {

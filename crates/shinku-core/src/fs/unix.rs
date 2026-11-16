@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf, PrefixComponent};
 
 use super::{
     EntryFlags, EntryKind, EntryMeta, Expected, Fingerprint, Identity, OpenError, ReadDirError,
-    RemoveError,
+    RemovalFacts, RemoveError,
 };
 use crate::model::{FileId, Timestamp};
 
@@ -167,6 +167,15 @@ impl Removal {
             return Err(RemoveError::Changed);
         }
         Ok(Self { path: path.to_path_buf(), dir: kind == EntryKind::Dir })
+    }
+
+    pub(super) fn facts(&self) -> Result<RemovalFacts, RemoveError> {
+        let metadata = fs::symlink_metadata(&self.path).map_err(remove_error)?;
+        Ok(RemovalFacts {
+            links: u32::try_from(metadata.nlink()).unwrap_or(u32::MAX),
+            online_only: false,
+            regular: metadata.file_type().is_file(),
+        })
     }
 
     pub(super) fn modified(&self) -> Result<Timestamp, RemoveError> {

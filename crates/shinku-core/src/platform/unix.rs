@@ -12,6 +12,7 @@ use crate::apps::host::{AppsHost, InertAppsHost};
 use crate::fs::to_internal_path;
 use crate::game::host::{GameHost, InertHost};
 use crate::model::Timestamp;
+use crate::privacy::host::{InertPrivacyHost, PrivacyHost};
 use crate::startup::host::{InertStartupHost, StartupHost};
 use crate::startup::launcher::ElevatedHelper;
 
@@ -101,6 +102,11 @@ pub(super) fn game_host() -> Arc<dyn GameHost> {
 /// Hors de Windows, le module « Démarrage » ne voit rien : aucune entrée.
 pub(super) fn startup_host() -> Arc<dyn StartupHost> {
     Arc::new(InertStartupHost)
+}
+
+/// Hors de Windows, le module « Confidentialité » ne voit rien et n'efface rien.
+pub(super) fn privacy_host() -> Arc<dyn PrivacyHost> {
+    Arc::new(InertPrivacyHost)
 }
 
 /// Hors de Windows, l'assistant n'a pas de machine.

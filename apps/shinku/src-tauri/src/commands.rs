@@ -22,6 +22,7 @@ use shinku_core::backend::{Backend, BackendError, DuplicatesPage, LargeFilesPage
 use shinku_core::clean::{CleanPreview, CleanRequest};
 use shinku_core::game::view::{GameOption, GameStatus, GameView, OpenApp};
 use shinku_core::platform::agent::WindowsPage;
+use shinku_core::privacy::view::{ErasedTraces, PrivacyView};
 use shinku_core::scan::report::{JunkReport, KeepChoice};
 use shinku_core::session::SessionView;
 use shinku_core::settings::{Settings, Theme};
@@ -309,7 +310,27 @@ pub fn remove_leftovers(
     backend.remove_leftovers(&keys)
 }
 
-/// Ouvre l'une des quatre pages des réglages de Windows que la page propose.
+/// Tout ce que la page « Confidentialité » affiche : les traces de l'activité de la
+/// personne, par navigateur et par profil, puis celles de Windows. Jamais leur contenu.
+#[tauri::command(async)]
+pub fn privacy_view(backend: State<'_, Backend>) -> PrivacyView {
+    backend.privacy_view()
+}
+
+/// Efface les traces de ces identifiants (ceux de [`privacy_view`]), et rien
+/// d'autre : aucun chemin, aucun nom. La fenêtre sert de propriétaire au
+/// presse-papiers (Windows exige de le vider depuis une fenêtre, pendant le clic :
+/// la commande est appelée par le clic, la fenêtre est au premier plan).
+#[tauri::command(async)]
+pub fn erase_traces(
+    backend: State<'_, Backend>,
+    window: WebviewWindow,
+    ids: Vec<String>,
+) -> Result<ErasedTraces, BackendError> {
+    backend.erase_traces(&ids, owner_of(&window))
+}
+
+/// Ouvre l'une des sept pages des réglages de Windows que la page propose.
 #[tauri::command(async)]
 pub fn open_windows_settings(backend: State<'_, Backend>, page: WindowsPage) {
     backend.open_windows_settings(page);

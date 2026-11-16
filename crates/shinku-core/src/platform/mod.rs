@@ -20,6 +20,7 @@ use serde::Serialize;
 use crate::apps::host::AppsHost;
 use crate::game::host::GameHost;
 use crate::model::Timestamp;
+use crate::privacy::host::PrivacyHost;
 use crate::startup::host::StartupHost;
 use crate::startup::launcher::ElevatedHelper;
 
@@ -282,6 +283,12 @@ pub fn game_host() -> Arc<dyn GameHost> {
 /// ne voit rien ailleurs.
 pub fn startup_host() -> Arc<dyn StartupHost> {
     imp::startup_host()
+}
+
+/// La machine du module « Confidentialité » : la vraie sous Windows, une machine
+/// qui ne voit rien et n'efface rien ailleurs.
+pub fn privacy_host() -> Arc<dyn PrivacyHost> {
+    imp::privacy_host()
 }
 
 /// L'assistant élevé, vu de `shinku.exe` : le vrai lanceur sous Windows, un

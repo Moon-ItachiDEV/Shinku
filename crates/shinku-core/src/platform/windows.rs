@@ -11,6 +11,7 @@ mod apps;
 mod game;
 mod helper_host;
 mod launcher;
+mod privacy;
 mod security;
 mod shell;
 mod startup;
@@ -62,6 +63,7 @@ use crate::fs::{fold_path, to_internal_path};
 use crate::game::host::GameHost;
 use crate::helper::startup::MachineStartup;
 use crate::model::Timestamp;
+use crate::privacy::host::PrivacyHost;
 use crate::startup::host::StartupHost;
 use crate::startup::launcher::ElevatedHelper;
 
@@ -346,6 +348,10 @@ pub(super) fn apps_host() -> Arc<dyn AppsHost> {
 }
 
 /// Le module « Démarrage » sur cette machine.
+pub(super) fn privacy_host() -> Arc<dyn PrivacyHost> {
+    Arc::new(privacy::SystemPrivacyHost::new())
+}
+
 pub(super) fn startup_host() -> Arc<dyn StartupHost> {
     Arc::new(startup::SystemStartupHost::new())
 }

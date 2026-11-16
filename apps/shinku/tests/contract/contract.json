@@ -34,11 +34,18 @@
       "cleanRunning",
       "folderRefused",
       "gameRefused",
+      "privacyRefused",
       "scanNotStarted",
       "settingsNotSaved",
       "settingsUnchecked",
       "startupRefused",
       "uninstallRefused"
+    ],
+    "browserApp": [
+      "chrome",
+      "edge",
+      "brave",
+      "vivaldi"
     ],
     "categoryState": [
       "ready",
@@ -156,6 +163,14 @@
       "unavailable",
       "unsuited"
     ],
+    "privacyGroupKind": [
+      "browser",
+      "windows"
+    ],
+    "privacyRefusal": [
+      "busy",
+      "tooMany"
+    ],
     "removeOutcome": [
       "removed",
       "alreadyGone",
@@ -243,6 +258,25 @@
       "light",
       "dark"
     ],
+    "traceKind": [
+      "history",
+      "recent",
+      "typed",
+      "clipboard"
+    ],
+    "traceOutcome": [
+      "erased",
+      "nothing",
+      "inUse",
+      "changed",
+      "partial",
+      "failed"
+    ],
+    "traceState": [
+      "present",
+      "empty",
+      "unreadable"
+    ],
     "uninstallRefusal": [
       "busy",
       "vanished",
@@ -256,7 +290,10 @@
       "gameMode",
       "power",
       "startupApps",
-      "apps"
+      "apps",
+      "activityHistory",
+      "searchPermissions",
+      "diagnostics"
     ]
   },
   "shapes": {
@@ -486,6 +523,37 @@
       "skippedFiles": "number",
       "state": "string"
     },
+    "eraseTraces": {
+      "results": [
+        {
+          "id": "string",
+          "outcome": "string"
+        }
+      ],
+      "view": {
+        "edgeImportsChrome": "boolean",
+        "firefox": "boolean",
+        "groups": [
+          {
+            "app": "string",
+            "items": [
+              {
+                "bytes": "number",
+                "count": "number",
+                "id": "string",
+                "kind": "string",
+                "state": "string"
+              }
+            ],
+            "key": "string",
+            "kind": "string",
+            "profile": "string",
+            "running": "boolean",
+            "slot": "number"
+          }
+        ]
+      }
+    },
     "error.cleanNotStarted": {
       "kind": "string",
       "reason": "string"
@@ -502,6 +570,10 @@
       "reason": "string"
     },
     "error.gameRefused": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "error.privacyRefused": {
       "kind": "string",
       "reason": "string"
     },
@@ -732,6 +804,29 @@
           "seekPenalty": "boolean",
           "system": "boolean",
           "total": "number"
+        }
+      ]
+    },
+    "privacyView": {
+      "edgeImportsChrome": "boolean",
+      "firefox": "boolean",
+      "groups": [
+        {
+          "app": "string",
+          "items": [
+            {
+              "bytes": "number",
+              "count": "number",
+              "id": "string",
+              "kind": "string",
+              "state": "string"
+            }
+          ],
+          "key": "string",
+          "kind": "string",
+          "profile": "string",
+          "running": "boolean",
+          "slot": "number"
         }
       ]
     },

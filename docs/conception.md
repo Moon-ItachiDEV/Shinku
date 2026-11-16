@@ -89,7 +89,7 @@ un message.
 
 ## Entre la page et le cœur : le guichet
 
-La page ne parle qu'à `shinku_core::backend::Backend`, au travers de trente et une
+La page ne parle qu'à `shinku_core::backend::Backend`, au travers de trente-trois
 commandes Tauri (`apps/shinku/src-tauri/src/commands.rs`). Chaque commande est
 une demande précise et bornée : lancer une analyse, lire une page de résultats,
 changer un réglage, faire le vide.
@@ -108,16 +108,17 @@ changer un réglage, faire le vide.
   lui-même ne reçoit que trois cases cochées et la date de l'analyse
   affichée. Le module Démarrage ne reçoit qu'un **identifiant** que le cœur a
   donné (deux lettres de place, un tiret et seize chiffres hexadécimaux) et une case : ni chemin, ni nom de valeur
-  de registre, ni commande ne viennent de la page.
+  de registre, ni commande ne viennent de la page. Le module Confidentialité ne reçoit, lui aussi, que des **identifiants** fabriqués par le cœur
+  (voir « Confidentialité »).
 - Les pages de résultats sont plafonnées côté cœur (`PAGE_LIMIT`), quelle que
   soit la taille demandée.
 
 ### Ce que la page a le droit de faire
 
 - **Permissions Tauri au plus juste.** `capabilities/default.json` donne à la
-  fenêtre ses trente et une commandes et les cinq gestes de sa barre de titre. Rien
+  fenêtre ses trente-trois commandes et les cinq gestes de sa barre de titre. Rien
   d'autre : ni fichiers, ni réseau, ni événements, et aucun programme que la page
-  nomme : seuls sont lancés l'agent, quatre pages des réglages de Windows, et,
+  nomme : seuls sont lancés l'agent, sept pages des réglages de Windows, et,
   après confirmation, le désinstalleur d'une app que le cœur relit dans le
   registre.
   Les commandes de l'application passent elles aussi par les permissions
@@ -201,15 +202,20 @@ Produire `types.ts` automatiquement reste possible plus tard.
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | Une valeur de douze octets par entrée de démarrage du compte que la personne coupe ou remet (voir « Démarrage »). Le même réglage que le Gestionnaire des tâches. Écrite par `shinku.exe`. |
 | `HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\{Run, Run32, StartupFolder}` | La même valeur de douze octets pour une entrée du PC. Écrite **seulement par `shinku-helper.exe`**, élevé, après l'accord de Windows, quand il en demande un, et un « OK » dans la boîte de l'assistant (vue 64 bits). |
 | `%LOCALAPPDATA%\fr.shinku.app\` | Le cache de WebView2 pour la fenêtre. |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\{RunMRU, TypedPaths, WordWheelQuery}` | Les **valeurs** de ces trois clés sont **supprimées** quand la personne coche « Ce que tu as tapé dans Windows » (voir « Confidentialité »). Les clés restent. C'est la première fois que Shinku supprime dans le registre. |
+| `%LOCALAPPDATA%\{Google\Chrome, Microsoft\Edge, BraveSoftware\Brave-Browser, Vivaldi}\User Data\{Default, Profile N}\` | Les fichiers de l'**historique** d'un profil (liste fermée, voir « Confidentialité ») sont supprimés, directement, quand la personne le coche. Rien d'autre du profil. |
+| Fichiers récents de Windows, presse-papiers | Vidés par Windows (`SHAddToRecentDocs`, `Clipboard.ClearHistory`) quand la personne le coche. |
 
 Rien d'autre, et rien hors du PC. `shinku.exe` n'écrit jamais sous `HKLM` : la
 seule écriture de ce genre est la valeur d'approbation ci-dessus, faite par
-l'assistant élevé. L'analyse ne modifie aucun fichier. Seul le
-grand vide supprime, et seulement ce que décrit la section qui lui est
-consacrée. Le mode jeu change des réglages en cours de partie (priorité de
+l'assistant élevé. L'analyse ne modifie aucun fichier. Le
+grand vide supprime ce que décrit la section qui lui est consacrée ; la
+Confidentialité supprime des traces d'une liste fermée que la personne a
+cochées (fichiers d'historique, valeurs de trois clés de `HKCU`) ; la
+Désinstallation n'envoie à la corbeille que des restes cochés. Le mode jeu change des réglages en cours de partie (priorité de
 processus, mode d'alimentation), jamais un fichier de la personne ; il remet
 tout en place. Le module Démarrage ne change que des approbations de démarrage
-(du compte, ou du PC par l'assistant), et ne supprime aucune entrée.
+(du compte, ou du PC par l'assistant), et ne supprime aucune entrée de démarrage.
 
 Un fichier de réglages illisible n'est jamais écrasé en silence : Shinku repart
 des valeurs par défaut, le dit, et bloque l'analyse tant que l'utilisateur n'a
@@ -337,8 +343,8 @@ jusqu'à la prochaine analyse.
 
 Côté page, « Faire le vide » ouvre d'abord une confirmation, qui liste
 exactement la demande qui sera envoyée. Une case dont la catégorie n'a rien à
-nettoyer ne compte pas. Seul le grand vide supprime pour l'instant : les
-boutons des modules restent inactifs.
+nettoyer ne compte pas. Le grand vide ne supprime que ce qu'il décrit ; la
+Confidentialité supprime ses propres traces, cochées une à une.
 
 ## Le mode jeu
 
@@ -677,7 +683,7 @@ Les règles du produit :
 - **aucune phrase ne promet plus que ce que Shinku lit**. Shinku ne voit ni les
   apps du Microsoft Store, ni les tâches planifiées, ni les services : on dit
   « apps inscrites au démarrage », jamais « rien ne se lance » ni « plus rien » ;
-- Shinku ne supprime aucune entrée : il ne fait que l'approuver ou la
+- Shinku ne supprime aucune entrée de démarrage : il ne fait que l'approuver ou la
   désapprouver, là où Windows le fait ;
 - `shinku.exe` n'écrit rien sous `HKLM` ; le PC se règle par l'assistant (voir « Régler une entrée du PC »).
 
@@ -1331,6 +1337,117 @@ corbeille trop petite, « disparu sans que la corbeille ait reçu quoi que ce so
   essais, pas d'une documentation. `ShellExecuteExW` et sa fenêtre d'élévation, et les
   scripts PowerShell ne tournent que sur un vrai Windows (intégration continue,
   `scripts/essai-desinstallation.ps1`).
+
+## Confidentialité
+
+Le module efface des **traces de l'activité de la personne sur ce PC, dans son
+compte**, par catégories. Rien n'est coché d'avance, rien n'est élevé, **aucun
+journal n'est écrit**. Shinku ne montre jamais le **contenu** d'une trace (ni
+adresse, ni nom de fichier) : il dit qu'elle existe, son poids ou son nombre
+d'éléments. La conception complète est dans `specs/confidentialite-spec.md`
+(révision 2) ; ce qui suit est ce que le code fait.
+
+### Les règles (liste fermée, `privacy/rules.rs`)
+
+- **Historique d'un profil** de Chrome, Edge, Brave, Vivaldi (version stable). Le
+  dossier est `%LOCALAPPDATA%` plus des composants compilés (`Google`, `Chrome`,
+  `User Data`…). Un profil est un dossier dont le nom est **exactement**
+  `Default`, ou `Profile ` suivi de un à six chiffres décimaux sans zéro en tête
+  (`profile 1`, `Profile 01`, `Profile 0`, `Guest Profile` n'en sont pas). Les
+  fichiers : `History`, `Archived History`, `Visited Links`, `Favicons`,
+  `Shortcuts`, `Network Action Predictor`, et `Top Sites` sauf pour Edge, chacun
+  avec `-journal`, `-wal`, `-shm`, rien d'autre. **Jamais** : `Local State`,
+  `Login Data`, `Web Data`, `Bookmarks`, `Preferences`, `Sessions`, `Cookies`,
+  `Network`, `Local Storage`, `IndexedDB`, `Extensions`, `Local Extension
+  Settings`. Un essai parcourt toutes les règles et échoue si l'un de ces noms y
+  apparaît ; l'effacement refuse aussi, par `is_forbidden`, tout lot qui en
+  contiendrait un.
+- **Fichiers récents** : `SHAddToRecentDocs(SHARD_PIDL, NULL)` sous COM, puis le
+  nombre de raccourcis de `Recent` est **relu** (l'appel ne rend rien) ; zéro, `erased` ; moins qu'avant, `partial` ; autant ou plus, `failed`.
+- **Ce qui a été tapé** : les **valeurs** de `RunMRU`, `TypedPaths`,
+  `WordWheelQuery` sous `HKCU`. Les clés sont une énumération compilée : l'hôte
+  ne reçoit jamais une chaîne de chemin.
+- **Presse-papiers** : `Clipboard.ClearHistory()` puis le contenu actuel
+  (`OpenClipboard`/`EmptyClipboard`, dix essais à 50 ms). `ClearHistory` faux
+  alors que l'historique est actif : `failed` ; historique désactivé : cas normal.
+  L'issue est `erased` quand l'historique est vidé ou désactivé et le contenu vidé.
+
+### Fichiers : tout ou rien
+
+Quatre étapes, avec `fs::Removal` : (1) la chaîne de dossiers du profil est
+revérifiée **à l'effacement** (aucun lien) ; (2) **tout le lot** est ouvert sans
+aucun partage et sans suivre de lien, chaque fichier doit être ordinaire, **n'avoir
+qu'un seul nom** et ne pas être « en ligne uniquement » ; une seule ouverture qui
+échoue (`inUse`, `failed`, `changed`) et rien n'est touché, annexes comprises ;
+(3) poignées tenues, le navigateur est revérifié fermé ; (4) tout est marqué, la
+base d'abord, puis tout est confirmé, les annexes d'abord. Une base ne part jamais
+sans ses annexes : `partial` n'existe pas pour les fichiers (il vaut pour le registre et pour `recent`). Pour lire le nombre
+de noms et « en ligne uniquement » sur l'entrée ouverte, `fs::Removal::facts` a
+été ajouté ; ses autres usages (le grand vide) sont inchangés.
+
+**Navigateur ouvert** : un processus du nom de l'exécutable (toutes les sessions)
+**ou** le `lockfile` de `User Data` tenu. Une machine qui ne sait pas lister ses
+processus est tenue pour « tout est ouvert ».
+
+### Registre
+
+Clé ouverte dans `HKCU` avec `REG_OPTION_OPEN_LINK` et les seuls droits de lire et
+d'écrire des valeurs ; refusée si elle porte `SymbolicLinkValue` de type
+`REG_LINK`. Les noms sont énumérés (4096 valeurs, 255 unités au plus), puis
+supprimés **par nom**, la valeur d'index (`MRUList`, `MRUListEx`) d'abord ; la clé
+reste ; puis **relecture** : des valeurs restées ou revenues (l'Explorateur qui
+réécrit ce qu'il a en mémoire) donnent `partial`, jamais `erased`.
+
+### Identifiants, nom des profils, résultats
+
+Un identifiant porte le navigateur, le numéro du profil, **l'identité du dossier**
+(volume et identifiant de fichier) et une empreinte du nom affiché ; le décodage
+est strict. À l'effacement la liste est refaite : autre identité ou autre nom
+affiché, `changed`. Un identifiant que le cœur n'aurait pas fabriqué (vue périmée) donne aussi `changed`, sans rien toucher ; les autres traces de la demande sont traitées. Plus de 64 identifiants : tout est refusé (`tooMany`).
+Le nom affiché est lu dans `Local State` (`profile.info_cache.<dossier>.name`
+seulement, 4 Mio au plus, jamais écrit, jamais l'adresse du compte), nettoyé par
+`startup::clean_text`. `PrivacyGroup.slot` (0 : `Default`, N : `Profile N`) permet à
+la page d'écrire « Profil principal » ou « Profil N ».
+
+### Exclusivité
+
+Le verrou est celui d'`AppsDesk::try_exclusive`, pris dans `Backend` ; l'état du
+grand vide est lu une fois le verrou pris. Un effacement refuse (`busy`) pendant un
+grand vide, une mise à la corbeille de restes ou un autre effacement, **et
+l'inverse**.
+
+Fenêtre fermée pendant un effacement : rien n'attend la fin, le programme sort.
+Les fichiers d'un profil restent tout ou rien (avant le marquage, rien ne part ;
+une fois tout marqué, même un arrêt brutal supprime le lot en entier). Les
+valeurs du registre, les fichiers récents et le presse-papiers ne sont pas
+atomiques : un effacement coupé en route peut laisser une de ces traces à moitié
+vidée, sans dommage (l'index part d'abord) et sans bilan affiché. Aucune autre
+trace ne commence.
+
+### Limites connues
+
+- Presse-papiers : la ligne est `present` si le contenu actuel est plein **ou**
+  si l'historique de Windows (Windows+V) est activé (Shinku ne le lit pas, il ne
+  sait donc pas s'il est vide) ; `empty` seulement si le contenu est vide et
+  l'historique désactivé ; `unreadable` si l'un des deux ne se lit pas.
+- Un `User Data` derrière un lien ou une jonction (déplacement du profil sur
+  un autre disque) n'est pas proposé : Shinku n'entre dans aucun lien.
+- Un lot marqué puis une coupure de courant : aucun bilan (aucun journal).
+- Pas de nom en double distingué (« Perso (2) ») : deux profils de même nom
+  portent des numéros différents.
+- Ne sont pas faits : cookies et données de sites, Firefox, Opera, versions
+  Beta/Dev/Canary, `dialogs`, `Sessions`, Recall, sauvegardes et points de
+  restauration. Les copies de l'historique que Windows (VSS) ou un outil de
+  récupération gardent, la synchronisation du navigateur, et la réimportation
+  d'Edge depuis Chrome ne sont pas touchées.
+- **[à vérifier sur le vrai Windows]** : le mode de partage de `lockfile` ; ce que
+  fait `SHAddToRecentDocs(NULL)` des épinglés et de « Recommandé » ; si
+  `ClearHistory` exige la fenêtre au premier plan ; ce que fait l'Explorateur de
+  `TypedPaths` à la fermeture d'une fenêtre ; les liens physiques NTFS et les
+  verrous réels.
+- Sept pages des réglages de Windows sont ouvertes par Shinku (liste fermée,
+  `WindowsPage`), dont `ms-settings:privacy-activityhistory`,
+  `ms-settings:search-permissions` et `ms-settings:privacy-feedback`.
 
 ## L'agent
 

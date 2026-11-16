@@ -415,10 +415,30 @@ pub struct Removal {
     inner: imp::Removal,
 }
 
+/// Ce que l'entrée **ouverte** dit d'elle-même, relu sur le handle : de quoi
+/// refuser ce qu'on ne doit pas supprimer à la place d'un fichier ordinaire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemovalFacts {
+    /// Nombre de noms que porte l'entrée. Plus d'un : un lien physique, et
+    /// supprimer ce nom ne détruirait pas les données.
+    pub links: u32,
+    /// Contenu absent du disque (« en ligne uniquement ») : jamais ouvert.
+    pub online_only: bool,
+    /// Un fichier ordinaire : ni lien, ni dossier, ni point d'analyse inconnu.
+    pub regular: bool,
+}
+
 impl Removal {
     /// Ouvre `path` pour le supprimer, s'il correspond à `expected`.
     pub fn open(path: &Path, expected: &Expected) -> Result<Self, RemoveError> {
         Ok(Self { inner: imp::Removal::open(path, expected)? })
+    }
+
+    /// Nombre de noms, « en ligne uniquement » et nature de l'entrée ouverte,
+    /// relus à l'instant sur le handle. Ajouté pour le module « Confidentialité » :
+    /// les appelants du grand vide ne s'en servent pas, leur comportement est inchangé.
+    pub fn facts(&self) -> Result<RemovalFacts, RemoveError> {
+        self.inner.facts()
     }
 
     /// Date de dernière modification de l'entrée ouverte, relue à l'instant.

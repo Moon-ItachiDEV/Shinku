@@ -29,7 +29,7 @@ use windows::Win32::Storage::FileSystem::{
 use super::attributes::{ATTR_REPARSE_POINT, classify};
 use super::{
     EntryFlags, EntryKind, EntryMeta, Expected, Fingerprint, Identity, OpenError, ReadDirError,
-    RemoveError, same_file_id,
+    RemovalFacts, RemoveError, same_file_id,
 };
 use crate::model::{FileId, Timestamp};
 
@@ -603,6 +603,17 @@ impl Removal {
         .map_err(remove_error)?;
         check_removal(&file, expected)?;
         Ok(Self { file, marked: false })
+    }
+
+    pub(super) fn facts(&self) -> Result<RemovalFacts, RemoveError> {
+        let tag: FILE_ATTRIBUTE_TAG_INFO = query(&self.file).map_err(remove_error)?;
+        let (kind, flags) = classify(tag.FileAttributes, tag.ReparseTag);
+        let standard = query_standard(&self.file).map_err(remove_error)?;
+        Ok(RemovalFacts {
+            links: standard.links,
+            online_only: flags.contains(EntryFlags::ONLINE_ONLY),
+            regular: kind == EntryKind::File && !flags.contains(EntryFlags::SPECIAL),
+        })
     }
 
     pub(super) fn modified(&self) -> Result<Timestamp, RemoveError> {

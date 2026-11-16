@@ -37,6 +37,8 @@ const COMMANDS: &[&str] = &[
     "stop_uninstall",
     "rescan_leftovers",
     "remove_leftovers",
+    "privacy_view",
+    "erase_traces",
     "open_windows_settings",
 ];
 

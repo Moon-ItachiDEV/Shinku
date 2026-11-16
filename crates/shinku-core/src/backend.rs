@@ -35,6 +35,9 @@ use crate::hash::{DigestCache, MemoryCache};
 use crate::model::Trigger;
 use crate::platform::agent::WindowsPage;
 use crate::platform::{self, Environment, RecycleBin, Volume};
+use crate::privacy::desk::PrivacyDesk;
+use crate::privacy::host::{InertPrivacyHost, PrivacyHost};
+use crate::privacy::view::{ErasedTraces, PrivacyRefusal, PrivacyView};
 use crate::scan::ScanOptions;
 use crate::scan::report::{DuplicateGroup, DuplicatesState, JunkReport, KeepChoice, LargeFile};
 use crate::session::{Session, SessionError, SessionView};
@@ -183,6 +186,11 @@ pub enum BackendError {
         /// La raison.
         reason: UninstallRefusal,
     },
+    /// Le module Confidentialité refuse cette demande : rien n'a été touché.
+    PrivacyRefused {
+        /// La raison.
+        reason: PrivacyRefusal,
+    },
 }
 
 impl fmt::Display for BackendError {
@@ -206,6 +214,7 @@ impl fmt::Display for BackendError {
             Self::GameRefused { reason } => write!(f, "mode jeu : {reason}"),
             Self::StartupRefused { reason } => write!(f, "démarrage : {reason}"),
             Self::UninstallRefused { reason } => write!(f, "désinstallation : {reason}"),
+            Self::PrivacyRefused { reason } => write!(f, "confidentialité : {reason}"),
         }
     }
 }
@@ -240,6 +249,7 @@ pub struct Backend {
     game: GameDesk,
     startup: StartupDesk,
     apps: AppsDesk,
+    privacy: PrivacyDesk,
     /// Un seul `sync` du mode jeu à la fois, dans l'ordre d'arrivée.
     sync_lock: Mutex<()>,
     /// Pour les tests : fait attendre le prochain changement du mode jeu entre
@@ -270,7 +280,8 @@ impl Backend {
         let backend = Self::new(environment, Arc::new(MemoryCache::new()), store)
             .with_game(game)
             .with_startup(startup)
-            .with_apps(AppsDesk::new(platform::apps_host()));
+            .with_apps(AppsDesk::new(platform::apps_host()))
+            .with_privacy(PrivacyDesk::new(platform::privacy_host()));
         match journal {
             Some(journal) => backend.with_journal(journal),
             None => backend,
@@ -305,6 +316,7 @@ impl Backend {
             game,
             startup,
             apps: AppsDesk::new(Arc::new(InertAppsHost)),
+            privacy: PrivacyDesk::new(Arc::new(InertPrivacyHost)),
             environment,
             store,
             journal: None,
@@ -362,6 +374,17 @@ impl Backend {
     /// Comme [`Backend::with_apps`], pour des tests : la machine fabriquée.
     pub fn with_apps_parts(self, host: Arc<dyn AppsHost>) -> Self {
         self.with_apps(AppsDesk::new(host))
+    }
+
+    /// Branche le module Confidentialité.
+    pub fn with_privacy(mut self, privacy: PrivacyDesk) -> Self {
+        self.privacy = privacy;
+        self
+    }
+
+    /// Comme [`Backend::with_privacy`], pour des tests : la machine fabriquée.
+    pub fn with_privacy_parts(self, host: Arc<dyn PrivacyHost>) -> Self {
+        self.with_privacy(PrivacyDesk::new(host))
     }
 
     /// Branche le journal des grands vides.
@@ -670,6 +693,35 @@ impl Backend {
         self.apps.remove(keys, &|| self.session.is_cleaning()).map_err(uninstall_refused)
     }
 
+    // --- Confidentialité ---
+
+    /// Tout ce que la page « Confidentialité » affiche : les traces de l'activité
+    /// de la personne, par navigateur et par profil, puis celles de Windows.
+    /// Refait à chaque demande ; ne touche à rien.
+    pub fn privacy_view(&self) -> PrivacyView {
+        self.privacy.view()
+    }
+
+    /// Efface les traces de ces identifiants (ceux de [`Backend::privacy_view`] : la
+    /// page n'envoie jamais un chemin, un nom ni une commande). `owner` est la
+    /// fenêtre de Shinku, pour le presse-papiers (0 : aucune) : l'appel doit se
+    /// faire pendant le clic.
+    ///
+    /// **Exclusif, dans les deux sens** : le verrou est celui de
+    /// [`AppsDesk::try_exclusive`], le même que celui du grand vide et de la mise à
+    /// la corbeille des restes. Il est pris d'abord, puis l'état du grand vide est
+    /// lu (un grand vide en cours : `busy`). Fenêtre fermée pendant un
+    /// effacement : le lot en cours finit, aucun autre ne commence.
+    pub fn erase_traces(&self, ids: &[String], owner: isize) -> Result<ErasedTraces, BackendError> {
+        let Some(_exclusive) = self.apps.try_exclusive() else {
+            return Err(privacy_refused(PrivacyRefusal::Busy));
+        };
+        if self.session.is_cleaning() {
+            return Err(privacy_refused(PrivacyRefusal::Busy));
+        }
+        self.privacy.erase(ids, owner).map_err(privacy_refused)
+    }
+
     // --- Mode jeu ---
 
     /// Tout ce que la page « Mode jeu » affiche.
@@ -814,6 +866,10 @@ impl Backend {
 
 fn uninstall_refused(reason: UninstallRefusal) -> BackendError {
     BackendError::UninstallRefused { reason }
+}
+
+fn privacy_refused(reason: PrivacyRefusal) -> BackendError {
+    BackendError::PrivacyRefused { reason }
 }
 
 fn game_refused(reason: GameRefusal) -> BackendError {
@@ -1452,6 +1508,108 @@ mod tests {
         let settings = backend.exclude_folder(&private).unwrap();
         assert_eq!(settings.excluded_folders, [to_display_path(&private)]);
         assert_eq!(backend.view().state, SessionState::Cleaned);
+    }
+
+    fn privacy_backend(pc: &Pc) -> (Backend, Arc<crate::privacy::fake::FakePrivacyHost>) {
+        use crate::privacy::fake::FakePrivacyHost;
+        let host = Arc::new(FakePrivacyHost::new(None));
+        host.set_clipboard(
+            true,
+            crate::privacy::host::ClipboardClear {
+                history: crate::privacy::host::HistoryClear::Cleared,
+                current: crate::privacy::host::CurrentClear::Emptied,
+            },
+        );
+        (backend(pc).with_privacy_parts(host.clone()), host)
+    }
+
+    fn privacy_refusal(error: BackendError) -> PrivacyRefusal {
+        match error {
+            BackendError::PrivacyRefused { reason } => reason,
+            other => panic!("un refus de la confidentialité était attendu : {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_erase_waits_for_a_clean_and_then_goes() {
+        let pc = pc();
+        let (slow, gate) = SlowBin::new(pc.environment.clone());
+        let backend = backend_on(slow, &pc)
+            .with_privacy_parts(Arc::new(crate::privacy::fake::FakePrivacyHost::new(None)));
+        backend.start_scan().unwrap();
+        wait_for_results(&backend);
+        let bin_only =
+            CleanRequest { junk_files: false, duplicates: false, ..everything(&backend) };
+        backend.start_clean(bin_only).unwrap();
+        gate.wait_until_reached();
+        // Un grand vide en cours : l'effacement est refusé, rien n'est touché. Le
+        // verrou est libre (le grand vide ne le tient plus) : c'est l'état lu une fois
+        // le verrou pris qui refuse.
+        let ids = vec!["wc".to_owned()];
+        assert_eq!(
+            privacy_refusal(backend.erase_traces(&ids, 0).unwrap_err()),
+            PrivacyRefusal::Busy
+        );
+        gate.open();
+        wait_for_the_report(&backend);
+        assert!(backend.erase_traces(&ids, 0).is_ok());
+    }
+
+    #[test]
+    fn a_clean_and_the_leftovers_refuse_during_an_erase_and_the_erase_during_either() {
+        let pc = pc();
+        let (backend, host) = privacy_backend(&pc);
+        backend.start_scan().unwrap();
+        wait_for_results(&backend);
+        let request = everything(&backend);
+        let (entered, release) = host.block_next_clipboard();
+        let ids = vec!["wc".to_owned()];
+        let backend = Arc::new(backend);
+        let worker = {
+            let backend = Arc::clone(&backend);
+            let ids = ids.clone();
+            std::thread::spawn(move || backend.erase_traces(&ids, 0))
+        };
+        entered.recv_timeout(Duration::from_secs(30)).expect("l'effacement est en plein geste");
+        // Un effacement en cours : ni grand vide, ni restes à la corbeille, ni un second effacement.
+        assert!(matches!(
+            backend.start_clean(request).unwrap_err(),
+            BackendError::CleanNotStarted { .. }
+        ));
+        assert!(matches!(
+            backend.remove_leftovers(&[0]).unwrap_err(),
+            BackendError::UninstallRefused { reason: UninstallRefusal::Busy }
+        ));
+        assert_eq!(
+            privacy_refusal(backend.erase_traces(&ids, 0).unwrap_err()),
+            PrivacyRefusal::Busy
+        );
+        release.send(()).unwrap();
+        let done = worker.join().unwrap().expect("l'effacement a fini");
+        assert_eq!(done.results[0].outcome, crate::privacy::view::TraceOutcome::Erased);
+        // Fini : le verrou est rendu, le grand vide part.
+        backend.start_clean(request).unwrap();
+        wait_for_the_report(&backend);
+    }
+
+    #[test]
+    fn more_than_sixty_four_ids_are_refused_by_the_desk_of_the_backend() {
+        let pc = pc();
+        let (backend, host) = privacy_backend(&pc);
+        let ids = vec!["wc".to_owned(); 65];
+        assert_eq!(
+            privacy_refusal(backend.erase_traces(&ids, 0).unwrap_err()),
+            PrivacyRefusal::TooMany
+        );
+        assert!(host.clipboard_calls().is_empty(), "rien n'a été touché");
+        assert!(backend.erase_traces(&ids[..64], 3).is_ok());
+        assert_eq!(host.clipboard_calls(), [3]);
+    }
+
+    #[test]
+    fn privacy_refusals_travel_as_plain_json() {
+        let json = serde_json::to_value(privacy_refused(PrivacyRefusal::TooMany)).unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "privacyRefused", "reason": "tooMany" }));
     }
 
     #[test]

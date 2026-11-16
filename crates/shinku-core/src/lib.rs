@@ -5,7 +5,9 @@
 //!
 //! L'analyse ([`scan`]) est en lecture seule. Seul le grand vide ([`clean`])
 //! supprime, et seulement ce que l'analyse a montré. En dehors de lui, le
-//! cœur n'écrit que ses propres fichiers : les réglages et le journal.
+//! cœur n'écrit que ses propres fichiers : les réglages et le journal. La
+//! « Confidentialité » ([`privacy`]) est le seul autre module qui supprime :
+//! des traces d'une liste fermée, que la personne a cochées.
 //!
 //! Les trois exécutables (`shinku`, `shinku-helper`, `shinku-agent`) s'appuient
 //! sur lui.
@@ -20,6 +22,7 @@ pub mod hash;
 pub mod helper;
 pub mod model;
 pub mod platform;
+pub mod privacy;
 pub mod rules;
 pub mod scan;
 pub mod scope;
