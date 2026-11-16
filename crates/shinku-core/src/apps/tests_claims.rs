@@ -284,6 +284,9 @@ fn a_location_is_put_in_the_same_form_as_windows_reads_it() {
         r"\\?\D:\Jeux\\Hades",
         r"D:\Jeux\Hades\100% Mod",
         r"D:\Jeux\Hades\%INCONNUE%",
+        // `..` retire le composant d'avant, même d'une seule lettre.
+        r"D:\Jeux\A\..\Hades\Dlc",
+        r"D:\A\..\Jeux\Hades\Dlc",
     ] {
         assert!(!location_leaves_hades(location), "{location} doit réclamer Hades");
     }
@@ -375,6 +378,10 @@ fn the_guard_receives_the_prefix_of_the_length_of_the_location() {
     let (host, snapshot) = hades();
     host.protect_itself(r"D:\Jeux\Hades\Dlc");
     neighbour(&host, "gros", "Gros", |raw| raw.install_location = Some(r"D:\Jeux".into()));
+    assert!(!hades_folder(&find(&host, &snapshot)));
+    // Écrit avec une barre finale, le parent réclame tout autant.
+    let (host, snapshot) = hades();
+    neighbour(&host, "gros", "Gros", |raw| raw.install_location = Some(r"D:\Jeux\".into()));
     assert!(!hades_folder(&find(&host, &snapshot)));
 }
 

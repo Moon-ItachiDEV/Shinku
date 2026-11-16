@@ -135,7 +135,7 @@ fn resolve_dots(text: &str) -> String {
         match part {
             "." => {}
             ".." => {
-                if kept.last().is_some_and(|last| last.len() > 1 && !last.ends_with(':')) {
+                if kept.last().is_some_and(|last| !last.is_empty() && !last.ends_with(':')) {
                     kept.pop();
                 }
             }

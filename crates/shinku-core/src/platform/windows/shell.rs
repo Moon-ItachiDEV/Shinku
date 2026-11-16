@@ -1080,22 +1080,23 @@ mod tests {
                     !gone
                 )
             );
-            if let (Some(before), Some(after)) = (before, after) {
-                if gone && after == before {
-                    assert!(
-                        matches!(sent, Ok(Sent::Destroyed)),
-                        "{label} : disparu sans entrer dans la corbeille : `Destroyed` \
-                         était attendu, réponse {sent:?}"
-                    );
-                } else if gone && after > before {
-                    assert!(
-                        matches!(sent, Ok(Sent::InBin)),
-                        "{label} : entré dans la corbeille : `InBin` était attendu, \
-                         réponse {sent:?}"
-                    );
-                } else if !gone {
-                    assert!(sent.is_err(), "{label} : encore là, mais réponse {sent:?}");
-                }
+            // Sans les deux comptes, l'essai ne prouverait rien : il échoue.
+            let before = before.expect("Windows compte la corbeille avant l'envoi");
+            let after = after.expect("Windows compte la corbeille après l'envoi");
+            if !gone {
+                assert!(sent.is_err(), "{label} : encore là, mais réponse {sent:?}");
+            } else if after > before {
+                assert!(
+                    matches!(sent, Ok(Sent::InBin)),
+                    "{label} : entré dans la corbeille : `InBin` était attendu, réponse {sent:?}"
+                );
+            } else {
+                // Autant ou moins qu'avant : rien de plus n'y est entré.
+                assert!(
+                    matches!(sent, Ok(Sent::Destroyed)),
+                    "{label} : disparu sans entrer dans la corbeille : `Destroyed` était \
+                     attendu, réponse {sent:?}"
+                );
             }
             if matches!(sent, Ok(Sent::InBin))
                 && std::env::var_os("SHINKU_ESSAI_VIDE_LA_CORBEILLE").is_some()
