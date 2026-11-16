@@ -53,7 +53,7 @@ import { parseArgs } from 'node:util';
 import { DOM, EXPECTED } from './essai-desinstallation-dom.mjs';
 import { DOM as STARTUP_DOM, EXPECTED as STARTUP_EXPECTED } from './essai-demarrage-dom.mjs';
 import { DOM as PRIVACY_DOM, EXPECTED as PRIVACY_EXPECTED, readPrivacy } from './essai-confidentialite-dom.mjs';
-import { DOM as JOURNAL_DOM, EXPECTED as JOURNAL_EXPECTED, readAbout, readJournal, readMenu } from './essai-journal-dom.mjs';
+import { DOM as JOURNAL_DOM, EXPECTED as JOURNAL_EXPECTED, judgeClean, judgeDated, readAbout, readJournal, readMenu } from './essai-journal-dom.mjs';
 
 const { values: options } = parseArgs({
   options: {
@@ -2012,17 +2012,11 @@ async function checkJournal(window) {
     await window.capture('journal');
     return;
   }
-  // La date d'une ligne : l'attribut `datetime` de son <time>, lisible, entre `from` et maintenant plus une minute.
+  // La date d'une ligne : jugée par `judgeDated` (lisible, pas avant `from`, pas dans le futur).
   const dated = (row, what, from) => {
-    const at = Date.parse(row.iso);
-    if (row.iso === '' || Number.isNaN(at)) {
-      fail(`la ligne ${what} n’a pas de date lisible (datetime « ${row.iso} ») : « ${row.sentence} »`);
-    }
-    if (at < from) {
-      fail(`la ligne ${what} est datée ${row.iso}, avant le début de l’essai (${new Date(from).toISOString()}) : « ${row.sentence} »`);
-    }
-    if (at > Date.now() + 60_000) {
-      fail(`la ligne ${what} est datée ${row.iso}, dans le futur : « ${row.sentence} »`);
+    const failure = judgeDated(row, from, Date.now(), what);
+    if (failure !== null) {
+      fail(failure);
     }
   };
   const seen = [];
@@ -2031,17 +2025,10 @@ async function checkJournal(window) {
       fail('le Journal ne peut juger le grand vide : checkClean n’a pas tourné');
     }
     // La première ligne « Grand vide » est la plus récente (la liste est triée) : c'est celle de l'essai.
-    const cleaned = screen.rows.find((row) => shows(row.sentence, 'Grand vide'));
-    if (cleaned === undefined) {
-      fail('le Journal n’a aucune ligne « Grand vide » après le grand vide');
+    const failure = judgeClean(screen.rows, JOURNAL_EXPECTED, cleanStartedAt, Date.now());
+    if (failure !== null) {
+      fail(failure);
     }
-    if (!cleaned.sentence.startsWith(JOURNAL_EXPECTED.cleaned)) {
-      fail(`la ligne la plus récente du grand vide n’est pas finie (attendu « ${JOURNAL_EXPECTED.cleaned} ») : « ${cleaned.sentence} »`);
-    }
-    if (!shows(cleaned.sentence, JOURNAL_EXPECTED.freed) && !shows(cleaned.sentence, JOURNAL_EXPECTED.binned)) {
-      fail(`la ligne du grand vide n’a pas ses totaux (« ${JOURNAL_EXPECTED.freed} » ou « ${JOURNAL_EXPECTED.binned} ») : « ${cleaned.sentence} »`);
-    }
-    dated(cleaned, 'du grand vide', cleanStartedAt);
     seen.push('le grand vide fini, avec ses totaux et sa date');
   }
   if (process.env.LOCALAPPDATA !== undefined && process.env.APPDATA !== undefined) {

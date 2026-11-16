@@ -1167,8 +1167,10 @@ heure d'aujourd'hui. Les poids et les compteurs ne dépassent jamais
 plus, `more` le dit. La page se demande **une fois, quand on y arrive** ; elle
 ne se redemande pas toute seule (pas de minuterie), ni quand la fenêtre
 retrouve le focus : seul un grand vide qui se termine pendant qu'elle est
-ouverte la relit, une fois, sans la redessiner entière (le focus ne se perd
-pas).
+ouverte la relit, une fois. Pour que cette relecture ne redessine pas la page
+entière, le Journal a sa propre clé de page (`pageKey`, qui ne dépend pas du
+volet) ; les essais tiennent la valeur de cette clé et son emploi dans
+`appView`, pas le focus lui-même, qu'aucun essai automatique ne regarde.
 
 **« Oublier les désinstallations ».** Un bouton, après confirmation, vide
 `uninstalls.json` (`Backend::forget_uninstalls`) et rend la vue relue. Il

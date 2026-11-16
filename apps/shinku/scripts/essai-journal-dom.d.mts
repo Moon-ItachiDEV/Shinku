@@ -28,3 +28,15 @@ export function readMenu(dom: Record<string, string>): {
   lastBottom: number | null;
   height: number;
 };
+export function judgeDated(
+  row: { iso: string; sentence: string },
+  from: number,
+  now: number,
+  what?: string,
+): string | null;
+export function judgeClean(
+  rows: Array<{ iso: string; sentence: string }>,
+  expected: Record<string, string>,
+  from: number,
+  now: number,
+): string | null;

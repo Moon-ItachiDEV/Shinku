@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import type { HistoryLine, HistoryView } from '../src/backend/types.ts';
-import { DOM, EXPECTED } from '../scripts/essai-journal-dom.mjs';
+import { DOM, EXPECTED, judgeClean, judgeDated } from '../scripts/essai-journal-dom.mjs';
 import { demoOptions, mockBackend } from '../src/backend/mock.ts';
 import { formatSpan } from '../src/format.ts';
 import { fr } from '../src/i18n/fr.ts';
@@ -219,6 +219,7 @@ test('le faux cœur : une ligne de chaque sorte, et « Oublier » ne retire que 
   assert.ok(!first.lines.some((line) => line.kind === 'clean' && line.state === 'running'));
   assert.ok(first.lines.some((line) => line.kind === 'clean' && line.state === 'completed' && line.recoverableBytes > 0));
   assert.ok(first.lines.some((line) => line.kind === 'clean' && line.state === 'cancelled'));
+  assert.ok(first.lines.some((line) => line.kind === 'clean' && line.state === 'interrupted' && line.finishedMs === null));
   const uninstalls = first.lines.filter((line) => line.kind === 'uninstall');
   assert.equal(uninstalls.length, 2);
   assert.ok(uninstalls.some((line) => line.leftovers > 0) && uninstalls.some((line) => line.leftovers === 0));
@@ -264,7 +265,41 @@ test('l’essai de la fenêtre ne clique ni sur « Voir leurs licences » ni sur
   assert.ok(!/click\([^)]*(licences|forget|JOURNAL_DOM)/i.test(part), 'aucun clic sur un bouton du Journal ou des licences');
   assert.ok(!/EXPECTED\.(licences|forget)[^;]*\bclick/.test(part));
   const journal = source.slice(source.indexOf('async function checkJournal'), source.indexOf('async function checkSingleWindow'));
-  assert.ok(journal.includes('cleanStartedAt') && journal.includes('Date.parse(row.iso)'), 'les dates des lignes sont jugées');
-  assert.ok(journal.includes('cleaned.sentence.startsWith(JOURNAL_EXPECTED.cleaned)'), 'la ligne doit commencer par « Grand vide : »');
+  assert.ok(journal.includes('cleanStartedAt') && journal.includes('judgeDated(row, from, Date.now(), what)'), 'les dates des lignes sont jugées');
+  assert.ok(journal.includes('judgeClean(screen.rows, JOURNAL_EXPECTED, cleanStartedAt, Date.now())'), 'le grand vide est jugé par judgeClean');
   assert.ok(/await checkClean\(window, planted\);\s*\}\s*await checkJournal\(window\);\s*if \(onWindows\)/.test(source), 'le Journal vient après le grand vide');
+});
+
+// ── Ce que l'essai de la fenêtre juge, sans Windows ────────────────────────
+
+test('judgeClean et judgeDated : le cas juste passe, chaque défaut échoue', () => {
+  const from = Date.parse('2026-11-16T10:00:00Z');
+  const now = Date.parse('2026-11-16T10:05:00Z');
+  const done = 'Grand vide : 291 Mo libérés, 2,0 Mo mis à la corbeille.';
+  const row = (sentence: string, at: number | null) => ({ sentence, iso: at === null ? '' : new Date(at).toISOString() });
+  const good = row(done, from + 1000);
+  assert.equal(judgeClean([good], EXPECTED, from, now), null);
+  assert.equal(judgeDated(good, from, now), null);
+  // Avant `from`, après now + 60 s, sans date : échec ; la limite now + 60 s passe.
+  assert.match(String(judgeClean([row(done, from - 1)], EXPECTED, from, now)), /avant le début/);
+  assert.match(String(judgeClean([row(done, now + 60_001)], EXPECTED, from, now)), /dans le futur/);
+  assert.equal(judgeClean([row(done, now + 60_000)], EXPECTED, from, now), null);
+  assert.match(String(judgeClean([row(done, null)], EXPECTED, from, now)), /pas de date lisible/);
+  assert.match(String(judgeDated({ sentence: 'x', iso: 'pas une date' }, from, now)), /pas de date lisible/);
+  // Sans totaux.
+  assert.match(String(judgeClean([row('Grand vide : rien n’a été retiré.', from + 1)], EXPECTED, from, now)), /pas ses totaux/);
+  // Une ligne plus récente pas finie passe devant une ligne finie plus ancienne.
+  for (const unfinished of ['Grand vide en cours.', 'Grand vide coupé avant la fin : 1 Mo libérés, au dernier pointage.']) {
+    assert.match(String(judgeClean([row(unfinished, from + 2000), good], EXPECTED, from, now)), /n’est pas finie/);
+  }
+  assert.match(String(judgeClean([row('Désinstallé : X.', from + 1)], EXPECTED, from, now)), /aucune ligne/);
+});
+
+test('appView range la page sous pageKey : le Journal garde son élément et son focus', () => {
+  // Le dépôt n'a pas de DOM d'essai : lit-html ne peut pas y être rendu deux fois dans un conteneur (fakeDocument
+  // n'a ni nœuds ni `render`). Le plus petit essai honnête lit le source : `keyed` reçoit `pageKey(state)`, que
+  // l'essai de `journal-app.test.ts` tient pour la valeur.
+  const source = readFileSync(new URL('../src/views/shell.ts', import.meta.url), 'utf8');
+  assert.ok(source.includes('keyed(pageKey(state), page(state, actions))'));
+  assert.ok(!/keyed\(`\$\{state\.route\}/.test(source), 'plus de clé commune en ligne');
 });

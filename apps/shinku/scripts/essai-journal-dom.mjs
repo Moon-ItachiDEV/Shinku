@@ -79,3 +79,41 @@ export function readMenu(dom) {
     height: window.innerHeight,
   };
 }
+
+/**
+ * La date d'une ligne : l'attribut `datetime` de son `<time>`, lisible, pas avant `from`, pas après `now` plus une
+ * minute (millisecondes). Rend `null` si tout va bien, sinon la phrase d'échec. `what` complète la phrase (« du grand vide »).
+ */
+export function judgeDated(row, from, now, what = '') {
+  const label = what === '' ? '' : ` ${what}`;
+  const at = Date.parse(row.iso);
+  if (row.iso === '' || Number.isNaN(at)) {
+    return `la ligne${label} n’a pas de date lisible (datetime « ${row.iso} ») : « ${row.sentence} »`;
+  }
+  if (at < from) {
+    return `la ligne${label} est datée ${row.iso}, avant le début de l’essai (${new Date(from).toISOString()}) : « ${row.sentence} »`;
+  }
+  if (at > now + 60_000) {
+    return `la ligne${label} est datée ${row.iso}, dans le futur : « ${row.sentence} »`;
+  }
+  return null;
+}
+
+/**
+ * Le grand vide de l'essai : la première ligne « Grand vide » (la plus récente, la liste est triée) doit être finie
+ * (« Grand vide : »), avoir ses totaux, et une date entre `from` et `now`. Rend `null` ou la phrase d'échec.
+ */
+export function judgeClean(rows, expected, from, now) {
+  const cleaned = rows.find((row) => row.sentence.toLocaleLowerCase('fr').includes('grand vide'));
+  if (cleaned === undefined) {
+    return 'le Journal n’a aucune ligne « Grand vide » après le grand vide';
+  }
+  if (!cleaned.sentence.startsWith(expected.cleaned)) {
+    return `la ligne la plus récente du grand vide n’est pas finie (attendu « ${expected.cleaned} ») : « ${cleaned.sentence} »`;
+  }
+  const has = (word) => cleaned.sentence.toLocaleLowerCase('fr').includes(word.toLocaleLowerCase('fr'));
+  if (!has(expected.freed) && !has(expected.binned)) {
+    return `la ligne du grand vide n’a pas ses totaux (« ${expected.freed} » ou « ${expected.binned} ») : « ${cleaned.sentence} »`;
+  }
+  return judgeDated(cleaned, from, now, 'du grand vide');
+}

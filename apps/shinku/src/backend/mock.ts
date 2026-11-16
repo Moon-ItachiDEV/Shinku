@@ -779,7 +779,7 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
   /** Un effacement est en vol : un second est refusé, comme par le cœur. */
   let erasing = false;
   /**
-   * Ce que le Journal du produit peut montrer : un grand vide fini (avec corbeille) et un arrêté en route, deux
+   * Ce que le Journal du produit peut montrer : un grand vide fini (avec corbeille), un arrêté en route et un coupé avant la fin, deux
    * désinstallations (l'une avec restes, l'autre sans, au nom très long), la dernière partie (le mode jeu n'en garde
    * qu'une), deux coupures du Démarrage (l'une remise toute seule, l'autre sans date). « Oublier » retire les
    * désinstallations.
@@ -824,6 +824,15 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
           finishedMs: now - 4 * day + 120_000,
           state: 'cancelled',
           freedBytes: 800_000_000,
+          recoverableBytes: 0,
+          skippedFiles: 0,
+        },
+        {
+          kind: 'clean',
+          startedMs: now - 6 * day,
+          finishedMs: null,
+          state: 'interrupted',
+          freedBytes: 250_000_000,
           recoverableBytes: 0,
           skippedFiles: 0,
         },
