@@ -183,6 +183,14 @@ jobs:
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Preparer
 
+      # La Désinstallation : des apps d'essai inscrites dans le compte (une dont
+      # le désinstalleur laisse trois restes, une voisine, une sans dossier, deux
+      # de la même famille, et un leurre). La fenêtre désinstalle la première et
+      # met ses restes à la corbeille ; le reste ne doit pas bouger.
+      - name: Préparer l'essai de la désinstallation
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-desinstallation.ps1 -Preparer
+
       # Les trois essais qui suivent tournent chacun même si un essai d'avant a
       # échoué (il suffit que Shinku soit installé) : un passage dit ainsi tout
       # ce qu'il peut dire. Le travail échoue quand même si l'un d'eux échoue.
@@ -214,6 +222,13 @@ jobs:
         if: always()
         working-directory: apps/shinku
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-demarrage.ps1 -Nettoyer
+
+      # Quoi qu'il arrive : les apps d'essai de la désinstallation, leurs
+      # inscriptions, leurs dossiers et leurs raccourcis sont retirés.
+      - name: Remettre la machine d'essai en place (désinstallation)
+        if: always()
+        working-directory: apps/shinku
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/essai-desinstallation.ps1 -Nettoyer
 
       # Les crochets de l'installeur, avec un agent qui tourne : l'installeur
       # tout juste fabriqué est relancé par-dessus l'installation (mise à jour),

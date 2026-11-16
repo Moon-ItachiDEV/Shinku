@@ -1,4 +1,4 @@
-//! La corbeille de Windows : y envoyer un fichier, la vider.
+//! La corbeille de Windows : y envoyer un fichier ou un dossier, la vider.
 //!
 //! Les deux gestes passent par le shell, comme dans l'Explorateur. Le danger
 //! connu est là : quand la corbeille ne peut pas recevoir un fichier (elle est
@@ -30,11 +30,11 @@ use windows::Win32::UI::Shell::{
     COPYENGINE_E_RECYCLE_FORCE_NUKE, COPYENGINE_E_RECYCLE_PATH_TOO_LONG,
     COPYENGINE_E_RECYCLE_SIZE_TOO_BIG, COPYENGINE_E_REQUIRES_ELEVATION,
     COPYENGINE_E_SHARING_VIOLATION_SRC, FILEOPERATION_FLAGS, FOF_ALLOWUNDO,
-    FOF_NO_CONNECTED_ELEMENTS, FOF_NO_UI, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FileOperation,
-    IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
-    SHCreateItemFromParsingName, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND,
-    SHEmptyRecycleBinW, SHQUERYRBINFO, SHQueryRecycleBinW, SIGDN_FILESYSPATH,
-    TSF_DELETE_RECYCLE_IF_POSSIBLE,
+    FOF_NO_CONNECTED_ELEMENTS, FOF_NO_UI, FOFX_ADDUNDORECORD, FOFX_EARLYFAILURE,
+    FOFX_RECYCLEONDELETE, FileOperation, IFileOperation, IFileOperationProgressSink,
+    IFileOperationProgressSink_Impl, IShellItem, SHCreateItemFromParsingName, SHERB_NOCONFIRMATION,
+    SHERB_NOPROGRESSUI, SHERB_NOSOUND, SHEmptyRecycleBinW, SHQUERYRBINFO, SHQueryRecycleBinW,
+    SIGDN_FILESYSPATH, TSF_DELETE_RECYCLE_IF_POSSIBLE,
 };
 use windows::core::{HRESULT, HSTRING, PCWSTR, Ref, implement};
 
@@ -51,6 +51,10 @@ use crate::fs::{fold_path, same_file_id, to_display_path, to_internal_path};
 ///
 /// Jamais d'élévation : un fichier qui demande des droits d'administrateur
 /// reste à sa place.
+///
+/// Pour un **dossier**, `FOFX_EARLYFAILURE` s'y ajoute ([`FOLDER_FLAGS`]) : sans
+/// fenêtre, une erreur n'arrêterait que l'action en cours et l'opération
+/// continuerait ; avec lui, elle s'arrête à la première erreur.
 const RECYCLE_FLAGS: FILEOPERATION_FLAGS = FILEOPERATION_FLAGS(
     FOF_NO_UI.0
         | FOF_ALLOWUNDO.0
@@ -58,6 +62,11 @@ const RECYCLE_FLAGS: FILEOPERATION_FLAGS = FILEOPERATION_FLAGS(
         | FOFX_RECYCLEONDELETE.0
         | FOF_NO_CONNECTED_ELEMENTS.0,
 );
+
+/// Les drapeaux d'un envoi de dossier : ceux d'un fichier, et l'arrêt à la
+/// première erreur.
+const FOLDER_FLAGS: FILEOPERATION_FLAGS =
+    FILEOPERATION_FLAGS(RECYCLE_FLAGS.0 | FOFX_EARLYFAILURE.0);
 
 /// Garde de COM sur le fil courant.
 struct Com;
@@ -293,17 +302,41 @@ fn parsed_path(item: &IShellItem) -> Option<PathBuf> {
     to_internal_path(Path::new(&text)).ok()
 }
 
-/// Envoie un fichier à la corbeille. À appeler sur un fil où COM est prêt.
+/// Ce que `path` est, sans suivre aucun lien : un dossier, ou autre chose. Un
+/// lien vers un dossier (jonction, lien symbolique) n'est jamais envoyé, ni un
+/// dossier dont le chemin en traverse un : la corbeille déplacerait le lien, et
+/// l'on ne saurait plus ce qui part.
+fn is_folder(path: &Path) -> Result<bool, RecycleError> {
+    use std::os::windows::fs::FileTypeExt;
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|error| RecycleError::Failed(error.to_string()))?;
+    let kind = metadata.file_type();
+    if kind.is_symlink_dir() {
+        return Err(RecycleError::Failed("c'est un lien vers un dossier".to_owned()));
+    }
+    if !kind.is_dir() {
+        return Ok(false);
+    }
+    match crate::fs::inspect_dir_chain(path) {
+        Ok(crate::fs::PathState::RealDir) => Ok(true),
+        _ => Err(RecycleError::Failed("un lien est sur le chemin de ce dossier".to_owned())),
+    }
+}
+
+/// Envoie un fichier ou un dossier à la corbeille. À appeler sur un fil où COM
+/// est prêt.
 fn recycle_here(path: &Path) -> Result<(), RecycleError> {
     // Le shell ne comprend que la forme habituelle des chemins (`C:\…`).
     let display = HSTRING::from(to_display_path(path).as_os_str());
+    let folder = is_folder(path)?;
 
     // SAFETY: COM est initialisé sur ce fil ; l'identifiant de classe est une
     // constante et aucun objet englobant n'est donné.
     let operation: IFileOperation =
         unsafe { CoCreateInstance(&FileOperation, None, CLSCTX_ALL) }.map_err(failed)?;
     // SAFETY: `operation` est un objet COM vivant ; l'appel ne prend qu'un nombre.
-    unsafe { operation.SetOperationFlags(RECYCLE_FLAGS) }.map_err(failed)?;
+    unsafe { operation.SetOperationFlags(if folder { FOLDER_FLAGS } else { RECYCLE_FLAGS }) }
+        .map_err(failed)?;
 
     // SAFETY: `display` est une chaîne UTF-16 terminée par zéro, vivante
     // pendant l'appel ; aucun contexte de liaison n'est donné.
@@ -354,7 +387,8 @@ fn recycle_here(path: &Path) -> Result<(), RecycleError> {
     }
 }
 
-/// Envoie un fichier à la corbeille. `path` est sous forme interne.
+/// Envoie un fichier ou un dossier entier à la corbeille. `path` est sous forme
+/// interne.
 pub(super) fn recycle(path: &Path) -> Result<(), RecycleError> {
     if !path.is_absolute() {
         return Err(RecycleError::Failed("chemin relatif".to_owned()));
@@ -498,6 +532,250 @@ mod tests {
             assert_eq!(bin_of(&drive).map(|bin| bin.items), Some(0));
             // Vidée, elle a lâché le fichier que l'essai tenait encore.
             drop(held);
+        }
+    }
+
+    /// La vraie corbeille de Windows, sur des **dossiers** fabriqués pour
+    /// l'essai : le module « Désinstallation » y envoie des restes d'apps.
+    ///
+    /// Trois choses à prouver avant de s'y fier : un dossier part **en un seul
+    /// élément** ; un dossier dont un fichier est tenu ouvert sans partage
+    /// **reste entier** (jamais à moitié) ; un dossier qui contient une
+    /// jonction part sans que la cible de la jonction soit touchée (Shinku ne
+    /// laisse de toute façon jamais arriver un tel dossier jusqu'ici : l'essai
+    /// prouve la seconde barrière). Sur demande seulement, comme l'essai
+    /// ci-dessus (`SHINKU_ESSAI_CORBEILLE=1`) : il laisse deux dossiers dans la
+    /// corbeille de la machine. Sous Wine, la corbeille du shell ne se prouve
+    /// pas : cet essai ne compte que sur un vrai Windows.
+    #[test]
+    fn the_real_recycle_bin_receives_a_whole_folder_or_nothing() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        if std::env::var_os("SHINKU_ESSAI_CORBEILLE").is_none() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let root = to_internal_path(workspace.path()).unwrap();
+        let drive: String = to_display_path(&root).to_string_lossy().chars().take(3).collect();
+        let drive = HSTRING::from(drive);
+        let before = bin_of(&drive).expect("Windows mesure la corbeille de ce disque");
+
+        // Un dossier de trois niveaux part, en un seul élément.
+        let tree = root.join("dossier de l'essai");
+        std::fs::create_dir_all(tree.join("a").join("b")).unwrap();
+        std::fs::write(tree.join("racine.txt"), [1u8; 2000]).unwrap();
+        std::fs::write(tree.join("a").join("un.txt"), [2u8; 3000]).unwrap();
+        std::fs::write(tree.join("a").join("b").join("deux.txt"), [3u8; 4000]).unwrap();
+        recycle(&tree).expect("un dossier ordinaire part à la corbeille");
+        assert!(!tree.exists(), "le dossier entier a quitté sa place");
+        let after = bin_of(&drive).unwrap();
+        assert_eq!(after.items, before.items + 1, "un dossier est un seul élément");
+        assert!(after.bytes >= before.bytes + 9000, "avec tout ce qu'il contient");
+
+        // Un fichier tenu sans partage : le dossier reste entier, et le refus se lit.
+        let busy = root.join("dossier occupé");
+        std::fs::create_dir_all(busy.join("sous")).unwrap();
+        std::fs::write(busy.join("libre.txt"), b"libre").unwrap();
+        std::fs::write(busy.join("sous").join("tenu.bin"), b"tenu").unwrap();
+        std::fs::write(busy.join("sous").join("autre.txt"), b"autre").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(busy.join("sous").join("tenu.bin"))
+            .unwrap();
+        let refused = recycle(&busy);
+        assert!(refused.is_err(), "un dossier dont un fichier est tenu ne part pas : {refused:?}");
+        for file in ["libre.txt", "sous\\tenu.bin", "sous\\autre.txt"] {
+            assert!(busy.join(file).exists(), "{file} : le dossier n'est pas parti à moitié");
+        }
+        assert_eq!(
+            bin_of(&drive).unwrap().items,
+            after.items,
+            "rien n'est entré dans la corbeille"
+        );
+        drop(held);
+
+        // Un dossier qui contient une jonction : la cible n'est pas touchée.
+        let target = root.join("cible de la jonction");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("precieux.txt"), b"precieux").unwrap();
+        let holder = root.join("dossier à jonction");
+        std::fs::create_dir(&holder).unwrap();
+        let link = holder.join("lien");
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(to_display_path(&link))
+            .arg(to_display_path(&target))
+            .output()
+            .expect("cmd.exe se lance");
+        assert!(made.status.success(), "mklink /J : {made:?}");
+        // La jonction elle-même n'est jamais envoyée.
+        assert!(recycle(&link).is_err(), "un lien vers un dossier n'est pas envoyé");
+        assert!(target.join("precieux.txt").exists());
+        // Le dossier qui la contient part, et la cible reste où elle est.
+        let sent = recycle(&holder);
+        assert!(target.join("precieux.txt").exists(), "la cible de la jonction est intacte");
+        assert_eq!(
+            std::fs::read(target.join("precieux.txt")).unwrap(),
+            b"precieux",
+            "et son contenu aussi"
+        );
+        assert!(sent.is_ok(), "{sent:?}");
+        assert!(!holder.exists());
+
+        if std::env::var_os("SHINKU_ESSAI_VIDE_LA_CORBEILLE").is_some() {
+            empty_bins(vec![drive.to_string()]).expect("la corbeille se vide");
+            assert_eq!(bin_of(&drive).map(|bin| bin.items), Some(0));
+            assert!(target.join("precieux.txt").exists(), "vider ne suit pas une jonction");
+        }
+    }
+
+    /// Une valeur `DWORD` de la corbeille du compte, notée avant d'être changée
+    /// et **remise quoi qu'il arrive** (fin normale ou panique).
+    struct BinSetting {
+        key: String,
+        name: &'static str,
+        old: Option<u32>,
+    }
+
+    impl BinSetting {
+        fn set(key: &str, name: &'static str, value: u32) -> Self {
+            let reg = |args: &[&str]| {
+                std::process::Command::new("reg.exe").args(args).output().expect("reg.exe se lance")
+            };
+            let shown = reg(&["query", key, "/v", name]);
+            let text = String::from_utf8_lossy(&shown.stdout).into_owned();
+            let old = shown.status.success().then(|| {
+                text.split_whitespace()
+                    .last()
+                    .and_then(|hex| u32::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+            });
+            let old = old.flatten();
+            println!("corbeille : {key}\\{name} valait {old:?}, passe à {value}");
+            let done =
+                reg(&["add", key, "/v", name, "/t", "REG_DWORD", "/d", &value.to_string(), "/f"]);
+            assert!(done.status.success(), "reg add {key} : {done:?}");
+            Self { key: key.to_owned(), name, old }
+        }
+    }
+
+    impl Drop for BinSetting {
+        fn drop(&mut self) {
+            let mut command = std::process::Command::new("reg.exe");
+            match self.old {
+                Some(old) => command.args([
+                    "add",
+                    &self.key,
+                    "/v",
+                    self.name,
+                    "/t",
+                    "REG_DWORD",
+                    "/d",
+                    &old.to_string(),
+                    "/f",
+                ]),
+                None => command.args(["delete", &self.key, "/v", self.name, "/f"]),
+            };
+            let result = command.output();
+            println!("corbeille : {}\\{} remis à {:?} ({result:?})", self.key, self.name, self.old);
+        }
+    }
+
+    /// Une corbeille **désactivée**, puis **trop petite** : le shell supprimerait
+    /// définitivement, c'est le seul chemin où un dossier pourrait disparaître
+    /// pour de bon. Shinku doit refuser (`Refused` ou `Unavailable`) et laisser
+    /// le fichier et le dossier **intacts**. Sur demande seulement
+    /// (`SHINKU_ESSAI_CORBEILLE=1`), sur la machine jetable de l'intégration
+    /// continue : l'essai change la corbeille **du compte** (valeur
+    /// `NukeOnDelete` de `HKCU\…\Explorer\BitBucket`, globale et pour le
+    /// volume, comme la case « Ne pas déplacer les fichiers vers la Corbeille »
+    /// de Windows ; `MaxCapacity` du volume pour la corbeille trop petite) et
+    /// remet chaque valeur ensuite, même s'il échoue.
+    ///
+    /// Trois issues, pour le fichier et le dossier : **refus** avec tout intact
+    /// (la preuve) ; **entré dans la corbeille** (Windows a ignoré le réglage :
+    /// la ligne `NON CONCLUANT` du journal le dit, l'essai n'échoue pas, et il
+    /// vide la corbeille du volume d'essai) ; **disparu sans être dans la
+    /// corbeille** (suppression définitive : l'essai échoue). Tout autre cas
+    /// échoue, avec ce qui a été vu.
+    #[test]
+    fn a_disabled_or_too_small_recycle_bin_refuses_and_never_deletes() {
+        if std::env::var_os("SHINKU_ESSAI_CORBEILLE").is_none() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let root = to_internal_path(workspace.path()).unwrap();
+        let drive: String = to_display_path(&root).to_string_lossy().chars().take(3).collect();
+        // Le volume de l'essai : `mountvol C:\ /L` rend `\\?\Volume{guid}\`.
+        let mounted = std::process::Command::new("mountvol.exe")
+            .args([drive.as_str(), "/L"])
+            .output()
+            .expect("mountvol.exe se lance");
+        let volume = String::from_utf8_lossy(&mounted.stdout).trim().to_owned();
+        let guid = volume
+            .split(['{', '}'])
+            .nth(1)
+            .unwrap_or_else(|| panic!("mountvol ne rend pas de volume : {volume:?}"))
+            .to_owned();
+        let bin = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket";
+        let volume_key = format!(r"{bin}\Volume\{{{guid}}}");
+        println!("essai : disque {drive}, volume {{{guid}}}");
+
+        let drive_text = HSTRING::from(drive.as_str());
+        let try_both = |why: &str, setting: &str| {
+            let file = root.join(format!("fichier {why}.bin"));
+            std::fs::write(&file, vec![7u8; 3 * 1024 * 1024]).unwrap();
+            let tree = root.join(format!("dossier {why}"));
+            std::fs::create_dir_all(tree.join("a").join("b")).unwrap();
+            std::fs::write(tree.join("racine.bin"), vec![1u8; 3 * 1024 * 1024]).unwrap();
+            std::fs::write(tree.join("a").join("b").join("fond.txt"), b"fond").unwrap();
+            for (label, path) in [("le fichier", &file), ("le dossier", &tree)] {
+                let before = bin_of(&drive_text).map(|bin| bin.items);
+                let sent = recycle(path);
+                let after = bin_of(&drive_text).map(|bin| bin.items);
+                let here = path.exists();
+                println!(
+                    "essai ({why}) : {label} envoyé, réponse {sent:?}, sur le disque : {here}, \
+                     éléments de la corbeille : {before:?} puis {after:?}"
+                );
+                match sent {
+                    // Issue 1 : la preuve attendue.
+                    Err(RecycleError::Refused | RecycleError::Unavailable)
+                        if here && before == after =>
+                    {
+                        println!(
+                            "essai ({why}) : {label} : corbeille coupée : refus, rien n'est parti"
+                        );
+                    }
+                    // Issue 2 : Windows a ignoré le réglage, l'élément est restaurable.
+                    Ok(()) if !here && before.zip(after).is_some_and(|(b, a)| a == b + 1) => {
+                        println!(
+                            "NON CONCLUANT : Windows a ignoré {setting} posé à {bin}, \
+                             {label} est entré dans la corbeille ({why})"
+                        );
+                        let _ = empty_bins(vec![drive.clone()]);
+                    }
+                    // Issue 3 : parti pour de bon, c'est le défaut que l'essai attrape.
+                    Ok(()) if !here && before == after => panic!(
+                        "SUPPRESSION DÉFINITIVE : {label} n'est plus sur le disque et n'est pas \
+                         dans la corbeille ({why}). Shinku a laissé Windows le supprimer pour de bon."
+                    ),
+                    other => panic!(
+                        "{why} : {label} : cas inattendu, réponse {other:?}, sur le disque : \
+                         {here}, éléments de la corbeille : {before:?} puis {after:?}"
+                    ),
+                }
+            }
+        };
+
+        {
+            let _global = BinSetting::set(bin, "NukeOnDelete", 1);
+            let _volume = BinSetting::set(&volume_key, "NukeOnDelete", 1);
+            try_both("corbeille désactivée", "NukeOnDelete");
+        }
+        {
+            let _small = BinSetting::set(&volume_key, "MaxCapacity", 1);
+            try_both("corbeille trop petite", "MaxCapacity");
         }
     }
 

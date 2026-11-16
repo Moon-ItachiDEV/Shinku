@@ -5,6 +5,24 @@
       "stopped",
       "missing"
     ],
+    "appsKind": [
+      "plain",
+      "runtime",
+      "driver"
+    ],
+    "appsOutcome": [
+      "kept"
+    ],
+    "appsRemoval": [
+      "offered",
+      "refused",
+      "own",
+      "needed"
+    ],
+    "appsScope": [
+      "account",
+      "machine"
+    ],
     "autoScan": [
       "never",
       "weekly",
@@ -19,7 +37,8 @@
       "scanNotStarted",
       "settingsNotSaved",
       "settingsUnchecked",
-      "startupRefused"
+      "startupRefused",
+      "uninstallRefused"
     ],
     "categoryState": [
       "ready",
@@ -53,6 +72,13 @@
       "notAFolder",
       "notUnicode"
     ],
+    "followPhase": [
+      "idle",
+      "launching",
+      "waiting",
+      "settling",
+      "removed"
+    ],
     "gameOption": [
       "auto",
       "power",
@@ -82,6 +108,11 @@
     "language": [
       "fr",
       "en"
+    ],
+    "leftoverKind": [
+      "folder",
+      "data",
+      "shortcut"
     ],
     "loadIssue": [
       "partial",
@@ -124,6 +155,17 @@
       "available",
       "unavailable",
       "unsuited"
+    ],
+    "removeOutcome": [
+      "removed",
+      "alreadyGone",
+      "refused",
+      "failed"
+    ],
+    "removeReason": [
+      "inUse",
+      "refused",
+      "partial"
     ],
     "risk": [
       "A",
@@ -192,13 +234,189 @@
       "light",
       "dark"
     ],
+    "uninstallRefusal": [
+      "busy",
+      "vanished",
+      "unreadable",
+      "notOffered",
+      "broken",
+      "cancelled",
+      "failed"
+    ],
     "windowsPage": [
       "gameMode",
       "power",
-      "startupApps"
+      "startupApps",
+      "apps"
     ]
   },
   "shapes": {
+    "appsView.idle": {
+      "apps": [
+        {
+          "bytes": "number",
+          "id": "string",
+          "installed": "string",
+          "kind": "string",
+          "name": "string",
+          "publisher": "string",
+          "removal": "string",
+          "scope": "string",
+          "version": "string"
+        }
+      ],
+      "complete": "boolean",
+      "follow": {
+        "phase": "string"
+      }
+    },
+    "appsView.kept": {
+      "apps": [
+        {
+          "id": "string",
+          "kind": "string",
+          "name": "string",
+          "removal": "string",
+          "scope": "string"
+        }
+      ],
+      "complete": "boolean",
+      "follow": {
+        "phase": "string"
+      },
+      "outcome": "string"
+    },
+    "appsView.launching": {
+      "apps": [
+        {
+          "bytes": "number",
+          "id": "string",
+          "installed": "string",
+          "kind": "string",
+          "name": "string",
+          "publisher": "string",
+          "removal": "string",
+          "scope": "string",
+          "version": "string"
+        }
+      ],
+      "complete": "boolean",
+      "follow": {
+        "id": "string",
+        "name": "string",
+        "phase": "string"
+      }
+    },
+    "appsView.removed": {
+      "apps": [
+        {
+          "id": "string",
+          "kind": "string",
+          "name": "string",
+          "removal": "string",
+          "scope": "string"
+        }
+      ],
+      "complete": "boolean",
+      "follow": {
+        "complete": "boolean",
+        "family": "boolean",
+        "id": "string",
+        "leftovers": [
+          {
+            "bytes": "number",
+            "files": "number",
+            "key": "number",
+            "kind": "string",
+            "path": "string"
+          }
+        ],
+        "name": "string",
+        "phase": "string"
+      }
+    },
+    "appsView.rescanned": {
+      "apps": [
+        {
+          "id": "string",
+          "kind": "string",
+          "name": "string",
+          "removal": "string",
+          "scope": "string"
+        }
+      ],
+      "complete": "boolean",
+      "follow": {
+        "complete": "boolean",
+        "family": "boolean",
+        "id": "string",
+        "leftovers": [
+          {
+            "bytes": "number",
+            "files": "number",
+            "key": "number",
+            "kind": "string",
+            "path": "string"
+          }
+        ],
+        "name": "string",
+        "phase": "string"
+      }
+    },
+    "appsView.settling": {
+      "apps": [
+        {
+          "id": "string",
+          "kind": "string",
+          "name": "string",
+          "removal": "string",
+          "scope": "string"
+        }
+      ],
+      "complete": "boolean",
+      "follow": {
+        "id": "string",
+        "name": "string",
+        "phase": "string"
+      }
+    },
+    "appsView.stopped": {
+      "apps": [
+        {
+          "id": "string",
+          "kind": "string",
+          "name": "string",
+          "removal": "string",
+          "scope": "string"
+        }
+      ],
+      "complete": "boolean",
+      "follow": {
+        "phase": "string"
+      }
+    },
+    "appsView.waiting": {
+      "apps": [
+        {
+          "bytes": "number",
+          "id": "string",
+          "installed": "string",
+          "kind": "string",
+          "name": "string",
+          "publisher": "string",
+          "removal": "string",
+          "scope": "string",
+          "version": "string"
+        }
+      ],
+      "complete": "boolean",
+      "follow": {
+        "id": "string",
+        "name": "string",
+        "phase": "string",
+        "seconds": "number"
+      }
+    },
     "cleanPreview": {
       "analysis": "number",
       "duplicates": {
@@ -290,6 +508,10 @@
       "kind": "string"
     },
     "error.startupRefused": {
+      "kind": "string",
+      "reason": "string"
+    },
+    "error.uninstallRefused": {
       "kind": "string",
       "reason": "string"
     },
@@ -503,6 +725,44 @@
           "total": "number"
         }
       ]
+    },
+    "removeLeftovers": {
+      "bytes": "number",
+      "results": [
+        {
+          "key": "number",
+          "outcome": "string",
+          "reason": "string"
+        }
+      ],
+      "view": {
+        "apps": [
+          {
+            "id": "string",
+            "kind": "string",
+            "name": "string",
+            "removal": "string",
+            "scope": "string"
+          }
+        ],
+        "complete": "boolean",
+        "follow": {
+          "complete": "boolean",
+          "family": "boolean",
+          "id": "string",
+          "leftovers": [
+            {
+              "bytes": "number",
+              "files": "number",
+              "key": "number",
+              "kind": "string",
+              "path": "string"
+            }
+          ],
+          "name": "string",
+          "phase": "string"
+        }
+      }
     },
     "sessionView.cleaned": {
       "clean": {

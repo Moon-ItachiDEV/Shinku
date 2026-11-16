@@ -32,6 +32,11 @@ const COMMANDS: &[&str] = &[
     "release_game",
     "startup_view",
     "set_startup_entry",
+    "apps_view",
+    "start_uninstall",
+    "stop_uninstall",
+    "rescan_leftovers",
+    "remove_leftovers",
     "open_windows_settings",
 ];
 

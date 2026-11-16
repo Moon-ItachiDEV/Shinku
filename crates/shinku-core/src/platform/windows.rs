@@ -7,6 +7,7 @@
 #![allow(unsafe_code)]
 
 pub(super) mod agent;
+mod apps;
 mod game;
 mod shell;
 mod startup;
@@ -53,6 +54,7 @@ use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadPro
 use windows::core::{GUID, HSTRING};
 
 use super::{Desktop, Environment, KnownFolder, RecycleBin, RecycleError, Rights, Volume};
+use crate::apps::host::AppsHost;
 use crate::fs::{fold_path, to_internal_path};
 use crate::game::host::GameHost;
 use crate::model::Timestamp;
@@ -310,6 +312,11 @@ impl Environment for SystemEnvironment {
 /// Le mode jeu sur cette machine.
 pub(super) fn game_host() -> Arc<dyn GameHost> {
     Arc::new(game::SystemHost::new())
+}
+
+/// Le module « Désinstallation » sur cette machine.
+pub(super) fn apps_host() -> Arc<dyn AppsHost> {
+    Arc::new(apps::SystemAppsHost::new())
 }
 
 /// Le module « Démarrage » sur cette machine.

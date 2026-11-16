@@ -10,6 +10,7 @@
 //! Les trois exécutables (`shinku`, `shinku-helper`, `shinku-agent`) s'appuient
 //! sur lui.
 
+pub mod apps;
 pub mod backend;
 pub mod clean;
 pub mod fs;

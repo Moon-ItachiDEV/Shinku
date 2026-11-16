@@ -34,6 +34,14 @@ Ce qui fonctionne :
   amovible), et une liste que Windows n'a pas laissé lire en entier est dite
   incomplète au lieu de passer pour complète. Voir `docs/conception.md`, section
   « Démarrage » ;
+- le module Désinstallation : la liste des apps installées (les trois sources de
+  « Programmes et fonctionnalités »), le **désinstalleur de l'éditeur** lancé
+  après une confirmation (Windows demande lui-même ses droits), puis, une fois
+  l'app partie du registre, ce qu'elle a laissé dans le compte : son dossier,
+  ses réglages, ses raccourcis morts. Rien n'est coché d'avance, tout part à la
+  **corbeille** (jamais supprimé pour de bon), et rien n'est proposé tant qu'une
+  app du même nom est encore installée. Shinku n'écrit jamais dans le registre
+  pour cela. Voir `docs/conception.md`, section « Désinstallation » ;
 - l'interface complète, en deux modes d'affichage (Crépuscule et Brume),
   branchée sur le moteur ;
 - la fenêtre de l'application (`shinku.exe`) et son installeur pour Windows,
@@ -47,7 +55,7 @@ Ce qui n'existe pas encore :
   c'est lui qui réglera les entrées de démarrage du PC (tous les comptes), qui
   demandent un administrateur ;
 - l'analyse planifiée par l'agent : pour l'instant, il ne fait que le mode jeu ;
-- les modules Désinstallation et Confidentialité ;
+- le module Confidentialité ;
 - la preuve que Windows respecte, à l'ouverture d'une session, ce que le module
   Démarrage écrit : elle ne se fait qu'à la main, sur un vrai Windows 11 (voir
   `docs/conception.md`).
@@ -142,6 +150,12 @@ vérifier, sans Windows, qu'aucun style ni script ne sera refusé.
   d'essai de `HKCU` (`Software\Shinku-Essai-<aléa>`, supprimée à la fin), jamais
   sous les vraies clés `Run` ni `StartupApproved`, et n'ouvrent jamais `HKLM`
   en écriture.
+- Le module Désinstallation se teste sur une machine fabriquée
+  (`FakeAppsHost`, un petit disque et un registre en mémoire) ; son hôte Windows
+  lit un registre d'essai sous une clé de `HKCU` et n'écrit jamais dans le vrai.
+  Sur un vrai Windows, `apps/shinku/scripts/essai-desinstallation.ps1` inscrit
+  des apps d'essai dans le compte (`-Preparer`) et les retire (`-Nettoyer`) ;
+  l'intégration continue les fait désinstaller par la fenêtre.
 - Le câblage de la fenêtre (commandes, permissions, politique de sécurité) est
   vérifié à la lecture des fichiers par `apps/shinku/tests/wiring.test.ts` :
   une commande oubliée se voit sans Windows.

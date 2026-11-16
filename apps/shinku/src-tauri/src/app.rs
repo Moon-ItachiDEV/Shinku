@@ -101,6 +101,11 @@ pub fn run() -> ExitCode {
             commands::release_game,
             commands::startup_view,
             commands::set_startup_entry,
+            commands::apps_view,
+            commands::start_uninstall,
+            commands::stop_uninstall,
+            commands::rescan_leftovers,
+            commands::remove_leftovers,
             commands::open_windows_settings,
         ])
         .setup(|app| {

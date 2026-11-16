@@ -46,7 +46,7 @@ un message.
 
 ## Entre la page et le cœur : le guichet
 
-La page ne parle qu'à `shinku_core::backend::Backend`, au travers de vingt-six
+La page ne parle qu'à `shinku_core::backend::Backend`, au travers de trente et une
 commandes Tauri (`apps/shinku/src-tauri/src/commands.rs`). Chaque commande est
 une demande précise et bornée : lancer une analyse, lire une page de résultats,
 changer un réglage, faire le vide.
@@ -72,8 +72,11 @@ changer un réglage, faire le vide.
 ### Ce que la page a le droit de faire
 
 - **Permissions Tauri au plus juste.** `capabilities/default.json` donne à la
-  fenêtre ses vingt-six commandes et les cinq gestes de sa barre de titre. Rien
-  d'autre : ni fichiers, ni réseau, ni lancement de programmes, ni événements.
+  fenêtre ses trente et une commandes et les cinq gestes de sa barre de titre. Rien
+  d'autre : ni fichiers, ni réseau, ni événements, et aucun programme que la page
+  nomme : seuls sont lancés l'agent, quatre pages des réglages de Windows, et,
+  après confirmation, le désinstalleur d'une app que le cœur relit dans le
+  registre.
   Les commandes de l'application passent elles aussi par les permissions
   (`AppManifest::commands` dans `build.rs`) : une commande absente de la liste
   est refusée.
@@ -916,6 +919,189 @@ arrêtées :
 - **il dit lui-même, une fois élevé, quelle entrée il va changer** : ce que la
   personne approuve dans la fenêtre de Windows est ce que l'assistant affiche,
   pas ce que la page prétend.
+
+## Désinstallation
+
+Le module liste les apps installées, lance le **désinstalleur de l'éditeur**
+(la fenêtre de Windows, jamais une désinstallation silencieuse), puis propose de
+mettre à la corbeille ce que l'app a laissé dans le compte. Code :
+`crates/shinku-core/src/apps/` ; l'hôte Windows, `platform/windows/apps.rs`.
+
+### Ce que lit le module
+
+Les trois sources de « Programmes et fonctionnalités » : `HKLM\...\Uninstall`
+en vue 64 bits (`m6:`), en vue 32 bits (`m3:`), et `HKCU\...\Uninstall` (`ac:`).
+Une inscription est montrée sous les conditions de Windows : un nom ;
+`SystemComponent` différent de 1 ; pas de `ParentKeyName` ; pas de
+`ReleaseType` `Update` ou `Hotfix` ; `WindowsInstaller` à 1 ou une
+`UninstallString` non vide. Bornes : 4096 sous-clés par place, 255 unités UTF-16
+par nom de clé, 32 Kio par valeur ; une place coupée par une borne ou illisible
+rend la liste **incomplète**, et la page le dit. Le module ne fait que **lire** le
+registre : aucune méthode de l'hôte ne permet d'y écrire. Les noms, les éditeurs et les
+versions sont nettoyés avant d'être montrés ; l'éditeur n'est pas une identité
+vérifiée.
+
+La page ne connaît que l'identifiant (`m6:{clé}`) : elle n'envoie jamais un
+chemin ni une commande. Au clic, l'inscription est **relue à l'instant** et la
+commande en est tirée à ce moment.
+
+### Quelle commande lancer
+
+- Windows Installer (`WindowsInstaller` à 1 et clé en GUID) : `msiexec.exe
+  /x {GUID}` du dossier système, sans élévation de la part de Shinku ;
+- sinon `UninstallString`, développée : guillemets (le chemin est ce qui est
+  entre eux), ou, sans guillemets, le plus court préfixe qui est un fichier (64
+  préfixes au plus). Un nom sans dossier n'est cherché que dans le dossier
+  système puis dans celui de Windows. Le fichier doit finir par `.exe`, `.com`,
+  `.bat` ou `.cmd` : le shell ouvrirait tout autre fichier selon son
+  association (un `.msi` lancerait une installation). Chemin réseau, lecteur non
+  fixe, existence indéterminée : inutilisable ;
+- les paramètres sont passés **tels quels**, Shinku n'en ajoute aucun ;
+- l'élévation (`runas`) est demandée pour les inscriptions du PC, jamais pour
+  celles du compte. Windows demande lui-même l'accord par sa fenêtre.
+
+Ne sont jamais proposées : Shinku lui-même, WebView2 (la fenêtre s'en sert), et
+les apps dont `NoRemove` vaut 1.
+
+### Le registre est la seule vérité
+
+`ShellExecuteExW` ne rend la main qu'après la réponse à la fenêtre de Windows,
+qui peut rester ouverte des minutes : la phase `launching` est posée **avant**
+de lancer (un second geste est refusé, la page répond). Beaucoup de
+désinstalleurs se recopient ailleurs et le premier processus sort tout de suite :
+le processus n'est donc **pas** suivi, sauf Windows Installer, dont le processus
+dure jusqu'à la fin : sorti deux lectures de suite alors que l'inscription est
+encore là, c'est « la personne a annulé » (dit une seule fois). La page relit
+toutes les deux secondes ; au bout de 30 minutes, la main est rendue.
+
+Quand l'inscription disparaît (`settling`), on laisse le désinstalleur finir :
+Inno Setup et NSIS la retirent **avant** les fichiers. La recherche des restes
+part quand 5 secondes sont passées **et** que deux lectures de suite, à 2
+secondes d'écart au moins, voient le même contenu direct dans l'emplacement de
+l'app ; au plus 60 secondes. Si l'inscription revient, on retourne à l'attente.
+Le travail de disque se fait hors du verrou de l'état, avec un numéro de
+génération : un résultat qui arrive après « Revenir à la liste » est jeté.
+
+### Les restes, règles une par une
+
+Dans le doute, on ne propose pas : manquer un reste est sans gravité, proposer
+le dossier d'une autre app ne l'est pas. Rien n'est coché d'avance.
+
+1. **Le dossier de l'app** : l'emplacement (`InstallLocation`, sinon le dossier
+   du programme du désinstalleur, sauf msiexec et les hôtes comme `cmd.exe`, et
+   jamais sous Windows) si son dernier nom, plié, est **exactement** le nom nu de
+   l'app (nom sans version ni architecture : « Python 3.12.1 (64-bit) » devient
+   « python »). Jamais `D:\Jeux`, `Local\Programs`, `D:\Steam`.
+2. **Réglages et données** : dans `%APPDATA%`, `%LOCALAPPDATA%` et `LocalLow` (pas
+   `Programs`), un sous-dossier direct qui porte exactement le nom nu, ou le
+   dernier nom de l'emplacement s'il est aussi un mot entier du nom de l'app
+   (`VLC` pour « VLC media player » ; pas `Application`, `bin`, un numéro) ; et,
+   sous un dossier qui porte exactement le nom de l'éditeur, un sous-dossier à
+   ce nom (`Team Cherry\Hollow Knight`). Le dossier de l'éditeur seul n'est
+   jamais proposé ; jamais « contient », jamais « commence par ». La famille
+   vaut **pour chaque nom utilisé** : un nom (le nom nu, ou le dernier nom de
+   l'emplacement) dont une voisine est de la famille est abandonné. Et B ne
+   propose **jamais** l'emplacement lui-même, ni un dossier qui le contient, ni
+   un dossier dedans : seul A peut proposer l'emplacement, avec sa preuve par
+   le nom.
+3. **Raccourcis** du menu Démarrer et du Bureau **du compte** dont la cible
+   brute (lue, jamais suivie) est dans l'emplacement et **absente avec
+   certitude**.
+
+Un candidat est écarté s'il n'est pas un chemin propre d'un lecteur fixe (ni `.`
+ni `..`, ni `~`, ni nom court, ni caractère interdit) ; s'il n'existe plus ; si
+un lien est **n'importe où** sur son chemin ; si une voisine le réclame (son
+emplacement est égal ou dedans, ou le contient ; ou le texte de son
+désinstalleur ou de son icône **contient** le chemin du dossier suivi d'une
+barre inverse, où que ce soit dans la ligne : `cmd /c "…\X\u.bat"` et
+`rundll32 "…\X\y.dll",Run` réclament `X`) ; s'il contient le dossier de `shinku.exe` ; s'il est dans un
+dossier synchronisé (OneDrive…) ; si le garde (`Guard`) le refuse ; ou, pour un
+dossier, s'il ne se compte pas en entier ou contient un lien. Tous les restes
+montrés sont donc retirables.
+
+**La famille.** Tant qu'une app installée porte le même nom nu, ou commence par
+lui suivi d'une espace, **rien** n'est proposé (Python 3.11 à côté de 3.12, une
+nouvelle version installée pendant l'attente). Les inscriptions des quatre
+places (dont `HKCU\Software\Wow6432Node`) sont relues sans le filtre de la
+liste : si l'une est illisible ou incomplète, rien n'est proposé non plus, et la
+page le dit (`complete: false`).
+
+### Une voisine qu'on ne sait pas lire ne protège rien, donc on le dit
+
+Une voisine écrite en nom court (`PROGRA~1`), en `\\?\…`, avec `.` ou `..`,
+n'est pas comparable à un chemin propre. L'hôte la remet en forme longue et
+complète (sous Windows : `GetFullPathNameW` puis `GetLongPathNameW`, préfixe
+retiré). Pour l'emplacement d'une voisine : si l'hôte n'y arrive pas et que le
+chemin n'est pas **absent avec certitude**, on ne sait pas où elle vit ; s'il
+est absent avec certitude, il ne réclame rien. Pour un désinstalleur ou une
+icône qui contiennent un nom court (`~` suivi d'un chiffre) : on en tire le
+fichier (le programme que lancerait Shinku, hors hôtes comme `cmd.exe` ;
+l'icône sans guillemets ni `,indice`), on le remet en forme longue, et la
+réclamation se juge sur ce chemin. Si le fichier ne s'obtient pas, les voisines
+sont **illisibles** : `complete` est faux, rien n'est proposé, rien n'est
+retiré. Conséquence assumée : **sur un PC où une vieille app est inscrite d'une
+façon que Shinku ne sait pas lire, il ne propose aucun reste**, et la page le
+dit. (La photo de l'app désinstallée ne change pas : un emplacement en `~`
+est absent, donc rien n'est cherché dedans.)
+
+### La mise à la corbeille
+
+Un geste qui **écrit** à la fois (`exclusive`) : une mise à la corbeille, un
+`rescan` ou le démarrage d'un grand vide en refusent un autre (`busy`). La
+première recherche des restes, lancée par la page qui attend, ne le prend pas :
+elle ne fait que lire. Le grand vide en cours est lu **une fois l'exclusivité
+prise** (`start_clean` ne la rend qu'après son départ), donc la course est
+fermée dans les deux sens. Plus de 64 clés demandées : tout est refusé. À chaque demande, tout
+est **revérifié à l'instant** : il existe, aucun lien, le garde l'accepte, aucune
+voisine ne le réclame, aucune app de la même famille n'est apparue, et un
+raccourci mène encore dans l'emplacement et nulle part. Seule la corbeille est
+utilisée, jamais une suppression définitive ; si elle refuse, l'élément reste et
+la page le dit (`inUse`, `refused`, `partial`). Un dossier entre à la corbeille
+comme **un seul élément** (`FOF_ALLOWUNDO`, sans suivre les liens), jamais fichier
+par fichier ; si Windows répond oui mais que le chemin est encore là, c'est
+`failed/partial`, jamais « parti ».
+
+### Limites connues
+
+- Un désinstalleur encore au travail 60 secondes après avoir retiré son
+  inscription : les restes sont cherchés quand même, et la page peut montrer un
+  dossier à moitié vidé (« Chercher à nouveau » corrige).
+- Les restes de `Program Files`, de `ProgramData`, du menu Démarrer commun et du
+  Bureau public ne sont ni montrés ni retirés.
+- Aucun reste n'est cherché par ressemblance de nom : on manque `%APPDATA%\Code`
+  pour Visual Studio Code, `Documents\My Games`, etc.
+- Rien n'est proposé tant qu'une app de la même famille est installée.
+- Une app nommée comme le dossier de réglages d'une autre (« Code 1.2 » et le
+  `%APPDATA%\Code` de Visual Studio Code) ferait proposer ce dossier : c'est le
+  prix du nom exact. D'où : jamais coché, une phrase d'avertissement, et la
+  corbeille.
+- Un registre qui change pendant la lecture d'une place (une sous-clé retirée
+  entre deux énumérations) rend cette place **incomplète** : rien n'est proposé.
+- Pendant l'attente (`settling`), le contenu du dossier de l'app (4096 noms au
+  plus) est lu sous le verrou du suivi : un seul dossier, borné, donc court.
+- Les indices `runtime` et `driver` sont des **noms**, des ressemblances, jamais
+  des certitudes.
+- L'élévation des désinstalleurs du PC suit ce que des tiers ont observé de
+  Windows, pas une documentation de Microsoft. Recette de vérification, à la
+  main : une inscription d'essai dont la ligne est `cmd.exe /k whoami /groups`,
+  sous `HKLM` puis sous `HKCU`, lancée depuis la page.
+- Une corbeille pleine abandonne ses éléments les plus anciens (réglage de
+  Windows).
+- Une inscription du compte peut désigner n'importe quel programme (comme dans
+  Windows) : Shinku ne lance qu'après un clic et une confirmation, sans droits de
+  plus que la personne.
+- Les apps du Store (MSIX) ne sont pas listées.
+- Ce que les essais ne prouvent pas : le dossier de la corbeille réelle
+  (`the_real_recycle_bin_receives_a_whole_folder_or_nothing`, et le refus d'une
+  corbeille désactivée ou trop petite,
+  `a_disabled_or_too_small_recycle_bin_refuses_and_never_deletes`, qui pose
+  `NukeOnDelete` et `MaxCapacity` du compte et les remet ; tous derrière
+  `SHINKU_ESSAI_CORBEILLE`, donc seulement sur la machine jetable de la CI.
+  Où Windows 11 range ce réglage pour un volume n'est pas établi avec
+  certitude : l'essai pose la valeur globale et celle du volume, et dit en
+  clair s'il n'a pas pu conclure), `ShellExecuteExW` et sa fenêtre d'élévation, et les
+  scripts PowerShell ne tournent que sur un vrai Windows (intégration continue,
+  `scripts/essai-desinstallation.ps1`).
 
 ## L'agent
 
