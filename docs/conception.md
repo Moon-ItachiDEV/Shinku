@@ -190,6 +190,27 @@ Produire `types.ts` automatiquement reste possible plus tard.
   l'ouverture ni sur les bords pendant un redimensionnement.
 - **Une seule fenêtre.** Un second lancement ramène la première au premier
   plan (`tauri-plugin-single-instance`). Ses arguments sont ignorés.
+  **Un programme qui n'est pas la seule fenêtre de Shinku n'écrit rien dans les
+  fichiers de Shinku.** Le greffon tranche pendant `build()` (il sort alors avec
+  `std::process::exit(0)`) ; or `run()` a déjà construit le guichet
+  (`.manage(Backend::for_machine())`). Ce que `run()` fait avant la décision ne
+  fait donc que lire : `for_machine` lit les réglages (`SettingsStore::load`) et
+  branche les magasins (`GameStore`, `StartupStore`, `UninstallStore`,
+  `JournalStore`) et les hôtes sans rien écrire, ni dans un fichier, ni dans le
+  registre, ni en lançant un programme ; `report_crashes` ne fait que poser un
+  crochet de panne. Tout ce qui écrit est dans le crochet `setup` de
+  l'application, qui tourne après ceux des greffons (`tauri::Builder::build` appelle
+  `initialize_plugins`, puis `setup` ne vient qu'à l'événement `Ready` de
+  `run`) : la fermeture du grand vide coupé (`Backend::close_interrupted_clean`,
+  voir « Le Journal »), puis la mise en accord de l'agent du mode jeu
+  (`sync_agent`, qui écrit la valeur `Run` et lance `shinku-agent.exe`).
+  `Backend::with_journal` ne fait que brancher le journal ; l'essai
+  `the_interrupted_clean_is_closed_only_once_the_single_window_is_known`
+  (`main.rs`) garde l'ordre dans la source. La preuve sur le vrai Windows est
+  `checkSingleWindow` (`scripts/essai-fenetre.mjs`) : elle écrit dans
+  `journal.json` un grand vide « en cours » daté de 2020, lance un second
+  `shinku.exe`, exige le fichier identique octet pour octet, puis remet les
+  octets d'origine (sautée sans `journal.json`, donc sans `--grand-vide`).
 - **Jamais de fermeture muette.** Si WebView2 manque, si la fenêtre ne peut pas
   s'ouvrir ou si une erreur imprévue arrête le programme, un message de Windows
   l'explique. Sans lui, la version finale (sans console) disparaîtrait de
@@ -1131,7 +1152,15 @@ récente en haut. Elle ne fait rien : elle se lit. Code : `crates/shinku-core/sr
 
 **Quatre sources, aucune écriture de plus pour trois d'entre elles.**
 
-- Les grands vides : `journal.json`, tel quel (`clean/journal.rs` n'a pas changé).
+- Les grands vides : `journal.json`, tel quel. Il est lu **avec borne** : plus de
+  1 Mio, il est vide (comme un fichier illisible, la même `read_bounded` que les
+  autres magasins), et la lecture ne garde que les 100 derniers grands vides.
+  Un grand vide resté « en cours » est noté coupé **une seule fois, au lancement,
+  par la seule fenêtre** : `Backend::close_interrupted_clean`, appelée dans le
+  crochet `setup` avant l'ouverture de la fenêtre (la page demande `overview`
+  dès qu'elle s'ouvre, l'annonce doit déjà y être). Elle ne sert qu'une fois par
+  guichet : un second appel marquerait le grand vide en cours de cette fenêtre.
+  Voir « Une seule fenêtre ».
 - Les coupures du Démarrage : `startup.json`, lu **sans** le relire dans le
   registre (`StartupDesk::cuts`) : ouvrir le Journal ne touche pas au registre.
   Une ligne dit, quand l'entrée s'est rallumée, « S'est remise toute seule depuis… »,
@@ -1202,9 +1231,7 @@ comme la 1.
 **Limites connues.** « S'est remise toute seule depuis… » veut dire « Shinku
 l'a revue active une fois », pas « elle est active maintenant ». Un nom d'app
 garde ses caractères de mise en forme (sens d'écriture, par exemple) : la page
-les isole par `<bdi>`, elle ne les retire pas. `journal.json` est lu **sans
-borne de taille** (`clean/journal.rs`, d'avant ce lot) : à borner dans un lot à
-part ; le Journal est un lecteur de plus de ce fichier. Un désinstalleur qui
+les isole par `<bdi>`, elle ne les retire pas. Un désinstalleur qui
 rend la main avant d'avoir fini peut faire noter la désinstallation un peu tôt,
 ou jamais (30 minutes) : le registre décide. Une désinstallation faite hors de Shinku n'est pas notée. L'ouverture
 du fichier des licences dépend de l'association des fichiers `.txt` de la

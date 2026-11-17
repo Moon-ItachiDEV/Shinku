@@ -15,6 +15,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -247,6 +248,9 @@ pub struct Backend {
     session: Session,
     store: Option<SettingsStore>,
     journal: Option<JournalStore>,
+    /// Vrai dès que [`Backend::close_interrupted_clean`] a servi : elle ne sert
+    /// qu'une fois par guichet.
+    interrupted_closed: AtomicBool,
     desk: Mutex<Desk>,
     scan_defaults: ScanOptions,
     game: GameDesk,
@@ -292,6 +296,8 @@ impl Backend {
             ))
             .with_privacy(PrivacyDesk::new(platform::privacy_host()))
             .with_licences(Arc::new(SystemLicences));
+        // Le journal est seulement branché : `shinku.exe` ferme le grand vide
+        // coupé (`close_interrupted_clean`) une fois sûr d'être la seule fenêtre.
         match journal {
             Some(journal) => backend.with_journal(journal),
             None => backend,
@@ -331,6 +337,7 @@ impl Backend {
             environment,
             store,
             journal: None,
+            interrupted_closed: AtomicBool::new(false),
             desk: Mutex::new(Desk { settings, issue, interrupted: None }),
             scan_defaults: ScanOptions::new(Trigger::Button),
             sync_lock: Mutex::new(()),
@@ -407,16 +414,30 @@ impl Backend {
         self.with_privacy(PrivacyDesk::new(host))
     }
 
-    /// Branche le journal des grands vides.
-    ///
-    /// Un grand vide resté « en cours » dans ce journal n'a pas pu être
-    /// conclu la dernière fois : il y est noté comme coupé, et annoncé dans
-    /// [`Overview::interrupted_clean`]. Rien n'est rejoué.
+    /// Branche le journal des grands vides. Il ne fait que le brancher : rien
+    /// n'est lu ni écrit ici (voir [`Backend::close_interrupted_clean`]).
     pub fn with_journal(mut self, journal: JournalStore) -> Self {
-        let interrupted = journal.close_interrupted();
-        self.desk.get_mut().unwrap_or_else(PoisonError::into_inner).interrupted = interrupted;
         self.journal = Some(journal);
         self
+    }
+
+    /// Note comme coupé le grand vide resté « en cours » dans le journal, et
+    /// l'annonce dans [`Overview::interrupted_clean`]. Rien n'est rejoué.
+    ///
+    /// **À appeler une seule fois, au lancement, quand on sait être la seule
+    /// fenêtre de Shinku** : elle réécrit `journal.json`, et un autre processus
+    /// de Shinku (un second lancement qui va se fermer) ne doit jamais écrire
+    /// dans les fichiers de Shinku, ni marquer coupé un grand vide qui tourne
+    /// encore dans la première fenêtre. Pour la même raison, elle ne sert
+    /// qu'une fois par guichet : un second appel ne fait rien, car un grand
+    /// vide « en cours » serait alors celui de cette fenêtre.
+    pub fn close_interrupted_clean(&self) {
+        if self.interrupted_closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(journal) = &self.journal else { return };
+        let interrupted = journal.close_interrupted();
+        self.desk().interrupted = interrupted;
     }
 
     /// Remplace les réglages de base des analyses (seuils, modules). Les
@@ -1062,9 +1083,16 @@ mod tests {
         let mut options = ScanOptions::new(Trigger::Button);
         options.duplicate_min_size = 4096;
         options.large_threshold = 32 * 1024;
-        Backend::new(Arc::new(environment), Arc::new(MemoryCache::new()), Some(pc.store.clone()))
-            .with_scan_defaults(options)
-            .with_journal(pc.journal.clone())
+        let backend = Backend::new(
+            Arc::new(environment),
+            Arc::new(MemoryCache::new()),
+            Some(pc.store.clone()),
+        )
+        .with_scan_defaults(options)
+        .with_journal(pc.journal.clone());
+        // Comme `shinku.exe` au lancement, une fois sûr d'être la seule fenêtre.
+        backend.close_interrupted_clean();
+        backend
     }
 
     fn wait_for(backend: &Backend, wanted: SessionState) -> SessionView {
@@ -1710,6 +1738,64 @@ mod tests {
         // Rien n'est rejoué, et il n'est annoncé qu'au lancement qui suit.
         assert_eq!(pc.journal.runs(), [Run { state: RunState::Interrupted, ..cut }]);
         assert_eq!(self::backend(&pc).overview().interrupted_clean, None);
+    }
+
+    /// Un guichet branché sur le journal du PC, sans fermer le grand vide coupé :
+    /// ce que fait `shinku.exe` avant de savoir s'il est la seule fenêtre.
+    fn backend_with_journal_only(pc: &Pc) -> Backend {
+        Backend::new(
+            Arc::new(pc.environment.clone()),
+            Arc::new(MemoryCache::new()),
+            Some(pc.store.clone()),
+        )
+        .with_journal(pc.journal.clone())
+    }
+
+    #[test]
+    fn plugging_the_journal_alone_writes_nothing() {
+        let pc = pc();
+        let cut = Run::starting(pc.environment.now());
+        pc.journal.record(&cut).unwrap();
+        let before = fs::read(pc.journal.path()).unwrap();
+
+        let backend = backend_with_journal_only(&pc);
+        assert_eq!(
+            fs::read(pc.journal.path()).unwrap(),
+            before,
+            "un programme qui n'est peut-être pas la seule fenêtre n'écrit rien"
+        );
+        assert_eq!(pc.journal.runs(), [cut], "le grand vide en cours reste en cours");
+        assert_eq!(backend.overview().interrupted_clean, None, "et rien n'est annoncé");
+    }
+
+    #[test]
+    fn closing_the_interrupted_clean_marks_and_announces_it() {
+        let pc = pc();
+        let cut = Run::starting(pc.environment.now());
+        pc.journal.record(&cut).unwrap();
+
+        let backend = backend_with_journal_only(&pc);
+        backend.close_interrupted_clean();
+        let interrupted = Run { state: RunState::Interrupted, ..cut };
+        assert_eq!(backend.overview().interrupted_clean, Some(interrupted));
+        assert_eq!(pc.journal.runs(), [interrupted]);
+    }
+
+    #[test]
+    fn closing_the_interrupted_clean_serves_only_once() {
+        let pc = pc();
+        pc.journal.record(&Run::starting(pc.environment.now())).unwrap();
+        let backend = backend_with_journal_only(&pc);
+        backend.close_interrupted_clean();
+
+        // Un grand vide part dans cette fenêtre : il est « en cours » pour de bon.
+        let running = Run::starting(Timestamp::from_ticks(pc.environment.now().ticks() + 50_000));
+        pc.journal.record(&running).unwrap();
+        let before = fs::read(pc.journal.path()).unwrap();
+        backend.close_interrupted_clean();
+        assert_eq!(fs::read(pc.journal.path()).unwrap(), before);
+        assert_eq!(pc.journal.runs().last(), Some(&running));
+        assert_eq!(pc.journal.runs().last().map(|run| run.state), Some(RunState::Running));
     }
 
     #[test]

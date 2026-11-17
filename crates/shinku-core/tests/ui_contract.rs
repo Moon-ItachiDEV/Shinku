@@ -354,6 +354,8 @@ fn the_json_sent_to_the_window_keeps_its_shape() {
         )
         .with_apps_parts(apps_host.clone(), Some(notes_store))
         .with_privacy_parts(privacy_host.clone());
+    // Comme `shinku.exe` au lancement : le grand vide resté « en cours » est annoncé.
+    backend.close_interrupted_clean();
 
     let mut samples: BTreeMap<&str, Value> = BTreeMap::new();
     samples.insert("sessionView.idle", to_json(&backend.view()));
