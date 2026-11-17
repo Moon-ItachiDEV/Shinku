@@ -20,8 +20,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::apps::desk::AppsDesk;
+use crate::apps::desk::{AppsDesk, Clock};
 use crate::apps::host::{AppsHost, InertAppsHost};
+use crate::apps::notes::UninstallStore;
 use crate::apps::view::{AppsView, RemoveLeftovers, UninstallRefusal};
 use crate::clean::journal::{JournalStore, Run};
 use crate::clean::{CleanPreview, CleanRefusal, CleanRequest};
@@ -32,6 +33,8 @@ use crate::game::host::{GameHost, InertHost};
 use crate::game::store::GameStore;
 use crate::game::view::{GameOption, GameRefusal, GameStatus, GameView, OpenApp};
 use crate::hash::{DigestCache, MemoryCache};
+use crate::history::{self, HistoryView};
+use crate::licences::{self, InertLicences, LicencesHost, LicencesOpened, SystemLicences};
 use crate::model::Trigger;
 use crate::platform::agent::WindowsPage;
 use crate::platform::{self, Environment, RecycleBin, Volume};
@@ -250,6 +253,7 @@ pub struct Backend {
     startup: StartupDesk,
     apps: AppsDesk,
     privacy: PrivacyDesk,
+    licences: Arc<dyn LicencesHost>,
     /// Un seul `sync` du mode jeu à la fois, dans l'ordre d'arrivée.
     sync_lock: Mutex<()>,
     /// Pour les tests : fait attendre le prochain changement du mode jeu entre
@@ -277,11 +281,17 @@ impl Backend {
             StartupStore::for_machine(environment.as_ref()),
         )
         .with_helper(platform::elevated_helper());
+        let environment_for_notes = Arc::clone(&environment);
         let backend = Self::new(environment, Arc::new(MemoryCache::new()), store)
             .with_game(game)
             .with_startup(startup)
-            .with_apps(AppsDesk::new(platform::apps_host()))
-            .with_privacy(PrivacyDesk::new(platform::privacy_host()));
+            .with_apps(AppsDesk::new(
+                platform::apps_host(),
+                UninstallStore::for_machine(environment_for_notes.as_ref()),
+                wall_clock(&environment_for_notes),
+            ))
+            .with_privacy(PrivacyDesk::new(platform::privacy_host()))
+            .with_licences(Arc::new(SystemLicences));
         match journal {
             Some(journal) => backend.with_journal(journal),
             None => backend,
@@ -315,8 +325,9 @@ impl Backend {
             session: Session::new(Arc::clone(&environment), cache),
             game,
             startup,
-            apps: AppsDesk::new(Arc::new(InertAppsHost)),
+            apps: AppsDesk::new(Arc::new(InertAppsHost), None, wall_clock(&environment)),
             privacy: PrivacyDesk::new(Arc::new(InertPrivacyHost)),
+            licences: Arc::new(InertLicences),
             environment,
             store,
             journal: None,
@@ -371,9 +382,18 @@ impl Backend {
         self
     }
 
-    /// Comme [`Backend::with_apps`], pour des tests : la machine fabriquée.
-    pub fn with_apps_parts(self, host: Arc<dyn AppsHost>) -> Self {
-        self.with_apps(AppsDesk::new(host))
+    /// Comme [`Backend::with_apps`], pour des tests : la machine fabriquée et le
+    /// fichier des désinstallations notées. L'heure est celle de la machine
+    /// de ce guichet.
+    pub fn with_apps_parts(self, host: Arc<dyn AppsHost>, notes: Option<UninstallStore>) -> Self {
+        let clock = wall_clock(&self.environment);
+        self.with_apps(AppsDesk::new(host, notes, clock))
+    }
+
+    /// Branche l'ouverture du fichier des licences.
+    pub fn with_licences(mut self, licences: Arc<dyn LicencesHost>) -> Self {
+        self.licences = licences;
+        self
     }
 
     /// Branche le module Confidentialité.
@@ -699,6 +719,37 @@ impl Backend {
         self.apps.remove(keys, &|| self.session.is_cleaning()).map_err(uninstall_refused)
     }
 
+    // --- Journal ---
+
+    /// Le Journal : ce que Shinku a noté de ce qu'il a fait, en une liste, la plus
+    /// récente en haut. **Ne fait que lire** : aucune exclusivité, aucune écriture,
+    /// aucune lecture du registre. Un fichier absent ou illisible donne une part
+    /// vide.
+    pub fn history_view(&self) -> HistoryView {
+        let runs = self.journal.as_ref().map(JournalStore::runs).unwrap_or_default();
+        history::assemble(
+            self.environment.now().unix_millis(),
+            &runs,
+            &self.startup.cuts(),
+            self.game.last().as_ref(),
+            &self.apps.notes(),
+        )
+    }
+
+    /// Oublie les désinstallations notées (`uninstalls.json`), et seulement elles :
+    /// les grands vides n'ont ni nom ni chemin, le Démarrage et le mode jeu ont
+    /// leurs propres pages. Rend le Journal d'après.
+    pub fn forget_uninstalls(&self) -> HistoryView {
+        self.apps.forget_notes();
+        self.history_view()
+    }
+
+    /// Ouvre `LICENCES-TIERS.txt`, à côté de l'exécutable, dans le programme que le
+    /// compte associe aux `.txt`. Le chemin est calculé ici, jamais reçu.
+    pub fn open_licences(&self) -> LicencesOpened {
+        licences::open(self.licences.as_ref())
+    }
+
     // --- Confidentialité ---
 
     /// Tout ce que la page « Confidentialité » affiche : les traces de l'activité
@@ -870,6 +921,12 @@ impl Backend {
         desk.settings = next.clone();
         Ok(next)
     }
+}
+
+/// L'heure murale de cette machine, pour dater les désinstallations notées.
+fn wall_clock(environment: &Arc<dyn Environment>) -> Clock {
+    let environment = Arc::clone(environment);
+    Arc::new(move || environment.now().unix_millis())
 }
 
 fn uninstall_refused(reason: UninstallRefusal) -> BackendError {
@@ -2297,5 +2354,180 @@ mod tests {
             "la mise en accord du premier lit les réglages d'à présent : {:?}",
             arcade.agent.autostart_calls()
         );
+    }
+
+    // --- Le Journal ---
+
+    /// Un guichet dont les quatre traces du Journal sont posées : un grand vide
+    /// terminé, un grand vide coupé, une entrée de Démarrage coupée que la
+    /// machine ne connaît plus, la dernière partie, une désinstallation vue.
+    fn journal_pc() -> (Pc, Backend, i64) {
+        use crate::apps::fake::FakeAppsHost;
+        use crate::apps::notes::{NotesFile, UninstallNote};
+        use crate::game::control::FakeAgent;
+        use crate::game::host::FakeHost;
+        use crate::game::store::{GameFile, Last};
+        use crate::startup::host::FakeStartupHost;
+        use crate::startup::store::StartupFile;
+        use crate::startup::{EntryId, Place};
+
+        let pc = pc();
+        let now = pc.environment.now().unix_millis();
+        let mut done = Run::starting(Timestamp::from_ticks((now - 50_000) * 10_000));
+        done.state = RunState::Completed;
+        done.finished_ms = Some(now - 40_000);
+        done.freed_bytes = 4096;
+        pc.journal.record(&done).unwrap();
+        pc.journal.record(&Run::starting(Timestamp::from_ticks((now - 10_000) * 10_000))).unwrap();
+
+        let startup = StartupStore::for_machine(&pc.environment).unwrap();
+        let mut cut = StartupFile::default();
+        cut.remember(EntryId::new(Place::UserRun, "Disparue"), "Disparue", now - 30_000, 1_000);
+        startup.save(&cut).unwrap();
+
+        let game = GameStore::for_machine(&pc.environment).unwrap();
+        let file = GameFile {
+            last: Some(Last {
+                name: "Jeu".to_owned(),
+                path: r"C:\Jeux\jeu.exe".to_owned(),
+                started: now - 20_000,
+                ended: now - 19_000,
+                power_restored: None,
+                apps_restored: 0,
+                complete: true,
+            }),
+            ..GameFile::default()
+        };
+        game.save(&file).unwrap();
+
+        let notes = UninstallStore::for_machine(&pc.environment).unwrap();
+        let mut stored = NotesFile::default();
+        stored.push(UninstallNote::new(now - 5_000, "Essai"));
+        notes.save(&stored).unwrap();
+
+        let backend = backend(&pc)
+            .with_startup_parts(
+                Arc::new(FakeStartupHost::new()),
+                Some(StartupStore::at(startup.path())),
+                None,
+            )
+            .with_game_parts(
+                Arc::new(FakeHost::new()),
+                Arc::new(FakeAgent::new(AgentState::Stopped)),
+                Some(GameStore::at(game.path())),
+            )
+            .with_apps_parts(Arc::new(FakeAppsHost::new()), Some(notes));
+        (pc, backend, now)
+    }
+
+    fn history_kinds(view: &HistoryView) -> Vec<&'static str> {
+        use crate::history::HistoryLine;
+        view.lines
+            .iter()
+            .map(|line| match line {
+                HistoryLine::Clean { .. } => "clean",
+                HistoryLine::StartupCut { .. } => "startupCut",
+                HistoryLine::Game { .. } => "game",
+                HistoryLine::Uninstall { .. } => "uninstall",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_journal_gathers_the_four_traces_most_recent_first() {
+        let (_pc, backend, _now) = journal_pc();
+        let view = backend.history_view();
+        // Par date : la désinstallation, le grand vide resté en cours (noté « coupé » au
+        // lancement), la partie, l'entrée de Démarrage, le grand vide terminé.
+        assert_eq!(history_kinds(&view), ["uninstall", "clean", "game", "startupCut", "clean"]);
+        assert!(!view.more);
+    }
+
+    #[test]
+    fn reading_the_journal_reads_files_only_and_writes_nothing() {
+        let (pc, backend, _now) = journal_pc();
+        let files = |pc: &Pc| {
+            let local = pc.profile.join("AppData").join("Local").join("Shinku");
+            let roaming = pc.profile.join("AppData").join("Roaming").join("Shinku");
+            ["startup.json", "game.json", "uninstalls.json"]
+                .map(|name| fs::read(local.join(name)).unwrap())
+                .into_iter()
+                .chain([fs::read(roaming.join("journal.json")).unwrap()])
+                .collect::<Vec<_>>()
+        };
+        let before = files(&pc);
+        let first = backend.history_view();
+        let second = backend.history_view();
+        assert_eq!(first, second);
+        assert_eq!(files(&pc), before, "aucune écriture");
+        // L'entrée coupée que la machine ne connaît plus est encore là : la lecture
+        // ne réconcilie pas (la page Démarrage, elle, la retirerait).
+        assert!(history_kinds(&first).contains(&"startupCut"));
+        // Et le guichet ne prend aucune exclusivité.
+        let held = backend.apps.try_exclusive().expect("libre");
+        assert_eq!(backend.history_view(), first);
+        drop(held);
+    }
+
+    #[test]
+    fn a_missing_trace_gives_an_empty_part() {
+        let pc = pc();
+        let backend = backend(&pc);
+        assert!(backend.history_view().lines.is_empty());
+        let bare =
+            Backend::new(Arc::new(pc.environment.clone()), Arc::new(MemoryCache::new()), None);
+        assert_eq!(bare.history_view(), HistoryView::default());
+    }
+
+    #[test]
+    fn forgetting_the_uninstalls_empties_their_file_and_nothing_else() {
+        let (pc, backend, _now) = journal_pc();
+        let local = pc.profile.join("AppData").join("Local").join("Shinku");
+        let roaming = pc.profile.join("AppData").join("Roaming").join("Shinku");
+        let others = |pc: &Pc| {
+            let _ = pc;
+            ["startup.json", "game.json"]
+                .map(|name| fs::read(local.join(name)).unwrap())
+                .into_iter()
+                .chain([fs::read(roaming.join("journal.json")).unwrap()])
+                .collect::<Vec<_>>()
+        };
+        let before = others(&pc);
+        let kinds = history_kinds(&backend.history_view());
+        let after = backend.forget_uninstalls();
+        assert!(!history_kinds(&after).contains(&"uninstall"));
+        assert_eq!(history_kinds(&after).len(), kinds.len() - 1);
+        assert_eq!(others(&pc), before, "ni le Démarrage, ni le mode jeu, ni les grands vides");
+        assert_eq!(history_kinds(&backend.history_view()), history_kinds(&after));
+        // Une seconde fois : rien à oublier, rien ne casse.
+        assert_eq!(backend.forget_uninstalls(), after);
+    }
+
+    #[test]
+    fn the_licences_are_opened_through_the_host_and_never_by_a_page_path() {
+        use crate::licences::{FileFacts, LicencesHost};
+        use std::path::Path;
+
+        #[derive(Debug)]
+        struct One(Mutex<Vec<PathBuf>>);
+        impl LicencesHost for One {
+            fn file(&self) -> Option<PathBuf> {
+                Some(PathBuf::from("Shinku").join("LICENCES-TIERS.txt"))
+            }
+            fn facts(&self, _path: &Path) -> Option<FileFacts> {
+                Some(FileFacts { regular: true, reparse: false, len: 10 })
+            }
+            fn open(&self, path: &Path) -> std::io::Result<()> {
+                self.0.lock().unwrap().push(path.to_path_buf());
+                Ok(())
+            }
+        }
+        let pc = pc();
+        let plain = backend(&pc);
+        assert_eq!(plain.open_licences(), LicencesOpened::Missing, "la démo et les essais");
+        let host = Arc::new(One(Mutex::new(Vec::new())));
+        let backend = backend(&pc).with_licences(host.clone());
+        assert_eq!(backend.open_licences(), LicencesOpened::Opened);
+        assert_eq!(*host.0.lock().unwrap(), [PathBuf::from("Shinku").join("LICENCES-TIERS.txt")]);
     }
 }

@@ -23,6 +23,8 @@ pub mod game;
 pub mod guard;
 pub mod hash;
 pub mod helper;
+pub mod history;
+pub mod licences;
 pub mod model;
 pub mod platform;
 pub mod privacy;

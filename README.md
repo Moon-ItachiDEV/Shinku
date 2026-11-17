@@ -54,6 +54,10 @@ Ce qui fonctionne :
   l'Explorateur, le presse-papiers. Il ne touche ni aux mots de passe, ni aux
   favoris, ni aux cookies, et ne montre jamais le contenu d'une trace. Voir
   `docs/conception.md`, section « Confidentialité » ;
+- le Journal : une page qui rassemble ce que Shinku a fait (grands vides,
+  désinstallations, dernière partie du mode jeu, coupures du Démarrage), en
+  lecture seule, avec un bouton pour oublier les désinstallations notées. Voir
+  `docs/conception.md`, section « Le Journal » ;
 - l'interface complète, en deux modes d'affichage (Crépuscule et Brume),
   branchée sur le moteur ;
 - la fenêtre de l'application (`shinku.exe`) et son installeur pour Windows,
@@ -67,7 +71,7 @@ Ce qui n'existe pas encore :
   Leurs boutons sont visibles mais inactifs, et l'interface le dit ;
 - la signature du code : Windows affiche « éditeur inconnu » à l'installation
   et à chaque accord demandé pour l'assistant ;
-- la vérification de mise à jour et le journal de ce que Shinku a fait ;
+- la vérification de mise à jour ;
 - l'analyse planifiée par l'agent : pour l'instant, il ne fait que le mode jeu ;
 - la preuve que Windows respecte, à l'ouverture d'une session, ce que le module
   Démarrage écrit : elle ne se fait qu'à la main, sur un vrai Windows 11 (voir

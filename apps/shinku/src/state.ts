@@ -11,10 +11,12 @@ import type {
   GameOption,
   GameStatus,
   GameView,
+  HistoryView,
   KeepChoice,
   JunkReport,
   LargeFilesPage,
   LeftoverRow,
+  LicencesOpened,
   OpenApp,
   Overview,
   PrivacyRefusal,
@@ -41,6 +43,7 @@ export type Route =
   | 'gameMode'
   | 'uninstall'
   | 'privacy'
+  | 'journal'
   | 'settings';
 
 /**
@@ -153,6 +156,18 @@ export interface AppState {
   privacyLineOutcomes: boolean;
   /** La phrase de la région vivante : les issues du dernier effacement, annoncées une fois. */
   privacyAnnounce: string;
+  /** Le dernier Journal lu ; `null` tant que le cœur n'a pas répondu (et hors de la page, où rien n'est gardé). */
+  history: HistoryView | null;
+  /** Le Journal n'a pas pu être lu : la page le dit au lieu de « Chargement… ». */
+  historyFailed: boolean;
+  /** La confirmation de « Oublier les désinstallations », tant qu'elle est ouverte. */
+  historyAsk: boolean;
+  /** « Oublier » est parti : son bouton attend la réponse. */
+  historyBusy: boolean;
+  /** Ce que « Voir leurs licences » a répondu quand le fichier ne s'est pas ouvert ; `null` sinon. */
+  licencesAnswer: Exclude<LicencesOpened, 'opened'> | null;
+  /** La demande d'ouverture est partie : le bouton attend la réponse. */
+  licencesBusy: boolean;
   /** L'heure qu'il est, rafraîchie de temps en temps : pour « il y a 8 mois ». */
   now: number;
 }
@@ -217,6 +232,12 @@ export function initialState(now: number): AppState {
     privacyLastAt: null,
     privacyLineOutcomes: false,
     privacyAnnounce: '',
+    history: null,
+    historyFailed: false,
+    historyAsk: false,
+    historyBusy: false,
+    licencesAnswer: null,
+    licencesBusy: false,
     now,
   };
 }
@@ -290,6 +311,16 @@ export interface Actions {
   dismissErase(): void;
   /** « Réessayer » : la première vue des traces n'est pas venue. */
   retryPrivacy(): void;
+  /** « Réessayer » : le Journal n'est pas venu. */
+  retryJournal(): void;
+  /** « Oublier les désinstallations » : ouvre la confirmation. Rien ne part encore. */
+  askForgetUninstalls(): void;
+  /** La personne confirme : le cœur vide le fichier des désinstallations notées. */
+  confirmForgetUninstalls(): void;
+  /** La personne referme la confirmation : rien ne part. */
+  dismissForgetUninstalls(): void;
+  /** « Voir leurs licences ». */
+  openLicences(): void;
   openWindowsSettings(page: WindowsPage): void;
   minimize(): void;
   toggleMaximize(): void;

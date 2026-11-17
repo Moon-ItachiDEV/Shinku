@@ -66,7 +66,14 @@ fn seed(pc: &Pc) {
         write(&pc.roaming.join("Shinku").join(name), b"{}");
     }
     write(&pc.roaming.join("Shinku").join("journal.json.tmp"), b"{}");
-    for name in ["game.json", "game.json.tmp", "startup.json", "startup.json.tmp"] {
+    for name in [
+        "game.json",
+        "game.json.tmp",
+        "startup.json",
+        "startup.json.tmp",
+        "uninstalls.json",
+        "uninstalls.json.tmp",
+    ] {
         write(&pc.local.join("Shinku").join(name), b"{}");
     }
     for base in [&pc.roaming, &pc.local] {

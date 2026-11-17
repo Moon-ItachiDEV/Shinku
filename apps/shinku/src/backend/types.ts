@@ -630,6 +630,44 @@ export interface ErasedTraces {
 /** `busy` : un grand vide ou un autre effacement est en cours ; `tooMany` : plus de 64 traces d'un coup. */
 export type PrivacyRefusal = 'busy' | 'tooMany';
 
+// ── Le Journal ─────────────────────────────────────────────────────────────
+
+/**
+ * Une ligne du Journal : ce que Shinku a noté, jamais un chemin ni un identifiant. Une date `null` est une date
+ * que le cœur a écartée (absente, avant 1970, ou plus d'un jour dans le futur) : la page écrit « date inconnue ».
+ * Un nom vient du registre de Windows ou d'un fichier du compte : il est montré tel quel, comme du texte.
+ */
+export type HistoryLine =
+  | {
+      kind: 'clean';
+      startedMs: number | null;
+      finishedMs: number | null;
+      state: RunState;
+      freedBytes: number;
+      recoverableBytes: number;
+      skippedFiles: number;
+    }
+  | { kind: 'startupCut'; atMs: number | null; name: string; backMs: number | null }
+  | {
+      kind: 'game';
+      startedMs: number | null;
+      endedMs: number | null;
+      name: string;
+      powerRestored: boolean | null;
+      appsRestored: number;
+      complete: boolean;
+    }
+  | { kind: 'uninstall'; atMs: number | null; name: string; leftovers: number; leftoverBytes: number };
+
+/** Le Journal : la ligne la plus récente d'abord, celles sans date à la fin. `more` : il y en avait davantage (200 au plus). */
+export interface HistoryView {
+  lines: HistoryLine[];
+  more: boolean;
+}
+
+/** Ce que rend `open_licences` : `missing` (le fichier n'est pas à côté de Shinku) ou `failed` (Windows n'a pas pu l'ouvrir). */
+export type LicencesOpened = 'opened' | 'missing' | 'failed';
+
 /** Ce que l'interface peut demander. Deux réalisations : Tauri, et la démo. */
 export interface Backend {
   overview(): Promise<Overview>;
@@ -683,6 +721,12 @@ export interface Backend {
   privacyView(): Promise<PrivacyView>;
   /** `ids` : seulement ceux que le cœur a fabriqués. Il refuse au-delà de 64, ou pendant un grand vide. */
   eraseTraces(ids: string[]): Promise<ErasedTraces>;
+  /** Le Journal. Ne fait que lire : rien n'est écrit, rien n'est lu dans le registre. */
+  historyView(): Promise<HistoryView>;
+  /** Oublie les désinstallations notées, et elles seules ; rend le Journal d'après. */
+  forgetUninstalls(): Promise<HistoryView>;
+  /** Ouvre le fichier des licences, à côté de Shinku : aucun argument, le chemin est calculé par le cœur. */
+  openLicences(): Promise<LicencesOpened>;
   openWindowsSettings(page: WindowsPage): Promise<void>;
   minimizeWindow(): Promise<void>;
   toggleMaximizeWindow(): Promise<void>;

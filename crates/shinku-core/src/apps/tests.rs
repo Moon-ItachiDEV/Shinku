@@ -292,7 +292,7 @@ fn unusable_lines_are_refused() {
 #[test]
 fn start_reads_the_registration_again_and_never_uses_the_page() {
     let host = machine();
-    let desk = AppsDesk::new(host.clone());
+    let desk = AppsDesk::bare(host.clone());
     // Entre l'affichage de la liste et le clic, la commande change.
     host.add_file(r"C:\Program Files\Essai\autre.exe", 1);
     host.replace_registration(
@@ -321,7 +321,7 @@ fn start_refuses_what_is_not_offered() {
     );
     host.add_registration(Place::Machine64, reg("Shinku", "Shinku", "x.exe"));
     host.add_registration(Place::Machine64, reg("cassee", "Cassée", r"C:\nulle\part.exe"));
-    let desk = AppsDesk::new(host.clone());
+    let desk = AppsDesk::bare(host.clone());
     let refusal = |id: &str| desk.start(id).expect_err("refusé");
     assert_eq!(refusal("n'importe quoi"), UninstallRefusal::NotOffered);
     assert_eq!(refusal("m6:nr"), UninstallRefusal::NotOffered);
@@ -342,7 +342,7 @@ fn start_maps_what_windows_answers() {
     ] {
         let host = machine();
         host.set_launch(plan);
-        let desk = AppsDesk::new(host);
+        let desk = AppsDesk::bare(host);
         assert_eq!(desk.start("m6:Essai").expect_err("refusé"), expected);
         assert!(matches!(desk.view().follow, FollowView::Idle), "rien ne reste en cours");
     }
@@ -352,7 +352,7 @@ fn start_maps_what_windows_answers() {
 fn a_second_start_is_refused_while_the_first_waits_for_windows() {
     let host = machine();
     host.add_registration(Place::Machine64, reg("autre", "Autre", "x.exe"));
-    let desk = Arc::new(AppsDesk::new(host.clone()));
+    let desk = Arc::new(AppsDesk::bare(host.clone()));
     let (entered, release) = host.block_next_launch();
     let first = {
         let desk = Arc::clone(&desk);
@@ -371,7 +371,7 @@ fn a_second_start_is_refused_while_the_first_waits_for_windows() {
 
 #[test]
 fn the_exclusive_right_is_taken_without_waiting() {
-    let desk = AppsDesk::new(machine());
+    let desk = AppsDesk::bare(machine());
     let held = desk.try_exclusive().expect("libre");
     assert!(desk.try_exclusive().is_none());
     assert_eq!(desk.rescan().expect_err("occupé"), UninstallRefusal::Busy);
@@ -382,7 +382,7 @@ fn the_exclusive_right_is_taken_without_waiting() {
 
 #[test]
 fn a_big_clean_blocks_removal() {
-    let desk = AppsDesk::new(machine());
+    let desk = AppsDesk::bare(machine());
     assert_eq!(desk.remove(&[1], &|| true).expect_err("occupé"), UninstallRefusal::Busy);
 }
 
@@ -390,7 +390,7 @@ fn a_big_clean_blocks_removal() {
 fn the_module_never_writes_to_the_registry_or_the_disk_by_itself() {
     // Une lecture de la liste ne lance rien et ne met rien à la corbeille.
     let host = machine();
-    let desk = AppsDesk::new(host.clone());
+    let desk = AppsDesk::bare(host.clone());
     let _ = desk.view();
     assert!(host.launches().is_empty());
     assert!(host.recycled().is_empty());

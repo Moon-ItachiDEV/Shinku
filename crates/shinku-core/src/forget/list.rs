@@ -1,7 +1,8 @@
 //! La liste fermée des fichiers de réglages et de journaux de Shinku.
 //!
 //! Elle est faite des **constantes de nom** des modules qui écrivent ces
-//! fichiers (`settings`, `clean::journal`, `game::store`, `startup::store`) et
+//! fichiers (`settings`, `clean::journal`, `game::store`, `startup::store`,
+//! `apps::notes`) et
 //! du nom de leur voisin temporaire (`write_replacing` écrit à côté, puis met en
 //! place : une coupure laisse un `.tmp`). Aucun nom n'est recopié ici.
 //!
@@ -12,7 +13,7 @@ use std::ffi::OsString;
 
 use crate::platform::KnownFolder;
 use crate::settings::temporary_name;
-use crate::{clean, game, settings, startup};
+use crate::{apps, clean, game, settings, startup};
 
 /// Un dossier `Shinku` et les fichiers que Shinku y écrit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +33,7 @@ fn written(name: &str) -> [OsString; 2] {
 
 /// Les deux dossiers de Shinku, avec ce qu'ils contiennent : d'abord
 /// `%APPDATA%\Shinku` (réglages et journal), puis `%LOCALAPPDATA%\Shinku` (mode
-/// jeu et démarrage).
+/// jeu, démarrage et désinstallations notées).
 pub fn closed_list() -> [Group; 2] {
     let mut roaming: Vec<OsString> = Vec::new();
     roaming.extend(written(settings::FILE_NAME));
@@ -43,6 +44,7 @@ pub fn closed_list() -> [Group; 2] {
     let mut local: Vec<OsString> = Vec::new();
     local.extend(written(game::store::FILE_NAME));
     local.extend(written(startup::store::FILE_NAME));
+    local.extend(written(apps::notes::FILE_NAME));
 
     [
         Group { folder: KnownFolder::RoamingAppData, dir: settings::APP_DIR, files: roaming },

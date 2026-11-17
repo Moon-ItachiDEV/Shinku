@@ -17,30 +17,132 @@
 //! la première n'est pas exclusive, et `rescan` ne l'est que pour ne pas se
 //! chevaucher avec une mise à la corbeille.
 
+use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use crate::apps::follow::{Follow, Step, Tracked};
 use crate::apps::host::{AppsHost, RawRegistration};
 use crate::apps::launch::{Plan, plan};
 use crate::apps::leftovers::{self, RemoveOutcome, RemoveResult, Snapshot};
+use crate::apps::notes::{UninstallNote, UninstallStore};
 use crate::apps::view::{AppRow, AppsView, Outcome, RemoveLeftovers, UninstallRefusal};
 use crate::apps::{AppId, MAX_LEFTOVERS, Removal, app_from, list};
 
+/// L'heure murale, en millisecondes depuis 1970. Les essais la remplacent.
+pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+/// Les notes de désinstallation : le fichier, et la clé (l'heure) de la note
+/// de la désinstallation en cours, tant qu'il y en a une.
+struct Notes {
+    store: Option<UninstallStore>,
+    current: Option<i64>,
+}
+
 /// Le module « Désinstallation », vu du guichet.
-#[derive(Debug)]
 pub struct AppsDesk {
     host: Arc<dyn AppsHost>,
     follow: Mutex<Follow>,
+    /// `uninstalls.json`. Seul ce guichet l'écrit, et jamais sous le verrou du
+    /// suivi. **Ordre des verrous : les notes d'abord, puis le suivi** (le
+    /// suivi est rendu aussitôt) ; aucun chemin ne prend le suivi puis les notes.
+    ///
+    /// Invariant : `Notes::current` désigne la note de la dernière app vue
+    /// partie, ou rien (écriture ratée, pas de magasin, « Oublier »). Les restes
+    /// ne s'ajoutent qu'en phase `Removed`, qu'on n'atteint qu'après le passage
+    /// qui lève le drapeau, et `settle_note` écrit la note avant tout ajout.
+    notes: Mutex<Notes>,
+    clock: Clock,
     /// Pris (sans attendre) par une mise à la corbeille, un `rescan`, ou le
     /// démarrage d'un grand vide. La première recherche des restes, lancée par
     /// [`AppsDesk::view`], ne le prend pas : elle ne fait que lire.
     exclusive: Mutex<()>,
 }
 
+impl fmt::Debug for AppsDesk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppsDesk").finish_non_exhaustive()
+    }
+}
+
 impl AppsDesk {
-    /// Un guichet sur cette machine.
-    pub fn new(host: Arc<dyn AppsHost>) -> Self {
-        Self { host, follow: Mutex::new(Follow::new()), exclusive: Mutex::new(()) }
+    /// Un guichet sur cette machine. `notes` est `uninstalls.json` (sans lui,
+    /// rien n'est noté) et `clock` l'heure murale, qui date les notes.
+    pub fn new(host: Arc<dyn AppsHost>, notes: Option<UninstallStore>, clock: Clock) -> Self {
+        Self {
+            host,
+            follow: Mutex::new(Follow::new()),
+            notes: Mutex::new(Notes { store: notes, current: None }),
+            clock,
+            exclusive: Mutex::new(()),
+        }
+    }
+
+    /// Un guichet sans notes, pour les essais qui n'en parlent pas.
+    #[cfg(test)]
+    pub(crate) fn bare(host: Arc<dyn AppsHost>) -> Self {
+        Self::new(host, None, Arc::new(|| 0))
+    }
+
+    fn notes_lock(&self) -> MutexGuard<'_, Notes> {
+        self.notes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Les désinstallations notées, de la plus ancienne à la plus récente. Lit
+    /// le fichier ; n'écrit rien.
+    pub fn notes(&self) -> Vec<UninstallNote> {
+        let notes = self.notes_lock();
+        notes.store.as_ref().map(|store| store.load().notes).unwrap_or_default()
+    }
+
+    /// Oublie toutes les désinstallations notées : le fichier est vidé, et la
+    /// note de la désinstallation en cours (si elle a une clé) ne sera pas
+    /// recréée par une mise à la corbeille qui suit. Rien d'autre n'est touché.
+    pub fn forget_notes(&self) {
+        let mut notes = self.notes_lock();
+        notes.current = None;
+        if let Some(store) = &notes.store {
+            // Une écriture qui échoue laisse les notes : la vue d'après le dira.
+            let _ = store.save(&crate::apps::notes::NotesFile::default());
+        }
+    }
+
+    /// Écrit la note d'une app vue partie, sous le verrou des notes déjà pris
+    /// par l'appelant. La clé devient l'heure de la note si elle est partie, et
+    /// rien sinon : elle ne désigne jamais la note d'une autre app.
+    fn write_note(notes: &mut Notes, at_ms: i64, name: &str) {
+        notes.current = notes.store.as_ref().and_then(|store| {
+            let mut file = store.load();
+            file.push(UninstallNote::new(at_ms, name));
+            store.save(&file).ok().map(|_| at_ms)
+        });
+    }
+
+    /// Ajoute des restes mis à la corbeille à la note courante, s'il y en a une.
+    fn add_leftovers(&self, count: u32, bytes: u64) {
+        if count == 0 {
+            return;
+        }
+        let notes = self.notes_lock();
+        let Some(key) = notes.current else { return };
+        let Some(store) = &notes.store else { return };
+        let mut file = store.load();
+        let Some(note) = file.notes.iter_mut().rev().find(|note| note.at_ms == key) else {
+            return;
+        };
+        note.leftovers = note.leftovers.saturating_add(count);
+        note.leftover_bytes = note.leftover_bytes.saturating_add(bytes);
+        let _ = store.save(&file);
+    }
+
+    /// Relève le drapeau « l'app est partie » et écrit la note. Les notes
+    /// d'abord, puis le suivi (rendu aussitôt) : la clé et la note changent
+    /// ensemble, et l'écriture du fichier ne se fait pas sous le verrou du suivi.
+    fn settle_note(&self) {
+        let mut notes = self.notes_lock();
+        let gone = self.follow().take_gone();
+        if let Some(name) = gone {
+            Self::write_note(&mut notes, (self.clock)(), &name);
+        }
     }
 
     fn follow(&self) -> MutexGuard<'_, Follow> {
@@ -65,7 +167,7 @@ impl AppsDesk {
     }
 
     /// Un pas de suivi, puis, s'il le faut, la recherche des restes (hors verrou).
-    fn poll(&self) {
+    pub(super) fn poll(&self) {
         let step = self.follow().poll(self.host.as_ref());
         if let Step::Search { generation, snapshot, mut next_key } = step {
             let found = leftovers::search(self.host.as_ref(), &snapshot, &mut next_key);
@@ -80,6 +182,7 @@ impl AppsDesk {
             let mut follow = self.follow();
             (follow.view(self.host.uptime()), follow.take_kept())
         };
+        self.settle_note();
         AppsView {
             apps: listing.apps.iter().map(AppRow::from).collect(),
             complete: listing.complete,
@@ -168,12 +271,22 @@ impl AppsDesk {
         if cleaning() {
             return Err(UninstallRefusal::Busy);
         }
+        // La note existe avant que les restes partent, même si personne n'a relu la
+        // vue depuis la recherche.
+        self.settle_note();
         let input = if keys.len() > MAX_LEFTOVERS { None } else { self.follow().removal_input() };
         let (results, bytes) = match input {
             Some((snapshot, found)) => {
                 let (results, bytes) =
                     leftovers::remove(self.host.as_ref(), &snapshot, &found, keys);
                 self.follow().apply_removal(&results);
+                // Seuls les restes réellement mis à la corbeille comptent : ni
+                // `AlreadyGone`, ni `Refused`.
+                let removed = results
+                    .iter()
+                    .filter(|result| result.outcome == RemoveOutcome::Removed)
+                    .count();
+                self.add_leftovers(u32::try_from(removed).unwrap_or(u32::MAX), bytes);
                 (results, bytes)
             }
             None => {

@@ -6,7 +6,7 @@
 //! d'agent.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -237,6 +237,14 @@ pub fn open_apps() -> Vec<OpenProgram> {
 /// Ouvre une page des réglages de Windows.
 pub fn open_windows_settings(page: WindowsPage) -> io::Result<()> {
     imp::agent::open_windows_settings(page)
+}
+
+/// Ouvre ce fichier avec le programme que le compte y associe (le verbe `open`
+/// du shell). Réservée à `licences.rs`, qui calcule le chemin lui-même
+/// (`licences_path`) : aucun chemin reçu de la page ne doit jamais arriver ici,
+/// et la fonction n'est pas visible hors du cœur pour que le type le tienne.
+pub(crate) fn open_file(path: &Path) -> io::Result<()> {
+    imp::agent::open_file(path)
 }
 
 #[cfg(test)]

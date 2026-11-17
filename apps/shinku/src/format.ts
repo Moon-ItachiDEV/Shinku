@@ -123,6 +123,18 @@ export function formatDuration(milliseconds: number): string {
   return rest === 0 ? `${hours}${NBSP}h` : `${hours}${NBSP}h${NBSP}${String(rest).padStart(2, '0')}`;
 }
 
+/**
+ * La durée entre un début et une fin, ou `null` si elle n'a pas de sens : une date
+ * manquante, ou une fin qui n'est pas après le début. `formatDuration` borne à
+ * « 1 min » : sans ce contrôle, une fin avant le début s'écrirait « 1 min ».
+ */
+export function formatSpan(start: number | null, end: number | null): string | null {
+  if (start === null || end === null || !(end > start)) {
+    return null;
+  }
+  return formatDuration(end - start);
+}
+
 /** Heure locale : « 14:32 ». */
 export function formatClock(timestamp: number): string {
   const date = new Date(timestamp);
@@ -144,12 +156,13 @@ export function formatSince(then: number, now: number): string {
   const dayOf = (value: Date): number => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
   // Les jours se comptent sur le calendrier, pas en tranches de 24 h : un changement d'heure ne les décale pas.
   const days = Math.round((dayOf(today) - dayOf(date)) / DAY);
-  if (days <= 0) {
+  if (days === 0) {
     return clock;
   }
   if (days === 1) {
     return `hier, ${clock}`;
   }
+  // Un jour après aujourd'hui (une horloge en avance : le cœur tolère 24 h) montre son vrai jour.
   return `${formatDay(then, now)}, ${clock}`;
 }
 

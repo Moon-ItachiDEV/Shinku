@@ -21,6 +21,8 @@ use shinku_core::apps::view::{AppsView, RemoveLeftovers};
 use shinku_core::backend::{Backend, BackendError, DuplicatesPage, LargeFilesPage, Overview};
 use shinku_core::clean::{CleanPreview, CleanRequest};
 use shinku_core::game::view::{GameOption, GameStatus, GameView, OpenApp};
+use shinku_core::history::HistoryView;
+use shinku_core::licences::LicencesOpened;
 use shinku_core::platform::agent::WindowsPage;
 use shinku_core::privacy::view::{ErasedTraces, PrivacyView};
 use shinku_core::scan::report::{JunkReport, KeepChoice};
@@ -330,6 +332,27 @@ pub fn erase_traces(
     ids: Vec<String>,
 ) -> Result<ErasedTraces, BackendError> {
     backend.erase_traces(&ids, owner_of(&window))
+}
+
+/// Le Journal : ce que Shinku a noté de ce qu'il a fait, en une liste, la plus
+/// récente en haut. Ne fait que lire ; aucun chemin n'y figure.
+#[tauri::command(async)]
+pub fn history_view(backend: State<'_, Backend>) -> HistoryView {
+    backend.history_view()
+}
+
+/// Oublie les désinstallations notées (leur fichier, et lui seul), puis rend le
+/// Journal d'après.
+#[tauri::command(async)]
+pub fn forget_uninstalls(backend: State<'_, Backend>) -> HistoryView {
+    backend.forget_uninstalls()
+}
+
+/// Ouvre `LICENCES-TIERS.txt`, posé à côté de `shinku.exe`, dans le programme que le
+/// compte associe aux `.txt`. Sans argument : le chemin est calculé par le cœur.
+#[tauri::command(async)]
+pub fn open_licences(backend: State<'_, Backend>) -> LicencesOpened {
+    backend.open_licences()
 }
 
 /// Ouvre l'une des sept pages des réglages de Windows que la page propose.

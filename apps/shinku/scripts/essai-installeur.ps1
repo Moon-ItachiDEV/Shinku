@@ -527,7 +527,7 @@ $programmes = $env:ProgramW6432
 if (-not $programmes) { $programmes = $env:ProgramFiles }
 $dossier = Join-Path $programmes 'Shinku'
 $reglages = Join-Path $env:APPDATA 'Shinku'
-# Les journaux du mode jeu et du Démarrage (game.json, startup.json).
+# Les journaux du mode jeu, du Démarrage et des désinstallations (game.json, startup.json, uninstalls.json).
 $journaux = Join-Path $env:LOCALAPPDATA 'Shinku'
 
 function Verifier-Existe([string]$chemin, [string]$quoi) {
@@ -727,7 +727,7 @@ function Chemins-Reglages {
     foreach ($nom in 'settings.json', 'settings.illisible.json', 'journal.json', 'settings.json.tmp', 'journal.json.tmp') {
         $chemins += (Join-Path $roaming $nom)
     }
-    foreach ($nom in 'game.json', 'game.json.tmp', 'startup.json', 'startup.json.tmp') {
+    foreach ($nom in 'game.json', 'game.json.tmp', 'startup.json', 'startup.json.tmp', 'uninstalls.json', 'uninstalls.json.tmp') {
         $chemins += (Join-Path $local $nom)
     }
     return $chemins

@@ -83,7 +83,14 @@ fn the_closed_list_is_exactly_the_files_shinku_writes() {
     assert_eq!(local.dir, "Shinku");
     assert_eq!(
         names(&local.files),
-        ["game.json", "game.json.tmp", "startup.json", "startup.json.tmp"]
+        [
+            "game.json",
+            "game.json.tmp",
+            "startup.json",
+            "startup.json.tmp",
+            "uninstalls.json",
+            "uninstalls.json.tmp"
+        ]
     );
 }
 
@@ -317,11 +324,12 @@ fn the_shipped_part_keeps_what_follows_a_test_module_at_the_top() {
 /// Pour ceux-là, la liste reste ce que les constructeurs y mettent.
 #[test]
 fn a_module_that_writes_a_new_file_must_be_in_the_closed_list() {
-    const STORES: [&str; 4] = [
+    const STORES: [&str; 5] = [
         "crates/shinku-core/src/clean/journal.rs",
         "crates/shinku-core/src/game/store.rs",
         "crates/shinku-core/src/settings.rs",
         "crates/shinku-core/src/startup/store.rs",
+        "crates/shinku-core/src/apps/notes.rs",
     ];
     let msg = "écriture ou nom nouveau. Un réglage ou un journal de Shinku : ajoute son nom à \
                forget::list (et à la conception). Un nom seulement lu ou nommé, que Shinku \
@@ -331,11 +339,11 @@ fn a_module_that_writes_a_new_file_must_be_in_the_closed_list() {
     // en plus : deux occurrences).
     assert_eq!(
         count_of("write_replacing("),
-        counts(&[(STORES[0], 1), (STORES[1], 1), (STORES[2], 2), (STORES[3], 1),]),
+        counts(&[(STORES[4], 1), (STORES[0], 1), (STORES[1], 1), (STORES[2], 2), (STORES[3], 1)]),
         "{msg}"
     );
     // Et chaque magasin ne définit qu'un nom de fichier.
-    for store in [STORES[0], STORES[1], STORES[3]] {
+    for store in [STORES[0], STORES[1], STORES[3], STORES[4]] {
         let names: Vec<_> =
             file_name_literals().into_iter().filter(|(path, _)| path == store).collect();
         assert_eq!(names.len(), 1, "{store} : {names:?}. {msg}");
@@ -368,16 +376,17 @@ fn a_module_that_writes_a_new_file_must_be_in_the_closed_list() {
     assert_eq!(found, pinned, "un nom de fichier nouveau dans le code livré : {msg}");
     // La liste elle-même.
     let [roaming, local] = list::closed_list();
-    assert_eq!(names_of(&roaming.files).len() + names_of(&local.files).len(), 9);
+    assert_eq!(names_of(&roaming.files).len() + names_of(&local.files).len(), 11);
 }
 
 fn names_of(files: &[OsString]) -> Vec<&str> {
     names(files)
 }
 
-/// Les noms de fichiers que le code livré écrit en entier : les cinq de Shinku
+/// Les noms de fichiers que le code livré écrit en entier : les six de Shinku
 /// (dans les magasins) et ce que d'autres modules lisent ou nomment.
 const EXPECTED_FILE_NAMES: &[(&str, &str)] = &[
+    ("crates/shinku-core/src/apps/notes.rs", "uninstalls.json"),
     ("crates/shinku-core/src/clean/journal.rs", "journal.json"),
     ("crates/shinku-core/src/game/store.rs", "game.json"),
     // Des noms que Shinku lit ou refuse de nettoyer, qu'il n'écrit pas.
@@ -428,9 +437,16 @@ fn files_first_then_the_empty_folders_then_the_two_trees() {
     .map(|name| format!("file {}", roaming(name)))
     .collect();
     expected.extend(
-        ["game.json", "game.json.tmp", "startup.json", "startup.json.tmp"]
-            .iter()
-            .map(|name| format!("file {}", local(name))),
+        [
+            "game.json",
+            "game.json.tmp",
+            "startup.json",
+            "startup.json.tmp",
+            "uninstalls.json",
+            "uninstalls.json.tmp",
+        ]
+        .iter()
+        .map(|name| format!("file {}", local(name))),
     );
     expected.push(format!("dir {ROAMING}/Shinku"));
     expected.push(format!("dir {LOCAL}/Shinku"));
@@ -473,7 +489,7 @@ fn nothing_to_do_is_code_zero_too() {
     let outcome = run(&host);
     assert_eq!(outcome.exit_code(), 0);
     // Il a quand même regardé partout.
-    assert_eq!(host.removals().len(), 9 + 2 + 2);
+    assert_eq!(host.removals().len(), 11 + 2 + 2);
 }
 
 #[test]
@@ -486,7 +502,7 @@ fn something_left_is_code_one() {
     assert_eq!(outcome.exit_code(), 1);
     // Ce qui est gardé ne se réessaie pas : une seule passe, donc pas d'attente
     // autre que celle qui complète la seconde de vie.
-    assert_eq!(host.removals().len(), 13);
+    assert_eq!(host.removals().len(), 15);
 }
 
 #[test]
@@ -534,7 +550,7 @@ fn a_busy_file_is_retried_and_leaves_when_it_frees_up() {
     // Trois passes complètes : tout est repris, pas seulement le fichier occupé.
     let calls = host.removals().iter().filter(|line| line.ends_with("settings.json")).count();
     assert_eq!(calls, 3);
-    assert_eq!(host.removals().len(), 13 * 3);
+    assert_eq!(host.removals().len(), 15 * 3);
     // Deux pauses, puis la seconde de vie minimale est déjà acquise.
     assert_eq!(host.sleeps()[..2], [RETRY_PAUSE, RETRY_PAUSE]);
 }
@@ -544,7 +560,7 @@ fn a_busy_tree_is_retried_too() {
     let host = full_pc();
     host.script_tree(&format!("{LOCAL}/fr.shinku.app"), &[busy_tree(), done_tree()]);
     assert_eq!(run(&host), Outcome::Done);
-    assert_eq!(host.removals().len(), 13 * 2);
+    assert_eq!(host.removals().len(), 15 * 2);
 }
 
 #[test]
@@ -555,7 +571,7 @@ fn the_ten_seconds_are_for_everything_not_per_file() {
     for name in ["settings.json", "journal.json"] {
         host.script_file(&roaming(name), &[Removed::Busy; 1000]);
     }
-    for name in ["game.json", "startup.json"] {
+    for name in ["game.json", "startup.json", "uninstalls.json"] {
         host.script_file(&local(name), &[Removed::Busy; 1000]);
     }
     host.script_tree(&format!("{ROAMING}/fr.shinku.app"), &[busy_tree(); 1000]);
@@ -564,34 +580,34 @@ fn the_ten_seconds_are_for_everything_not_per_file() {
     assert_eq!(host.now(), RETRY_BUDGET);
     // 40 pauses de 250 ms, donc 41 passes.
     assert_eq!(host.sleeps().len(), 40);
-    assert_eq!(host.removals().len(), 13 * 41);
+    assert_eq!(host.removals().len(), 15 * 41);
 }
 
 #[test]
 fn time_spent_working_counts_against_the_ten_seconds() {
-    // Chaque suppression coûte 100 ms : une passe de 13 appels en coûte 1,3 s.
+    // Chaque suppression coûte 100 ms : une passe de 15 appels en coûte 1,5 s.
     // Le budget s'épuise donc en moins de pauses, et jamais au-delà de 5 s + une passe.
     let mut host = full_pc();
     host.cost = Duration::from_millis(100);
     host.script_file(&roaming("settings.json"), &[Removed::Busy; 1000]);
     assert_eq!(run(&host), Outcome::Left);
-    let passes = host.removals().len() / 13;
+    let passes = host.removals().len() / 15;
     assert!(passes <= 8, "{passes} passes : le temps de travail doit compter");
-    assert!(host.now() < RETRY_BUDGET + Duration::from_millis(1300) + RETRY_PAUSE);
+    assert!(host.now() < RETRY_BUDGET + Duration::from_millis(1500) + RETRY_PAUSE);
     assert!(host.total_slept() < RETRY_BUDGET);
 }
 
 #[test]
 fn the_last_pause_never_goes_past_the_budget() {
-    // 13 appels à 90 ms = 1,17 s par passe ; au bout de 4 passes et 3 pauses de
-    // 250 ms, il reste moins qu'une pause : la dernière est raccourcie.
+    // 15 appels à 90 ms = 1,35 s par passe ; le budget finit par laisser moins qu'une
+    // pause : la dernière est raccourcie.
     let mut host = full_pc();
     host.cost = Duration::from_millis(90);
     host.script_file(&roaming("settings.json"), &[Removed::Busy; 1000]);
     assert_eq!(run(&host), Outcome::Left);
     assert!(host.sleeps().iter().all(|pause| *pause <= RETRY_PAUSE));
     // L'horloge ne dépasse jamais d'une passe la fin du budget.
-    assert!(host.now() <= RETRY_BUDGET + Duration::from_millis(13 * 90));
+    assert!(host.now() <= RETRY_BUDGET + Duration::from_millis(15 * 90));
 }
 
 // --- La seconde de vie minimale ---
@@ -621,11 +637,11 @@ fn it_lives_at_least_one_second_when_everything_goes_fast() {
 
 #[test]
 fn it_only_sleeps_what_is_missing_of_the_second() {
-    // 13 appels à 50 ms = 650 ms de travail : il manque 350 ms.
+    // 15 appels à 50 ms = 750 ms de travail : il manque 250 ms.
     let mut host = full_pc();
     host.cost = Duration::from_millis(50);
     assert_eq!(run(&host), Outcome::Done);
-    assert_eq!(host.sleeps(), [Duration::from_millis(350)]);
+    assert_eq!(host.sleeps(), [Duration::from_millis(250)]);
     assert_eq!(host.now(), MIN_LIFETIME);
 }
 
@@ -635,7 +651,7 @@ fn it_does_not_sleep_more_when_the_work_already_took_a_second() {
     host.cost = Duration::from_millis(200);
     assert_eq!(run(&host), Outcome::Done);
     assert!(host.sleeps().is_empty());
-    assert_eq!(host.now(), Duration::from_millis(2600));
+    assert_eq!(host.now(), Duration::from_millis(3000));
 }
 
 // --- L'échéance totale ---

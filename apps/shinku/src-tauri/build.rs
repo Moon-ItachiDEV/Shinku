@@ -39,6 +39,9 @@ const COMMANDS: &[&str] = &[
     "remove_leftovers",
     "privacy_view",
     "erase_traces",
+    "history_view",
+    "forget_uninstalls",
+    "open_licences",
     "open_windows_settings",
 ];
 

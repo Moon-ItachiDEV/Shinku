@@ -182,6 +182,13 @@ pub(super) mod agent {
         Vec::new()
     }
 
+    pub fn open_file(_path: &std::path::Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "ouvrir un fichier n'existe que sous Windows",
+        ))
+    }
+
     pub fn open_windows_settings(_page: WindowsPage) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

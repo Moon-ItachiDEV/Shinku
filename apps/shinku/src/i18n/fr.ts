@@ -19,6 +19,13 @@ import {
 const some = (count: number, one: string, many: string): string =>
   `${formatCount(count)}${NBSP}${plural(count, one, many)}`;
 
+/**
+ * Ce que le mode jeu dit de la remise en place d'une partie. Une seule formule : la page Mode jeu et le Journal
+ * la reprennent telle quelle.
+ */
+const GAME_RESTORED = 'Tout a été remis en place.';
+const GAME_NOT_RESTORED = 'Tout n’a pas pu être remis en place : vérifie le mode d’alimentation de Windows.';
+
 const EXACT = Symbol('exact');
 
 /** Une part de texte que la typographie ne touche pas : un nom que le cœur a déjà mis en forme (`registered`). */
@@ -94,6 +101,7 @@ export const fr = typeset({
     gameMode: 'Mode jeu',
     uninstall: 'Désinstallation',
     privacy: 'Confidentialité',
+    journal: 'Journal',
     settings: 'Paramètres',
     binOver: ', au-delà du seuil',
   },
@@ -386,8 +394,73 @@ export const fr = typeset({
     foldersNote: 'Changer cette liste efface les résultats en cours : relance ensuite une analyse.',
     addFolder: 'Ajouter un dossier',
     removeFolder: (path: string) => `Retirer ${path}`,
+    about: 'À propos',
+    aboutFree: 'Gratuit. Shinku n’envoie rien : ni compte, ni télémétrie, ni publicité.',
+    aboutParts: 'Shinku est fait avec des composants écrits par d’autres.',
+    licences: 'Voir leurs licences',
+    licencesMissing: 'Le fichier des licences n’est pas à côté de Shinku.',
+    licencesFailed: 'Windows n’a pas pu ouvrir le fichier.',
     later: 'Les autres réglages arriveront avec leurs modules : lancement avec Windows, analyse automatique et corbeille.',
     version: (version: string) => `Shinku version ${version}`,
+  },
+
+  journal: {
+    title: 'Journal',
+    intro: 'Ce que Shinku a fait, tel qu’il l’a noté. Il n’envoie ce journal nulle part.',
+    list: 'Ce que Shinku a noté',
+    loading: 'Chargement…',
+    failed: 'Shinku n’a pas pu lire son journal.',
+    retry: 'Réessayer',
+    empty: 'Rien pour l’instant.',
+    unknownDate: 'date inconnue',
+    note: 'Le mode jeu ne garde que sa dernière partie. Pour le Démarrage, c’est ce que Shinku avait noté la dernière fois que tu as ouvert sa page. La Confidentialité ne note rien ici : effacer une trace n’en laisse pas une autre. Une app désinstallée sans passer par Shinku n’apparaît pas.',
+    more: 'Les lignes plus anciennes ne sont pas montrées.',
+    forget: 'Oublier les désinstallations',
+    seeBin: 'Voir la corbeille',
+    seeStartup: 'Voir dans Démarrage',
+    seeGame: 'Voir le mode jeu',
+    // Le début d'une phrase, le nom (montré à part, tel quel), la fin. Chaque phrase est au passé : elle ne dit que
+    // ce qui a été noté, jamais l'état du PC maintenant.
+    startupCut: { before: 'Démarrage : Shinku a coupé ', after: '.' },
+    game: {
+      before: 'Mode jeu : ',
+      // `duration` : `null` quand elle n'a pas de sens ; la suite est le bilan de la page Mode jeu, mot pour mot.
+      after: (duration: string | null) => (duration === null ? '.' : `, ${duration}.`),
+      restored: GAME_RESTORED,
+      notRestored: GAME_NOT_RESTORED,
+    },
+    uninstall: {
+      before: 'Désinstallé : ',
+      after: '.',
+      leftovers: (count: number, bytes: number) =>
+        `${countOf(count, 'reste', 'restes')} mis à la corbeille${bytes > 0 ? ` (${formatBytes(bytes)})` : ''}.`,
+    },
+    clean: {
+      running: 'Grand vide en cours.',
+      // `totals` : « 3,2 Go libérés, 1,1 Go mis à la corbeille » ; vide quand rien n'a été retiré.
+      totals: (freed: number, recoverable: number) =>
+        freed > 0 && recoverable > 0
+          ? `${formatBytes(freed)} libérés, ${formatBytes(recoverable)} mis à la corbeille`
+          : freed > 0
+            ? `${formatBytes(freed)} libérés`
+            : recoverable > 0
+              ? `${formatBytes(recoverable)} mis à la corbeille`
+              : '',
+      completed: (totals: string) => `Grand vide : ${totals === '' ? 'rien n’a été retiré' : totals}.`,
+      cancelled: (totals: string) =>
+        `Grand vide arrêté en route : ${totals === '' ? 'rien n’a été retiré' : totals}.`,
+      interrupted: (totals: string) =>
+        totals === ''
+          ? 'Grand vide coupé avant la fin : rien n’avait été retiré au dernier pointage.'
+          : `Grand vide coupé avant la fin : ${totals}, au dernier pointage.`,
+      skipped: (count: number) => `${countOf(count, 'fichier laissé', 'fichiers laissés')} en place.`,
+    },
+    confirm: {
+      title: 'Oublier les désinstallations notées ?',
+      text: 'Shinku ne gardera plus le nom des apps que tu as désinstallées avec lui. Rien n’est remis ni supprimé sur ton PC.',
+      confirm: 'Oublier',
+      cancel: 'Annuler',
+    },
   },
 
   game: {
@@ -408,10 +481,11 @@ export const fr = typeset({
     release: 'Tout remettre maintenant',
     notAGame: 'Ce n’est pas un jeu',
     notAGameNamed: (name: string) => `Ce n’est pas un jeu : ${name}`,
-    lastOk: (name: string, duration: string) =>
-      `Dernière partie : ${name}, ${duration}. Tout a été remis en place.`,
-    lastIncomplete: (name: string, duration: string) =>
-      `Dernière partie : ${name}, ${duration}. Tout n’a pas pu être remis en place : vérifie le mode d’alimentation de Windows.`,
+    // `duration` : `null` quand la durée n'a pas de sens (voir formatSpan).
+    lastOk: (name: string, duration: string | null) =>
+      `Dernière partie : ${name}${duration === null ? '' : `, ${duration}`}. ${GAME_RESTORED}`,
+    lastIncomplete: (name: string, duration: string | null) =>
+      `Dernière partie : ${name}${duration === null ? '' : `, ${duration}`}. ${GAME_NOT_RESTORED}`,
     powerApplied: 'Alimentation en performances élevées',
     powerAlreadyFast: 'Alimentation déjà en performances élevées',
     powerOnBattery: 'Alimentation inchangée : tu es sur batterie',

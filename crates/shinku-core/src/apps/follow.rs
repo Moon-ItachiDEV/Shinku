@@ -120,6 +120,10 @@ pub struct Follow {
     generation: u64,
     next_key: u32,
     kept: bool,
+    /// Le nom de l'app dont l'inscription est partie et dont le dossier s'est
+    /// stabilisé (passage `Settling` → `Searching`), tant que le guichet ne l'a
+    /// pas relevé.
+    gone: Option<String>,
 }
 
 impl Default for Follow {
@@ -131,7 +135,7 @@ impl Default for Follow {
 impl Follow {
     /// Rien en cours.
     pub fn new() -> Self {
-        Self { phase: Phase::Idle, generation: 0, next_key: 0, kept: false }
+        Self { phase: Phase::Idle, generation: 0, next_key: 0, kept: false, gone: None }
     }
 
     /// Vrai si rien n'est en cours.
@@ -244,6 +248,9 @@ impl Follow {
                 };
                 if done {
                     let snapshot = app.snapshot.clone();
+                    // Levé ici et nulle part ailleurs : un « Chercher à nouveau »
+                    // ne repasse pas par ce passage.
+                    self.gone = Some(app.name.clone());
                     self.enter(Phase::Searching(app));
                     Step::Search { generation: self.generation, snapshot, next_key: self.next_key }
                 } else {
@@ -330,6 +337,13 @@ impl Follow {
     /// Dit une seule fois : l'installeur de Windows est sorti, l'app est restée.
     pub fn take_kept(&mut self) -> bool {
         std::mem::take(&mut self.kept)
+    }
+
+    /// Dit une seule fois : l'inscription de l'app suivie est partie et son
+    /// dossier s'est stabilisé. Rend son nom. Le guichet l'écrit au journal
+    /// **hors du verrou du suivi**.
+    pub fn take_gone(&mut self) -> Option<String> {
+        self.gone.take()
     }
 
     /// Ce que la page voit de la phase.

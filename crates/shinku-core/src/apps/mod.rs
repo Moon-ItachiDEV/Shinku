@@ -26,6 +26,7 @@
 //! - [`paths`], [`names`] : des chemins et des noms, comparés comme des textes ;
 //! - [`launch`] : quelle commande lancer pour désinstaller ;
 //! - [`follow`] : suivre une désinstallation jusqu'à ses restes ;
+//! - [`notes`] : `uninstalls.json`, les désinstallations vues, pour le Journal ;
 //! - [`claims`] : ce que les autres apps installées réclament ;
 //! - [`leftovers`] : chercher, revérifier et retirer les restes ;
 //! - [`view`] et [`desk`] : ce que la page reçoit et demande.
@@ -47,6 +48,7 @@ pub mod host;
 pub mod launch;
 pub mod leftovers;
 pub mod names;
+pub mod notes;
 pub mod paths;
 pub mod view;
 
@@ -58,6 +60,8 @@ mod tests_claims;
 mod tests_follow;
 #[cfg(test)]
 mod tests_leftovers;
+#[cfg(test)]
+mod tests_notes;
 
 /// Nombre de sous-clés lues dans une place, au plus. Au-delà, la place est dite
 /// **incomplète** : on ne cache pas ce qu'on n'a pas lu, on le dit.

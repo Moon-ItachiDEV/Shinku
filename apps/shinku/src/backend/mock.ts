@@ -36,6 +36,9 @@ import type {
   PowerOutcome,
   PrivacyGroup,
   PrivacyRefusal,
+  HistoryLine,
+  HistoryView,
+  LicencesOpened,
   PrivacyView,
   Phase,
   Progress,
@@ -775,6 +778,70 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
   let traces: PrivacyGroup[] = privacyGroups(options.privacy.data);
   /** Un effacement est en vol : un second est refusé, comme par le cœur. */
   let erasing = false;
+  /**
+   * Ce que le Journal du produit peut montrer : un grand vide fini (avec corbeille), un arrêté en route et un coupé avant la fin, deux
+   * désinstallations (l'une avec restes, l'autre sans, au nom très long), la dernière partie (le mode jeu n'en garde
+   * qu'une), deux coupures du Démarrage (l'une remise toute seule, l'autre sans date). « Oublier » retire les
+   * désinstallations.
+   */
+  let historyLines: HistoryLine[] | null = null;
+  const historyLinesNow = (): HistoryLine[] => {
+    if (historyLines === null) {
+      const now = Date.now();
+      const hour = 3_600_000;
+      const day = 24 * hour;
+      historyLines = [
+        {
+          kind: 'clean',
+          startedMs: now - 2 * hour,
+          finishedMs: now - 2 * hour + 240_000,
+          state: 'completed',
+          freedBytes: 3_400_000_000,
+          recoverableBytes: 1_200_000_000,
+          skippedFiles: 2,
+        },
+        { kind: 'uninstall', atMs: now - 5 * hour, name: 'Essai Shinku App', leftovers: 3, leftoverBytes: 48_000_000 },
+        {
+          kind: 'game',
+          startedMs: now - day,
+          endedMs: now - day + 95 * 60_000,
+          name: 'Hollow Knight',
+          powerRestored: true,
+          appsRestored: 3,
+          complete: true,
+        },
+        { kind: 'startupCut', atMs: now - 2 * day, name: 'Mises à jour de la messagerie', backMs: now - day },
+        {
+          kind: 'uninstall',
+          atMs: now - 3 * day,
+          name: 'Un logiciel dont le nom est vraiment très long, pour voir comment la ligne le montre en entier sans casser la page ni le reste de la liste',
+          leftovers: 0,
+          leftoverBytes: 0,
+        },
+        {
+          kind: 'clean',
+          startedMs: now - 4 * day,
+          finishedMs: now - 4 * day + 120_000,
+          state: 'cancelled',
+          freedBytes: 800_000_000,
+          recoverableBytes: 0,
+          skippedFiles: 0,
+        },
+        {
+          kind: 'clean',
+          startedMs: now - 6 * day,
+          finishedMs: null,
+          state: 'interrupted',
+          freedBytes: 250_000_000,
+          recoverableBytes: 0,
+          skippedFiles: 0,
+        },
+        { kind: 'startupCut', atMs: null, name: 'Lanceur de mises à jour', backMs: null },
+      ];
+    }
+    return historyLines;
+  };
+  const historyView = (): HistoryView => ({ lines: structuredClone(historyLinesNow()), more: false });
   const privacyView = (): PrivacyView => ({
     groups: structuredClone(traces),
     firefox: options.privacy.data === 'many' || options.privacy.data === 'running',
@@ -1657,6 +1724,12 @@ export function mockBackend(options: MockOptions, seed: GameSeed = {}): Backend 
         erasing = false;
       }
     },
+    historyView: async () => historyView(),
+    forgetUninstalls: async (): Promise<HistoryView> => {
+      historyLines = historyLinesNow().filter((line) => line.kind !== 'uninstall');
+      return historyView();
+    },
+    openLicences: async (): Promise<LicencesOpened> => 'missing',
     openWindowsSettings: async () => {},
     minimizeWindow: async () => {},
     toggleMaximizeWindow: async () => {},

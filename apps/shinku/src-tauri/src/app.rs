@@ -108,6 +108,9 @@ pub fn run() -> ExitCode {
             commands::remove_leftovers,
             commands::privacy_view,
             commands::erase_traces,
+            commands::history_view,
+            commands::forget_uninstalls,
+            commands::open_licences,
             commands::open_windows_settings,
         ])
         .setup(|app| {
