@@ -190,8 +190,10 @@ Produire `types.ts` automatiquement reste possible plus tard.
   l'ouverture ni sur les bords pendant un redimensionnement.
 - **Une seule fenêtre.** Un second lancement ramène la première au premier
   plan (`tauri-plugin-single-instance`). Ses arguments sont ignorés.
-  **Un second lancement de `shinku.exe` n'écrit rien dans les fichiers de
-  Shinku.** Le greffon tranche pendant `build()` (il sort alors avec
+  **Un second lancement de la fenêtre n'écrit rien dans les fichiers de
+  Shinku** (`shinku.exe --oublier` n'ouvre pas de fenêtre : c'est un autre
+  chemin, qui efface, voir « Effacer les réglages à la désinstallation »). Le
+  greffon tranche pendant `build()` (il sort alors avec
   `std::process::exit(0)`) ; or `run()` a déjà construit le guichet
   (`.manage(Backend::for_machine())`). Ce que `run()` fait avant la décision ne
   fait donc que lire : `for_machine` lit les réglages (`SettingsStore::load`) et
@@ -1234,12 +1236,17 @@ comme la 1.
 **Limites connues.** « S'est remise toute seule depuis… » veut dire « Shinku
 l'a revue active une fois », pas « elle est active maintenant ». Un nom d'app
 garde ses caractères de mise en forme (sens d'écriture, par exemple) : la page
-les isole par `<bdi>`, elle ne les retire pas. La preuve de `checkSingleWindow` (le second lancement
-laisse `journal.json` intact) n'est essayée que sur le vrai Windows ; si la
-fenêtre ne peut pas s'ouvrir, le grand vide coupé est noté mais son annonce est
-perdue (comme avant ce lot). Un désinstalleur qui
-rend la main avant d'avoir fini peut faire noter la désinstallation un peu tôt,
-ou jamais (30 minutes) : le registre décide. Une désinstallation faite hors de Shinku n'est pas notée. L'ouverture
+les isole par `<bdi>`, elle ne les retire pas. La preuve de
+`checkSingleWindow` (le second lancement laisse `journal.json` intact) n'est
+essayée que sur le vrai Windows : hors de lui, deux essais ne lisent que la
+source (l'ordre des appels dans `app.rs`, la forme de la remise dans le
+script), ils ne voient ni un appel fait par un autre chemin, ni une comparaison
+qui ne comparerait plus ; et l'essai qui construit le guichet sur un faux
+profil ne voit pas une écriture hors de ce profil (registre). Si la fenêtre ne
+peut pas s'ouvrir, le grand vide coupé est noté mais son annonce est perdue
+(comme avant ce lot). Un désinstalleur qui rend la main avant d'avoir fini peut
+faire noter la désinstallation un peu tôt, ou jamais (30 minutes) : le registre
+décide. Une désinstallation faite hors de Shinku n'est pas notée. L'ouverture
 du fichier des licences dépend de l'association des fichiers `.txt` de la
 machine ; elle n'est essayée que par la forme de la page sur la machine
 d'intégration (où tout est élevé : l'essai cherche le bouton, il ne le clique
