@@ -2083,6 +2083,7 @@ async function checkSingleWindow(port, asUser) {
     );
   }
   let written = null;
+  let failure = null;
   try {
     if (planted !== null) {
       written = Buffer.from(planted, 'utf8');
@@ -2100,11 +2101,23 @@ async function checkSingleWindow(port, asUser) {
     if (written !== null && !readFileSync(journal).equals(written)) {
       fail('le second lancement a réécrit journal.json : un programme qui n’est pas la seule fenêtre ne doit rien écrire');
     }
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     if (original !== null && written !== null) {
-      writeFileSync(journal, original);
-      if (!readFileSync(journal).equals(original)) {
-        fail('journal.json n’a pas pu être remis dans son état d’avant l’essai');
+      // La remise est dans un `try` à part : si elle rate, elle ne cache pas l'erreur d'origine.
+      try {
+        writeFileSync(journal, original);
+        if (!readFileSync(journal).equals(original)) {
+          throw new Error('contenu différent après la remise');
+        }
+      } catch (error) {
+        const restoring = `journal.json n’a pas pu être remis dans son état d’avant l’essai (${error.message})`;
+        if (failure === null) {
+          fail(restoring);
+        }
+        note(restoring);
       }
     }
   }

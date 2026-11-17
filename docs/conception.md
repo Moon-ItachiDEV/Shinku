@@ -190,8 +190,8 @@ Produire `types.ts` automatiquement reste possible plus tard.
   l'ouverture ni sur les bords pendant un redimensionnement.
 - **Une seule fenêtre.** Un second lancement ramène la première au premier
   plan (`tauri-plugin-single-instance`). Ses arguments sont ignorés.
-  **Un programme qui n'est pas la seule fenêtre de Shinku n'écrit rien dans les
-  fichiers de Shinku.** Le greffon tranche pendant `build()` (il sort alors avec
+  **Un second lancement de `shinku.exe` n'écrit rien dans les fichiers de
+  Shinku.** Le greffon tranche pendant `build()` (il sort alors avec
   `std::process::exit(0)`) ; or `run()` a déjà construit le guichet
   (`.manage(Backend::for_machine())`). Ce que `run()` fait avant la décision ne
   fait donc que lire : `for_machine` lit les réglages (`SettingsStore::load`) et
@@ -1160,7 +1160,10 @@ récente en haut. Elle ne fait rien : elle se lit. Code : `crates/shinku-core/sr
   crochet `setup` avant l'ouverture de la fenêtre (la page demande `overview`
   dès qu'elle s'ouvre, l'annonce doit déjà y être). Elle ne sert qu'une fois par
   guichet : un second appel marquerait le grand vide en cours de cette fenêtre.
-  Voir « Une seule fenêtre ».
+  Voir « Une seule fenêtre ». Un `journal.json` de plus de 1 Mio est lu vide,
+  donc **remplacé** au prochain grand vide (comme un journal illisible) : c'est
+  accepté, car Shinku n'écrit jamais plus de 100 grands vides, soit quelques
+  dizaines de Kio ; un fichier plus gros n'est pas le sien.
 - Les coupures du Démarrage : `startup.json`, lu **sans** le relire dans le
   registre (`StartupDesk::cuts`) : ouvrir le Journal ne touche pas au registre.
   Une ligne dit, quand l'entrée s'est rallumée, « S'est remise toute seule depuis… »,
@@ -1231,7 +1234,10 @@ comme la 1.
 **Limites connues.** « S'est remise toute seule depuis… » veut dire « Shinku
 l'a revue active une fois », pas « elle est active maintenant ». Un nom d'app
 garde ses caractères de mise en forme (sens d'écriture, par exemple) : la page
-les isole par `<bdi>`, elle ne les retire pas. Un désinstalleur qui
+les isole par `<bdi>`, elle ne les retire pas. La preuve de `checkSingleWindow` (le second lancement
+laisse `journal.json` intact) n'est essayée que sur le vrai Windows ; si la
+fenêtre ne peut pas s'ouvrir, le grand vide coupé est noté mais son annonce est
+perdue (comme avant ce lot). Un désinstalleur qui
 rend la main avant d'avoir fini peut faire noter la désinstallation un peu tôt,
 ou jamais (30 minutes) : le registre décide. Une désinstallation faite hors de Shinku n'est pas notée. L'ouverture
 du fichier des licences dépend de l'association des fichiers `.txt` de la

@@ -271,7 +271,13 @@ impl Backend {
     /// journal des grands vides, et un cache d'empreintes qui vit le temps du
     /// processus.
     pub fn for_machine() -> Self {
-        let environment: Arc<dyn Environment> = Arc::new(platform::system());
+        Self::for_environment(Arc::new(platform::system()))
+    }
+
+    /// Le corps de [`Backend::for_machine`], sur l'environnement donné (les
+    /// essais y mettent un faux dossier). Il ne fait que lire et construire :
+    /// rien n'est écrit ici (voir [`Backend::close_interrupted_clean`]).
+    pub(crate) fn for_environment(environment: Arc<dyn Environment>) -> Self {
         let store = SettingsStore::for_machine(environment.as_ref());
         let journal = JournalStore::for_machine(environment.as_ref());
         let game = GameDesk::new(
@@ -1749,6 +1755,52 @@ mod tests {
             Some(pc.store.clone()),
         )
         .with_journal(pc.journal.clone())
+    }
+
+    /// Tout ce que contient un dossier : chaque dossier et chaque fichier (avec ses octets).
+    fn snapshot(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        fn walk(dir: &Path, root: &Path, out: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+            let mut entries: Vec<_> =
+                fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+            entries.sort();
+            for path in entries {
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                if path.is_dir() {
+                    out.push((relative, None));
+                    walk(&path, root, out);
+                } else {
+                    out.push((relative, Some(fs::read(&path).unwrap())));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    #[test]
+    fn building_the_backend_of_a_machine_writes_nothing() {
+        let pc = pc();
+        let local = pc.profile.join("AppData").join("Local").join("Shinku");
+        fs::create_dir_all(&local).unwrap();
+        fs::create_dir_all(pc.store.path().parent().unwrap()).unwrap();
+        fs::write(pc.store.path(), "{ \"theme\": \"dark\" }").unwrap();
+        pc.journal.record(&Run::starting(pc.environment.now())).unwrap();
+        for name in ["game.json", "startup.json", "uninstalls.json"] {
+            fs::write(local.join(name), "{ \"version\": 1 }").unwrap();
+        }
+        let root = pc.profile.parent().unwrap().parent().unwrap().to_path_buf();
+        let before = snapshot(&root);
+        assert!(before.len() > 8);
+
+        let backend = Backend::for_environment(Arc::new(pc.environment.clone()));
+        assert_eq!(
+            snapshot(&root),
+            before,
+            "construire le guichet, avant de savoir si on est la seule fenêtre, n'écrit rien"
+        );
+        assert_eq!(backend.overview().interrupted_clean, None);
+        assert_eq!(pc.journal.runs().last().map(|run| run.state), Some(RunState::Running));
     }
 
     #[test]

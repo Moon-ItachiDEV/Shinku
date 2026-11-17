@@ -91,6 +91,10 @@ mod tests {
             plugin < setup && setup < closing && closing < window,
             "{plugin} {setup} {closing} {window}"
         );
+        // Sur le fil du crochet, avant tout `thread::spawn` : la page peut demander
+        // `overview` dès que la fenêtre est ouverte.
+        let spawn = code[setup..].find("thread::spawn(").map_or(usize::MAX, |at| setup + at);
+        assert!(closing < spawn, "la fermeture ne doit pas passer par un autre fil");
         assert!(!code.contains(".with_journal(") && !code.contains(".close_interrupted()"));
     }
 }

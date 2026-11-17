@@ -345,4 +345,5 @@ test('l’essai du second lancement plante le grand vide, compare les octets, et
   assert.ok(part.includes('readFileSync(journal).equals(written)'), 'octet pour octet');
   const restore = part.slice(part.indexOf('} finally {\n    if (original'));
   assert.ok(restore.includes('writeFileSync(journal, original)') && restore.includes('.equals(original)'), 'remis dans un finally, et vérifié');
+  assert.ok(/try \{\s*writeFileSync\(journal, original\)/.test(restore) && restore.includes('failure === null'), 'une remise ratée ne cache pas l’erreur d’origine');
 });
