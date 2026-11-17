@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import type { HistoryLine, HistoryView } from '../src/backend/types.ts';
-import { DOM, EXPECTED, judgeClean, judgeDated } from '../scripts/essai-journal-dom.mjs';
+import { DOM, EXPECTED, JOURNAL_RUNS_KEPT, PLANTED_STARTED_MS, judgeClean, judgeDated, plantInterruptedRun } from '../scripts/essai-journal-dom.mjs';
 import { demoOptions, mockBackend } from '../src/backend/mock.ts';
 import { formatSpan } from '../src/format.ts';
 import { fr } from '../src/i18n/fr.ts';
@@ -302,4 +302,48 @@ test('appView range la page sous pageKey : le Journal garde son élément et son
   const source = readFileSync(new URL('../src/views/shell.ts', import.meta.url), 'utf8');
   assert.ok(source.includes('keyed(pageKey(state), page(state, actions))'));
   assert.ok(!/keyed\(`\$\{state\.route\}/.test(source), 'plus de clé commune en ligne');
+});
+
+test('plantInterruptedRun : le document d’origine est gardé, un seul grand vide « en cours » de 2020 en tête', () => {
+  const finished = { startedMs: 1_700_000_000_000, finishedMs: 1_700_000_100_000, state: 'completed', freedBytes: 4096, recoverableBytes: 0, skippedFiles: 1 };
+  const original = JSON.stringify({ version: 1, runs: [finished] }, null, 2);
+  const planted = JSON.parse(String(plantInterruptedRun(original)));
+  assert.equal(planted.version, 1);
+  assert.equal(planted.runs.length, 2, 'un seul grand vide de plus');
+  assert.deepEqual(planted.runs[1], finished, 'le grand vide d’origine est gardé, tel quel');
+  assert.deepEqual(planted.runs[0], {
+    startedMs: PLANTED_STARTED_MS,
+    finishedMs: null,
+    state: 'running',
+    freedBytes: 0,
+    recoverableBytes: 0,
+    skippedFiles: 0,
+  });
+  assert.equal(new Date(PLANTED_STARTED_MS).toISOString(), '2020-01-01T00:00:00.000Z');
+  assert.equal(JSON.parse(original).runs.length, 1, 'le texte donné n’est pas changé');
+  // Une marque d'ordre des octets en tête est permise ; un journal vide reçoit le seul grand vide planté.
+  assert.equal(JSON.parse(String(plantInterruptedRun(`\ufeff${original}`))).runs.length, 2);
+  assert.equal(JSON.parse(String(plantInterruptedRun('{ "version": 1, "runs": [] }'))).runs.length, 1);
+});
+
+test('plantInterruptedRun : un journal plein garde le grand vide planté visible, et ce qui n’est pas un journal n’est pas touché', () => {
+  const runs = Array.from({ length: JOURNAL_RUNS_KEPT + 20 }, (_, index) => ({ startedMs: 1_700_000_000_000 + index, finishedMs: null, state: 'completed', freedBytes: 0, recoverableBytes: 0, skippedFiles: 0 }));
+  const planted = JSON.parse(String(plantInterruptedRun(JSON.stringify({ version: 1, runs }))));
+  assert.equal(planted.runs.length, JOURNAL_RUNS_KEPT, 'le cœur ne relit que les 100 derniers : le planté doit en faire partie');
+  assert.equal(planted.runs[0].state, 'running');
+  assert.deepEqual(planted.runs.slice(1), runs.slice(-(JOURNAL_RUNS_KEPT - 1)));
+  for (const notOurs of ['', '{ "runs": [', 'null', '[]', '{ "version": 1 }', '{ "runs": 3 }']) {
+    assert.equal(plantInterruptedRun(notOurs), null, `« ${notOurs} » n’est pas un journal`);
+  }
+});
+
+test('l’essai du second lancement plante le grand vide, compare les octets, et remet le journal d’origine', () => {
+  const source = readFileSync(new URL('../scripts/essai-fenetre.mjs', import.meta.url), 'utf8');
+  const part = source.slice(source.indexOf('async function checkSingleWindow'), source.indexOf('async function checkClose'));
+  assert.ok(part.includes('plantInterruptedRun(original.toString('), 'le grand vide « en cours » est fabriqué par la fonction pure');
+  assert.ok(part.indexOf('writeFileSync(journal, written)') < part.indexOf('launch(options.programme'), 'planté avant le second lancement');
+  assert.ok(part.includes('readFileSync(journal).equals(written)'), 'octet pour octet');
+  const restore = part.slice(part.indexOf('} finally {\n    if (original'));
+  assert.ok(restore.includes('writeFileSync(journal, original)') && restore.includes('.equals(original)'), 'remis dans un finally, et vérifié');
+  assert.ok(/try \{\s*writeFileSync\(journal, original\)/.test(restore) && restore.includes('failure === null'), 'une remise ratée ne cache pas l’erreur d’origine');
 });

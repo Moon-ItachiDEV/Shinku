@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::game::store::read_bounded;
 use crate::model::Timestamp;
 use crate::platform::Environment;
 use crate::settings::{app_dir, write_replacing};
@@ -105,12 +106,19 @@ impl JournalStore {
         &self.path
     }
 
-    /// Les grands vides notés, du plus ancien au plus récent. Un journal
-    /// absent ou illisible est un journal vide.
+    /// Les grands vides notés, du plus ancien au plus récent, les
+    /// [`RUNS_KEPT`] derniers au plus. Un journal absent, illisible ou de plus
+    /// de 1 Mio (ce n'est pas le nôtre) est un journal vide.
     pub fn runs(&self) -> Vec<Run> {
-        let Ok(text) = fs::read_to_string(&self.path) else { return Vec::new() };
+        let Some(text) = read_bounded(&self.path) else { return Vec::new() };
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        serde_json::from_str::<Document>(text).map(|document| document.runs).unwrap_or_default()
+        let mut runs = serde_json::from_str::<Document>(text)
+            .map(|document| document.runs)
+            .unwrap_or_default();
+        if runs.len() > RUNS_KEPT {
+            runs.drain(..runs.len() - RUNS_KEPT);
+        }
+        runs
     }
 
     fn save(&self, mut runs: Vec<Run>) -> io::Result<()> {
@@ -142,7 +150,8 @@ impl JournalStore {
     /// été coupé. Il est noté comme tel, et rendu pour que Shinku le dise.
     ///
     /// Un seul grand vide tourne à la fois, et une seule fenêtre de Shinku :
-    /// rien d'autre n'écrit dans le journal à ce moment-là.
+    /// rien d'autre n'écrit dans le journal à ce moment-là. Cela suppose d'être
+    /// sûr d'être cette fenêtre : voir `Backend::close_interrupted_clean`.
     pub fn close_interrupted(&self) -> Option<Run> {
         let mut runs = self.runs();
         let mut last = None;
@@ -245,5 +254,39 @@ mod tests {
         let store = JournalStore::at(blocked.join("Shinku").join("journal.json"));
         assert!(store.record(&run(1)).is_err());
         assert!(store.runs().is_empty());
+    }
+
+    #[test]
+    fn a_journal_over_one_mebibyte_is_not_read() {
+        let (_temp, store) = store();
+        let runs: Vec<Run> = (0..3).map(run).collect();
+        store.save(runs).unwrap();
+        assert_eq!(store.runs().len(), 3);
+        // Un journal valide, mais trop gros pour être le nôtre : on grossit
+        // un champ qui ne sert à rien, le document reste du JSON correct.
+        let text = fs::read_to_string(store.path()).unwrap();
+        let padded = text.replacen("{", &format!("{{ \"pad\": \"{}\",", "x".repeat(1 << 20)), 1);
+        assert!(padded.len() as u64 > crate::game::store::MAX_FILE_BYTES);
+        assert!(serde_json::from_str::<Document>(&padded).is_ok(), "le document reste valide");
+        fs::write(store.path(), padded).unwrap();
+        assert!(store.runs().is_empty());
+        // Et il est recommencé, comme un journal illisible.
+        assert_eq!(store.close_interrupted(), None);
+        store.record(&run(9)).unwrap();
+        assert_eq!(store.runs(), [run(9)]);
+    }
+
+    #[test]
+    fn reading_keeps_only_the_most_recent_runs() {
+        let (_temp, store) = store();
+        // Un fichier écrit par autre chose que `save` : 150 grands vides.
+        let runs: Vec<Run> = (0..150).map(run).collect();
+        let document = Document { version: JOURNAL_VERSION, runs };
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(store.path(), serde_json::to_string(&document).unwrap()).unwrap();
+        let kept = store.runs();
+        assert_eq!(kept.len(), RUNS_KEPT);
+        assert_eq!(kept[0].started_ms, 50);
+        assert_eq!(kept[RUNS_KEPT - 1].started_ms, 149);
     }
 }

@@ -117,3 +117,38 @@ export function judgeClean(rows, expected, from, now) {
   }
   return judgeDated(cleaned, from, now, 'du grand vide');
 }
+
+/** Début du grand vide planté dans `journal.json` par l'essai du second lancement : le 1er janvier 2020 (UTC), en millisecondes. */
+export const PLANTED_STARTED_MS = Date.UTC(2020, 0, 1);
+
+/** Nombre de grands vides que le cœur garde et relit (`RUNS_KEPT` de `clean/journal.rs`). */
+export const JOURNAL_RUNS_KEPT = 100;
+
+/**
+ * Le document `journal.json` de l'essai du second lancement : celui qu'on lui donne (le texte du fichier, une marque
+ * d'ordre des octets en tête est permise), plus **un grand vide** « en cours » daté de 2020, en tête de liste (le plus
+ * ancien), totaux à 0. Un second lancement qui écrirait dans le journal le marquerait « coupé ». Le texte donné n'est pas
+ * changé. Si le journal garde déjà `JOURNAL_RUNS_KEPT` grands vides, les plus anciens sont laissés de côté : le cœur ne
+ * relit que les derniers, et un grand vide planté au-delà ne serait pas vu. Rend le texte du nouveau document, ou `null`
+ * si le texte donné n'est pas un journal lisible (ce n'est alors pas le nôtre : l'essai ne le touche pas).
+ */
+export function plantInterruptedRun(original) {
+  let document;
+  try {
+    document = JSON.parse(original.replace(/^\ufeff/, ''));
+  } catch {
+    return null;
+  }
+  if (document === null || typeof document !== 'object' || Array.isArray(document) || !Array.isArray(document.runs)) {
+    return null;
+  }
+  const planted = {
+    startedMs: PLANTED_STARTED_MS,
+    finishedMs: null,
+    state: 'running',
+    freedBytes: 0,
+    recoverableBytes: 0,
+    skippedFiles: 0,
+  };
+  return JSON.stringify({ ...document, runs: [planted, ...document.runs.slice(-(JOURNAL_RUNS_KEPT - 1))] }, null, 2);
+}

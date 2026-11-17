@@ -40,3 +40,6 @@ export function judgeClean(
   from: number,
   now: number,
 ): string | null;
+export const PLANTED_STARTED_MS: number;
+export const JOURNAL_RUNS_KEPT: number;
+export function plantInterruptedRun(original: string): string | null;

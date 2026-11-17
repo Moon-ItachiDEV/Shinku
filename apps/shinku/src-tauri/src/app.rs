@@ -74,6 +74,8 @@ pub fn run() -> ExitCode {
         .plugin(tauri_plugin_single_instance::init(|app, _arguments, _folder| {
             bring_to_front(app);
         }))
+        // Ne fait que lire et construire : un second lancement, qui sort pendant
+        // `build()`, n'écrit rien dans les fichiers de Shinku.
         .manage(Backend::for_machine())
         .invoke_handler(tauri::generate_handler![
             commands::overview,
@@ -114,6 +116,12 @@ pub fn run() -> ExitCode {
             commands::open_windows_settings,
         ])
         .setup(|app| {
+            // Le crochet de l'application tourne après ceux des greffons : un
+            // second lancement est déjà sorti (`tauri-plugin-single-instance`,
+            // pendant `build()`). Seule fenêtre de Shinku, on peut donc enfin
+            // écrire dans `journal.json` : le grand vide coupé la dernière fois
+            // est noté, avant que la page ne demande `overview`.
+            app.state::<Backend>().close_interrupted_clean();
             // Une erreur rendue ici ferait paniquer Tauri, donc fermerait
             // Shinku sans un mot : on l'explique, puis on quitte.
             if let Err(error) = open_window(app.handle()) {

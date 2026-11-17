@@ -67,4 +67,34 @@ mod tests {
         });
         assert!(first_code.is_some_and(|line| line.contains("forget::asked(")), "{first_code:?}");
     }
+
+    /// Un second lancement sort pendant `build()` (greffon d'instance unique) :
+    /// avant, `app::run` ne doit rien écrire. La fermeture du grand vide coupé,
+    /// qui réécrit `journal.json`, est donc dans le crochet `setup` de
+    /// l'application, qui tourne après celui des greffons, avant l'ouverture de
+    /// la fenêtre. La preuve en conditions réelles est `checkSingleWindow`
+    /// (voir `docs/conception.md`).
+    #[test]
+    fn the_interrupted_clean_is_closed_only_once_the_single_window_is_known() {
+        let source = include_str!("app.rs");
+        let code: String = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(code.matches("close_interrupted_clean(").count(), 1, "un seul appel");
+        let closing = code.find("close_interrupted_clean(").unwrap_or(0);
+        let plugin = code.find("tauri_plugin_single_instance::init(").expect("le greffon");
+        let setup = code.find(".setup(|app|").expect("le crochet setup");
+        let window = code.find("open_window(app.handle())").expect("l'ouverture de la fenêtre");
+        assert!(
+            plugin < setup && setup < closing && closing < window,
+            "{plugin} {setup} {closing} {window}"
+        );
+        // Sur le fil du crochet, avant tout `thread::spawn` : la page peut demander
+        // `overview` dès que la fenêtre est ouverte.
+        let spawn = code[setup..].find("thread::spawn(").map_or(usize::MAX, |at| setup + at);
+        assert!(closing < spawn, "la fermeture ne doit pas passer par un autre fil");
+        assert!(!code.contains(".with_journal(") && !code.contains(".close_interrupted()"));
+    }
 }

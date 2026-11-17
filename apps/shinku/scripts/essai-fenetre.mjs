@@ -53,7 +53,7 @@ import { parseArgs } from 'node:util';
 import { DOM, EXPECTED } from './essai-desinstallation-dom.mjs';
 import { DOM as STARTUP_DOM, EXPECTED as STARTUP_EXPECTED } from './essai-demarrage-dom.mjs';
 import { DOM as PRIVACY_DOM, EXPECTED as PRIVACY_EXPECTED, readPrivacy } from './essai-confidentialite-dom.mjs';
-import { DOM as JOURNAL_DOM, EXPECTED as JOURNAL_EXPECTED, judgeClean, judgeDated, readAbout, readJournal, readMenu } from './essai-journal-dom.mjs';
+import { DOM as JOURNAL_DOM, EXPECTED as JOURNAL_EXPECTED, judgeClean, judgeDated, plantInterruptedRun, readAbout, readJournal, readMenu } from './essai-journal-dom.mjs';
 
 const { values: options } = parseArgs({
   options: {
@@ -2066,16 +2066,60 @@ async function checkJournal(window) {
   await window.capture('journal');
 }
 
-/** Un second lancement ne doit pas ouvrir une seconde fenêtre. */
+/**
+ * Un second lancement ne doit pas ouvrir une seconde fenêtre, ni écrire dans les fichiers de Shinku : la première
+ * fenêtre est ouverte et aucun grand vide ne tourne, l'essai pose donc dans `journal.json` un grand vide « en cours »
+ * daté de 2020 (ce que le cœur réécrit « coupé » au lancement), et le second lancement doit rendre le fichier tel quel.
+ */
 async function checkSingleWindow(port, asUser) {
-  const second = launch(options.programme, port, asUser);
-  try {
-    await until('le second lancement rend la main', 30_000, () => second.error !== null || second.exit !== null);
-  } finally {
-    stop(second);
+  const journal = process.env.APPDATA === undefined ? null : path.join(process.env.APPDATA, 'Shinku', 'journal.json');
+  const original = journal !== null && existsSync(journal) ? readFileSync(journal) : null;
+  const planted = original === null ? null : plantInterruptedRun(original.toString('utf8'));
+  if (planted === null) {
+    note(
+      original === null
+        ? 'essai du journal par le second lancement sauté : pas de journal.json (ni --grand-vide, ni APPDATA)'
+        : 'essai du journal par le second lancement sauté : journal.json n’est pas un journal lisible',
+    );
   }
-  if (second.error !== null || second.exit.code !== 0) {
-    fail(`le second lancement finit mal : ${second.error?.message ?? `code ${second.exit.code}`}`);
+  let written = null;
+  let failure = null;
+  try {
+    if (planted !== null) {
+      written = Buffer.from(planted, 'utf8');
+      writeFileSync(journal, written);
+    }
+    const second = launch(options.programme, port, asUser);
+    try {
+      await until('le second lancement rend la main', 30_000, () => second.error !== null || second.exit !== null);
+    } finally {
+      stop(second);
+    }
+    if (second.error !== null || second.exit.code !== 0) {
+      fail(`le second lancement finit mal : ${second.error?.message ?? `code ${second.exit.code}`}`);
+    }
+    if (written !== null && !readFileSync(journal).equals(written)) {
+      fail('le second lancement a réécrit journal.json : un programme qui n’est pas la seule fenêtre ne doit rien écrire');
+    }
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    if (original !== null && written !== null) {
+      // La remise est dans un `try` à part : si elle rate, elle ne cache pas l'erreur d'origine.
+      try {
+        writeFileSync(journal, original);
+        if (!readFileSync(journal).equals(original)) {
+          throw new Error('contenu différent après la remise');
+        }
+      } catch (error) {
+        const restoring = `journal.json n’a pas pu être remis dans son état d’avant l’essai (${error.message})`;
+        if (failure === null) {
+          fail(restoring);
+        }
+        note(restoring);
+      }
+    }
   }
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const pages = targets.filter((target) => target.type === 'page');
@@ -2083,6 +2127,9 @@ async function checkSingleWindow(port, asUser) {
     fail(`après un second lancement, ${pages.length} pages sont ouvertes au lieu d’une`);
   }
   done('un second lancement n’ouvre pas de seconde fenêtre');
+  if (written !== null) {
+    done('un second lancement, pendant un grand vide « en cours », laisse journal.json identique, octet pour octet');
+  }
 }
 
 async function checkClose(window, run) {
